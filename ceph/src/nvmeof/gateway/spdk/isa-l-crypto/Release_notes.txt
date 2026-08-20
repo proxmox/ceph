@@ -1,5 +1,5 @@
 ================================================================================
-v2.25 Intel Intelligent Storage Acceleration Library Crypto Release Notes
+v2.26 Intel Intelligent Storage Acceleration Library Crypto Release Notes
 ================================================================================
 
 ================================================================================
@@ -13,11 +13,8 @@ RELEASE NOTE CONTENTS
 1.  KNOWN ISSUES
 ================================================================================
 
-* Perf tests do not run in Windows environment.
-
-* 32-bit lib is not supported in Windows.
-
-* 32-bit lib is not validated.
+* When compiling with -flto (Link Time Optimization) flag, the -fno-strict-aliasing
+  flag should be passed to avoid potential test issues.
 
 ================================================================================
 2. FIXED ISSUES
@@ -79,6 +76,23 @@ v2.7
 ================================================================================
 3. CHANGE LOG & FEATURES ADDED
 ================================================================================
+v2.26
+
+* Removed 32-bit x86 support.
+
+* Added CMake build system (only verified for x86_64).
+
+* Added SHA512-NI AVX2 implementation.
+
+* Added SM3-NI AVX2 implementation.
+
+* Added support for RISC-V 64 architecture.
+
+* Added new AES performance application which consolidates AES performance tests
+  for AES-CBC, AES-GCM and AES-XTS.
+
+* Performance applications can now be used in Windows.
+
 v2.25
 
 * Added new API including parameter checking (starting with isal_ prefix).

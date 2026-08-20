@@ -95,6 +95,9 @@ nvmf_transport_dump_opts(struct spdk_nvmf_transport *transport, struct spdk_json
 	spdk_json_write_named_uint32(w, "abort_timeout_sec", opts->abort_timeout_sec);
 	spdk_json_write_named_uint32(w, "ack_timeout", opts->ack_timeout);
 	spdk_json_write_named_uint32(w, "data_wr_pool_size", opts->data_wr_pool_size);
+	spdk_json_write_named_bool(w, "disable_command_passthru", opts->disable_command_passthru);
+	spdk_json_write_named_uint16(w, "kas", opts->kas);
+	spdk_json_write_named_uint32(w, "min_kato", opts->min_kato);
 	spdk_json_write_object_end(w);
 }
 
@@ -155,10 +158,12 @@ nvmf_transport_opts_copy(struct spdk_nvmf_transport_opts *opts,
 	SET_FIELD(data_wr_pool_size);
 	SET_FIELD(min_kato);
 	SET_FIELD(kas);
+	SET_FIELD(oncs);
+	SET_FIELD(fuses);
 
 	/* Do not remove this statement, you should always update this statement when you adding a new field,
 	 * and do not forget to add the SET_FIELD statement for your added field. */
-	SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 78, "Incorrect size");
+	SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 82, "Incorrect size");
 
 #undef SET_FIELD
 #undef FILED_CHECK
@@ -316,11 +321,7 @@ nvmf_transport_create(const char *transport_name, struct spdk_nvmf_transport_opt
 			return 0;
 		}
 
-		rc = spdk_thread_send_msg(spdk_get_thread(), _nvmf_transport_create_done, ctx);
-		if (rc) {
-			goto err;
-		}
-
+		spdk_thread_send_msg(spdk_get_thread(), _nvmf_transport_create_done, ctx);
 		return 0;
 	}
 
@@ -393,7 +394,8 @@ spdk_nvmf_transport_destroy(struct spdk_nvmf_transport *transport,
 	}
 
 	pthread_mutex_destroy(&transport->mutex);
-	return transport->ops->destroy(transport, cb_fn, cb_arg);
+	transport->ops->destroy(transport, cb_fn, cb_arg);
+	return 0;
 }
 
 struct spdk_nvmf_listener *
@@ -454,6 +456,8 @@ int
 spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
 				const struct spdk_nvme_transport_id *trid)
 {
+	struct spdk_nvmf_subsystem_listener *subsystem_listener;
+	struct spdk_nvmf_subsystem *subsystem;
 	struct spdk_nvmf_listener *listener;
 
 	listener = nvmf_transport_find_listener(transport, trid);
@@ -466,6 +470,17 @@ spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
 		pthread_mutex_lock(&transport->mutex);
 		transport->ops->stop_listen(transport, trid);
 		pthread_mutex_unlock(&transport->mutex);
+
+		/* The transport listener has stopped and we are about to free trid; clear dangling pointers. */
+		for (subsystem = spdk_nvmf_subsystem_get_first(transport->tgt); subsystem != NULL;
+		     subsystem = spdk_nvmf_subsystem_get_next(subsystem)) {
+			TAILQ_FOREACH(subsystem_listener, &subsystem->listeners, link) {
+				if (subsystem_listener->trid == &listener->trid) {
+					subsystem_listener->trid = NULL;
+				}
+			}
+		}
+
 		free(listener);
 	}
 
@@ -771,16 +786,16 @@ nvmf_transport_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 	return group->transport->ops->poll_group_poll(group);
 }
 
-int
+void
 nvmf_transport_req_free(struct spdk_nvmf_request *req)
 {
-	return req->qpair->transport->ops->req_free(req);
+	req->qpair->transport->ops->req_free(req);
 }
 
-int
+void
 nvmf_transport_req_complete(struct spdk_nvmf_request *req)
 {
-	return req->qpair->transport->ops->req_complete(req);
+	req->qpair->transport->ops->req_complete(req);
 }
 
 void
@@ -860,6 +875,8 @@ spdk_nvmf_transport_opts_init(const char *transport_name,
 	opts_local.disable_command_passthru = false;
 	opts_local.kas = NVMF_DEFAULT_KAS;
 	opts_local.min_kato = NVMF_DEFAULT_MIN_KATO;
+	opts_local.oncs.raw = UINT16_MAX;
+	opts_local.fuses.raw = UINT16_MAX;
 	ops->opts_init(&opts_local);
 
 	nvmf_transport_opts_copy(opts, &opts_local, opts_size);
@@ -934,7 +951,7 @@ nvmf_request_get_buffers(struct spdk_nvmf_request *req,
 	}
 
 	/* Use iobuf queuing only if transport supports it */
-	if (transport->ops->req_get_buffers_done != NULL) {
+	if (transport->ops->req_get_buffers_done != NULL && !stripped_buffers) {
 		entry = &req->iobuf.entry;
 	}
 
@@ -1053,9 +1070,6 @@ nvmf_request_get_stripped_buffers(struct spdk_nvmf_request *req,
 	struct spdk_nvmf_stripped_data *data;
 	uint32_t i;
 	int rc;
-
-	/* We don't support iobuf queueing with stripped buffers yet */
-	assert(transport->ops->req_get_buffers_done == NULL);
 
 	/* Data blocks must be block aligned */
 	for (i = 0; i < req->iovcnt; i++) {

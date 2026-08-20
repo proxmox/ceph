@@ -18,12 +18,8 @@ additional_dependencies() {
 	if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 		# Tools for developers
 		devtool_pkgs=(git sg3_utils pciutils bash-completion ruby-devel)
-		devtool_pkgs+=(gcovr python3-pycodestyle)
+		devtool_pkgs+=(gcovr rubygem-rake python3-pycodestyle)
 		tdnf install -y "${devtool_pkgs[@]}"
-	fi
-	if [[ $INSTALL_FUSE == "true" ]]; then
-		# Additional dependencies for FUSE and NVMe-CUSE
-		tdnf install -y fuse3-devel
 	fi
 	if [[ $INSTALL_RBD == "true" ]]; then
 		# Additional dependencies for RBD bdev in NVMe over Fabrics
@@ -47,7 +43,7 @@ additional_dependencies() {
 		tdnf install -y avahi-devel
 	fi
 	if [[ $INSTALL_LZ4 == "true" ]]; then
-		tdnf install -y liblz4
+		tdnf install -y lz4 lz4-devel
 	fi
 }
 
@@ -56,12 +52,14 @@ tdnf install -y CUnit-devel \
 	clang \
 	clang-devel \
 	cmake \
+	fuse3-devel \
 	json-c-devel \
 	libaio-devel \
 	libcmocka-devel \
 	libiscsi-devel \
 	libuuid-devel \
 	ncurses-devel \
+	ncurses-compat \
 	openssl-devel \
 	procps-ng \
 	python \
@@ -74,30 +72,15 @@ if [[ ! -e /usr/bin/python ]]; then
 	ln -s /usr/bin/python3 /usr/bin/python
 fi
 
-pips=(
-	meson
-	ninja
-	pyelftools
-	ijson
-	python-magic
-	pyyaml
-	grpcio
-	grpcio-tools
-	Jinja2
-	tabulate
-)
+# per PEP668 work inside virtual env
+virtdir=${PIP_VIRTDIR:-/var/spdk/dependencies/pip}
+python3 -m venv --upgrade-deps --system-site-packages "$virtdir"
+source "$virtdir/bin/activate"
+python -m pip install pip-tools
+pip-compile --extra dev --strip-extras -o "$rootdir/scripts/pkgdep/requirements.txt" "${rootdir}/python/pyproject.toml"
+pip3 install -r "$rootdir/scripts/pkgdep/requirements.txt"
 
-if ((EUID == 0)); then
-	cat <<- WARNING
-		Warning: Running as root. You may want to install the pip packages
-		as a non-root user if you wish to build SPDK as a non-root user.
-
-		Required packages:
-		$(printf '  %s\n' "${pips[@]}")
-
-	WARNING
-fi
-
-pip3 install "${pips[@]}"
+# Fixes issue: #3721
+pkgdep_toolpath meson "${virtdir}/bin"
 
 additional_dependencies

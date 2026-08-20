@@ -102,56 +102,27 @@ jobs:
           path: |
             ceph.tar
 
-  build-arm64:
+  build-kmip:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392
-
-      - name: Build container images - spdk
-        run: make build SVC=spdk TARGET_ARCH=arm64 SPDK_CONFIGURE_DSA=""
-
-      - name: Build container images - bdevperf
-        run: make build SVC=bdevperf TARGET_ARCH=arm64 SPDK_CONFIGURE_DSA=""
-
-      - name: Build container images - nvmeof
-        run: make build SVC=nvmeof TARGET_ARCH=arm64
-
-      - name: Build container images - nvmeof-cli
-        run: make build SVC=nvmeof-cli TARGET_ARCH=arm64
-
-      - name: Build container images - ceph
-        run: make build SVC=ceph TARGET_ARCH=arm64
-
-      - name: Save container images
+      - name: Build KMIP container images
         run: |
-          . .env
-          docker tag $QUAY_NVMEOF:$NVMEOF_VERSION $QUAY_NVMEOF:$NVMEOF_VERSION-arm64
-          docker tag $QUAY_NVMEOFCLI:$NVMEOF_VERSION $QUAY_NVMEOFCLI:$NVMEOF_VERSION-arm64
-          docker tag $QUAY_SPDK:$SPDK_VERSION $QUAY_SPDK:$SPDK_VERSION-arm64
-          docker save $QUAY_NVMEOF:$NVMEOF_VERSION-arm64 > nvmeof-arm64.tar
-          docker save $QUAY_NVMEOFCLI:$NVMEOF_VERSION-arm64 > nvmeof-cli-arm64.tar
-          docker save $QUAY_SPDK:$SPDK_VERSION-arm64 > spdk-arm64.tar
-
-      - name: Upload nvmeof-arm64 container images
+          cd tests/kmip
+          make build
+      - name: Save KMIP container images
+        run: |
+          docker save kmip-server:latest > kmip-server.tar
+          docker save kmip-cli:latest > kmip-cli.tar
+      - name: Upload KMIP container images
         uses: actions/upload-artifact@v4
         with:
-          name: container_images_nvmeof_arm64
+          name: kmip_images
           path: |
-            nvmeof-arm64.tar
-            nvmeof-cli-arm64.tar
-
-      - name: Upload spdk-arm64 container images
-        uses: actions/upload-artifact@v4
-        with:
-          name: container_images_spdk_arm64
-          path: |
-            spdk-arm64.tar
+            kmip-server.tar
+            kmip-cli.tar
 
   pytest:
     needs: [build, build-ceph]
@@ -565,7 +536,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: ["sanity", "no_huge", "ns_lb_change", "no_subsystems", "auto_load_balance", "auto_listeners", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop", "late_registration", "late_registration_loop", "connect_panic", "4gws", "4gws_loop", "4gws_create_delete", "4gws_create_delete_loop", "namespaces", "namespaces_loop", "mtls", "notify", "ceph_status", "blocklist", "main_exit", "listener_hostname", "cluster_pool", "flat_bdev_per_cluster", "set_qos", "set_qos_2ms", "rbd_qos", "auto_resize", "ns_read_only", "reuse_image", "reuse_image2", "image_shrink", "gateway_removal", "rados_namespace", "crc32c"]
+        test: ["sanity", "no_huge", "ns_lb_change", "no_subsystems", "auto_load_balance", "auto_listeners", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop", "late_registration", "late_registration_loop", "connect_panic", "4gws", "4gws_loop", "4gws_create_delete", "4gws_create_delete_loop", "namespaces", "namespaces_loop", "mtls", "notify", "ceph_status", "blocklist", "main_exit", "listener_hostname", "cluster_pool", "flat_bdev_per_cluster", "set_qos", "set_qos_2ms", "rbd_qos", "auto_resize", "ns_read_only", "reuse_image", "reuse_image2", "image_shrink", "gateway_removal", "rados_namespace", "crc32c", "keep_connection"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 1024  # 4 spdk instances

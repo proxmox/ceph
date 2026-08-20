@@ -3,9 +3,11 @@
 
 #include "mon/ConfigMonitor.h"
 #include "mon/Monitor.h"
+#include "mon/MonMap.h"
 #include "mon/KVMonitor.h"
 #include "mon/MgrMonitor.h"
 #include "mon/OSDMonitor.h"
+#include "mon/Paxos.h"
 #include "messages/MConfig.h"
 #include "messages/MGetConfig.h"
 #include "messages/MMonCommand.h"
@@ -16,6 +18,7 @@
 #include "crush/CrushWrapper.h"
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/algorithm/string/trim.hpp>
 
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
@@ -293,6 +296,7 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
   } else if (prefix == "config get") {
     string who, name;
     cmd_getval(cmdmap, "who", who);
+    boost::algorithm::trim(who);
 
     EntityName entity;
     if (!entity.from_str(who) &&

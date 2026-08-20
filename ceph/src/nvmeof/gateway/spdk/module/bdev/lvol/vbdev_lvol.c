@@ -620,7 +620,6 @@ vbdev_lvol_unregister(void *ctx)
 	assert(lvol != NULL);
 	lvol_bdev = SPDK_CONTAINEROF(lvol->bdev, struct lvol_bdev, bdev);
 
-	spdk_bdev_alias_del_all(lvol->bdev);
 	spdk_lvol_close(lvol, _vbdev_lvol_unregister_cb, lvol_bdev);
 
 	/* return 1 to indicate we have an operation that must finish asynchronously before the
@@ -1177,6 +1176,8 @@ _create_lvol_disk(struct spdk_lvol *lvol, bool destroy)
 	bdev->fn_table = &vbdev_lvol_fn_table;
 	bdev->module = &g_lvol_if;
 	bdev->phys_blocklen = lvol->lvol_store->bs_dev->phys_blocklen;
+
+	bdev->numa = lvs_bdev->bdev->numa;
 
 	/* Set default bdev reset waiting time. This value indicates how much
 	 * time a reset should wait before forcing a reset down to the underlying

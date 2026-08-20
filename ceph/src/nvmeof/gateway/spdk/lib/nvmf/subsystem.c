@@ -2,6 +2,7 @@
  *   Copyright (C) 2016 Intel Corporation. All rights reserved.
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 #include "spdk/stdinc.h"
@@ -337,6 +338,8 @@ _nvmf_subsystem_remove_listener(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_ctrlr *ctrlr;
 
 	if (stop) {
+		assert(nvmf_subsystem_listener_is_active(listener));
+
 		transport = spdk_nvmf_tgt_get_transport(subsystem->tgt, listener->trid->trstring);
 		if (transport != NULL) {
 			spdk_nvmf_transport_stop_listen(transport, listener->trid);
@@ -375,17 +378,11 @@ _nvmf_subsystem_destroy(struct spdk_nvmf_subsystem *subsystem)
 	struct spdk_nvmf_ns		*ns;
 	nvmf_subsystem_destroy_cb	async_destroy_cb = NULL;
 	void				*async_destroy_cb_arg = NULL;
-	int				rc;
 
 	if (!TAILQ_EMPTY(&subsystem->ctrlrs)) {
 		SPDK_DEBUGLOG(nvmf, "subsystem %p %s has active controllers\n", subsystem, subsystem->subnqn);
 		subsystem->async_destroy = true;
-		rc = spdk_thread_send_msg(subsystem->thread, _nvmf_subsystem_destroy_msg, subsystem);
-		if (rc) {
-			SPDK_ERRLOG("Failed to send thread msg, rc %d\n", rc);
-			assert(0);
-			return rc;
-		}
+		spdk_thread_send_msg(subsystem->thread, _nvmf_subsystem_destroy_msg, subsystem);
 		return -EINPROGRESS;
 	}
 
@@ -1365,12 +1362,31 @@ nvmf_subsystem_find_listener(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_subsystem_listener *listener;
 
 	TAILQ_FOREACH(listener, &subsystem->listeners, link) {
+		if (!nvmf_subsystem_listener_is_active(listener)) {
+			continue;
+		}
+
 		if (spdk_nvme_transport_id_compare(listener->trid, trid) == 0) {
 			return listener;
 		}
 	}
 
 	return NULL;
+}
+
+bool
+nvmf_subsystem_listener_is_active(const struct spdk_nvmf_subsystem_listener *listener)
+{
+	if (!listener) {
+		return false;
+	}
+
+	/* Listener was stopped. */
+	if (!listener->trid) {
+		return false;
+	}
+
+	return true;
 }
 
 /**
@@ -1383,27 +1399,34 @@ static void
 _nvmf_subsystem_add_listener_done(void *ctx, int status)
 {
 	struct spdk_nvmf_subsystem_listener *listener = ctx;
+	struct spdk_nvmf_subsystem *subsystem = listener->subsystem;
 
 	if (status) {
-		listener->cb_fn(listener->cb_arg, status);
-		free(listener);
-		return;
+		goto done;
 	}
 
-	TAILQ_INSERT_HEAD(&listener->subsystem->listeners, listener, link);
+	TAILQ_INSERT_HEAD(&subsystem->listeners, listener, link);
 
-	if (spdk_nvmf_subsystem_is_discovery(listener->subsystem)) {
-		status = nvmf_tgt_update_mdns_prr(listener->subsystem->tgt);
+	if (spdk_nvmf_subsystem_is_discovery(subsystem)) {
+		status = nvmf_tgt_update_mdns_prr(subsystem->tgt);
 		if (status) {
-			TAILQ_REMOVE(&listener->subsystem->listeners, listener, link);
-			listener->cb_fn(listener->cb_arg, status);
-			free(listener);
-			return;
+			TAILQ_REMOVE(&subsystem->listeners, listener, link);
+			goto done;
 		}
 	}
 
-	spdk_nvmf_send_discovery_log_notice(listener->subsystem->tgt, NULL);
+	SPDK_DTRACE_PROBE4(nvmf_subsystem_add_listener, subsystem->subnqn, listener->trid->trtype,
+			   listener->trid->traddr, listener->trid->trsvcid);
+
+	spdk_nvmf_send_discovery_log_notice(subsystem->tgt, NULL);
+
+done:
 	listener->cb_fn(listener->cb_arg, status);
+	if (status) {
+		free(listener->ana_state);
+		free(listener->opts.sock_impl);
+		free(listener);
+	}
 }
 
 void
@@ -1527,8 +1550,7 @@ _nvmf_subsystem_add_listener(struct spdk_nvmf_subsystem *subsystem,
 	listener->subsystem = subsystem;
 	listener->ana_state = calloc(subsystem->max_nsid, sizeof(enum spdk_nvme_ana_state));
 	if (!listener->ana_state) {
-		free(listener);
-		cb_fn(cb_arg, -ENOMEM);
+		_nvmf_subsystem_add_listener_done(listener, -ENOMEM);
 		return;
 	}
 
@@ -1537,9 +1559,7 @@ _nvmf_subsystem_add_listener(struct spdk_nvmf_subsystem *subsystem,
 		rc = listener_opts_copy(opts, &listener->opts);
 		if (rc) {
 			SPDK_ERRLOG("Unable to copy listener options\n");
-			free(listener->ana_state);
-			free(listener);
-			cb_fn(cb_arg, -EINVAL);
+			_nvmf_subsystem_add_listener_done(listener, -EINVAL);
 			return;
 		}
 	}
@@ -1547,10 +1567,7 @@ _nvmf_subsystem_add_listener(struct spdk_nvmf_subsystem *subsystem,
 	id = spdk_bit_array_find_first_clear(subsystem->used_listener_ids, 0);
 	if (id == UINT32_MAX) {
 		SPDK_ERRLOG("Cannot add any more listeners\n");
-		free(listener->ana_state);
-		free(listener->opts.sock_impl);
-		free(listener);
-		cb_fn(cb_arg, -EINVAL);
+		_nvmf_subsystem_add_listener_done(listener, -EINVAL);
 		return;
 	}
 
@@ -1563,10 +1580,10 @@ _nvmf_subsystem_add_listener(struct spdk_nvmf_subsystem *subsystem,
 
 	if (transport->ops->listen_associate != NULL) {
 		rc = transport->ops->listen_associate(transport, subsystem, trid);
+		if (rc) {
+			SPDK_ERRLOG("Associate listener for transport %s failed with rc:%d\n", trid->trstring, rc);
+		}
 	}
-
-	SPDK_DTRACE_PROBE4(nvmf_subsystem_add_listener, subsystem->subnqn, listener->trid->trtype,
-			   listener->trid->traddr, listener->trid->trsvcid);
 
 	_nvmf_subsystem_add_listener_done(listener, rc);
 }
@@ -1631,6 +1648,10 @@ spdk_nvmf_subsystem_listener_allowed(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_subsystem_listener *listener;
 
 	TAILQ_FOREACH(listener, &subsystem->listeners, link) {
+		if (!nvmf_subsystem_listener_is_active(listener)) {
+			continue;
+		}
+
 		if (spdk_nvme_transport_id_compare(listener->trid, trid) == 0) {
 			return true;
 		}
@@ -1680,7 +1701,7 @@ spdk_nvmf_subsystem_any_listener_allowed(struct spdk_nvmf_subsystem *subsystem)
 	return subsystem->flags.allow_any_listener;
 }
 
-int
+void
 nvmf_subsystem_poll_group_update_ns_reservation(const struct spdk_nvmf_ns *ns,
 		struct spdk_nvmf_subsystem_pg_ns_info *pg_ns)
 {
@@ -1700,67 +1721,168 @@ nvmf_subsystem_poll_group_update_ns_reservation(const struct spdk_nvmf_ns *ns,
 	TAILQ_FOREACH(reg, &ns->registrants, link) {
 		if (j >= SPDK_NVMF_MAX_NUM_REGISTRANTS) {
 			SPDK_ERRLOG("Maximum %u registrants can support.\n", SPDK_NVMF_MAX_NUM_REGISTRANTS);
-			return -EINVAL;
+			/* This should never happen as we enforce SPDK_NVMF_MAX_NUM_REGISTRANTS
+			 * on ns->registrants, but we don't want to continue with poll groups
+			 * missing registrants.
+			 */
+			abort();
 		}
 		pg_ns->reg_hostid[j++] = reg->hostid;
 	}
-	return 0;
 }
 
-struct subsystem_update_ns_ctx {
-	struct spdk_nvmf_subsystem *subsystem;
-
-	spdk_nvmf_subsystem_state_change_done cb_fn;
-	void *cb_arg;
-};
-
-static void
-subsystem_update_ns_done(struct spdk_io_channel_iter *i, int status)
+static bool
+ns_reservation_hostid_list_contains_id(const struct spdk_uuid *hostid_list, uint32_t num_hostid,
+				       const struct spdk_uuid *id)
 {
-	struct subsystem_update_ns_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
+	size_t i;
 
-	if (ctx->cb_fn) {
-		ctx->cb_fn(ctx->subsystem, ctx->cb_arg, status);
+	for (i = 0; i < num_hostid; i++) {
+		if (!spdk_uuid_compare(&hostid_list[i], id)) {
+			return true;
+		}
 	}
-	free(ctx);
+	return false;
+}
+
+static bool
+ns_reservation_io_should_wait(const struct spdk_nvme_cmd *cmd)
+{
+	switch (cmd->opc) {
+	/* We don't wait on reservation commands that modify state because
+	 * those are serialized and will cause a deadlock.
+	 */
+	case SPDK_NVME_OPC_RESERVATION_REGISTER:
+	case SPDK_NVME_OPC_RESERVATION_ACQUIRE:
+	case SPDK_NVME_OPC_RESERVATION_RELEASE:
+		return false;
+	default:
+		return true;
+	}
+}
+
+static bool
+ns_reservation_req_is_preempt_abort(const struct spdk_nvmf_request *req)
+{
+	const struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+
+	return cmd->opc == SPDK_NVME_OPC_RESERVATION_ACQUIRE &&
+	       cmd->cdw10_bits.resv_acquire.racqa == SPDK_NVME_RESERVE_PREEMPT_ABORT;
 }
 
 static void
-subsystem_update_ns_on_pg(struct spdk_io_channel_iter *i)
+poll_group_reservation_build_io_waiting(const struct spdk_nvmf_poll_group *group,
+					const struct spdk_nvmf_subsystem *subsystem, const struct spdk_nvmf_ns *ns,
+					const struct spdk_nvmf_request *req, struct spdk_nvmf_subsystem_pg_ns_info *pg_ns)
 {
-	int rc;
-	struct subsystem_update_ns_ctx *ctx;
+	struct spdk_nvmf_qpair *qpair;
+	struct spdk_nvmf_request *q_req;
+	struct spdk_nvmf_reservation_preempt_abort_info *p_info = ns->preempt_abort;
+	const struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	bool hostid_match;
+
+	pg_ns->preempt_abort.io_waiting = 0;
+	if (!p_info->hostids_cnt) {
+		/* no preempted hostids */
+		return;
+	}
+	TAILQ_FOREACH(qpair, &group->qpairs, link) {
+		if (!qpair->ctrlr || qpair->ctrlr->subsys != subsystem) {
+			continue;
+		}
+		hostid_match = ns_reservation_hostid_list_contains_id(p_info->hostids,
+				p_info->hostids_cnt, &qpair->ctrlr->hostid);
+		if (!hostid_match) {
+			continue;
+		}
+
+		/* This is a preempted controller, check for IOs on the same namespace */
+		TAILQ_FOREACH(q_req, &qpair->outstanding, link) {
+			struct spdk_nvme_cmd *req_cmd = &q_req->cmd->nvme_cmd;
+			if (req_cmd->nsid == cmd->nsid && ns_reservation_io_should_wait(req_cmd)) {
+				pg_ns->preempt_abort.io_waiting++;
+				q_req->reservation_waiting = 1;
+			}
+		}
+	}
+}
+
+static void
+poll_group_reservation_preempt_abort_process(struct spdk_nvmf_poll_group *group,
+		struct spdk_nvmf_ns *ns, struct spdk_nvmf_subsystem_pg_ns_info *pg_ns)
+{
+	struct spdk_nvmf_request *req;
+
+	/* Check for in-progress reservations to process */
+	if (STAILQ_EMPTY(&ns->reservations)) {
+		return;
+	}
+	req = STAILQ_FIRST(&ns->reservations);
+	/* Check if this is a preempt-and-abort cmd */
+	if (!ns_reservation_req_is_preempt_abort(req)) {
+		return;
+	}
+
+	/* Ensure we have not already processed this */
+	if (ns->preempt_abort->hostids_gen == pg_ns->preempt_abort.hostids_gen) {
+		SPDK_ERRLOG("Poll group: %p already processed preempt hostids: %u\n",
+			    group, ns->preempt_abort->hostids_gen);
+		return;
+	}
+
+	if (pg_ns->preempt_abort.io_waiting) {
+		/* This could happen if a previous preempt-and-abort failed before
+		 * completing the IO waiting. Don't let this block the next abort
+		 */
+		SPDK_ERRLOG("Poll group: %p has incomplete preempted io waiting: %lu\n",
+			    group, pg_ns->preempt_abort.io_waiting);
+	}
+
+	poll_group_reservation_build_io_waiting(group, ns->subsystem, ns, req, pg_ns);
+	/* Commit gen as processed */
+	pg_ns->preempt_abort.hostids_gen = ns->preempt_abort->hostids_gen;
+}
+
+static void _nvmf_ns_reservation_update_done(struct spdk_nvmf_subsystem *subsystem,
+		void *cb_arg, int status);
+
+static void
+ns_reservation_pg_update_done(struct spdk_io_channel_iter *i, int status)
+{
+	struct spdk_nvmf_ns *ns = (struct spdk_nvmf_ns *)spdk_io_channel_iter_get_ctx(i);
+
+	if (status) {
+		SPDK_ERRLOG("Poll group reservation updated failed on subsystem: %p, ns: %u\n",
+			    ns->subsystem, ns->nsid);
+		/*
+		 * Errors paths have been eliminated for this poll group update, so
+		 * this should never happen but if it does, that means the poll group
+		 * reservation state is inconsistent and it's not safe to continue!!
+		 */
+		abort();
+	}
+
+	_nvmf_ns_reservation_update_done(ns->subsystem,
+					 STAILQ_FIRST(&ns->reservations), 0);
+}
+
+static void
+ns_reservation_pg_update(struct spdk_io_channel_iter *i)
+{
+	struct spdk_nvmf_ns *ns;
 	struct spdk_nvmf_poll_group *group;
-	struct spdk_nvmf_subsystem *subsystem;
+	struct spdk_nvmf_subsystem_poll_group *sgroup;
+	struct spdk_nvmf_subsystem_pg_ns_info *pg_ns;
 
-	ctx = spdk_io_channel_iter_get_ctx(i);
+	ns = spdk_io_channel_iter_get_ctx(i);
 	group = spdk_io_channel_get_ctx(spdk_io_channel_iter_get_channel(i));
-	subsystem = ctx->subsystem;
+	sgroup = &group->sgroups[ns->subsystem->id];
+	pg_ns = &sgroup->ns_info[ns->nsid - 1];
 
-	rc = nvmf_poll_group_update_subsystem(group, subsystem);
-	spdk_for_each_channel_continue(i, rc);
-}
+	nvmf_subsystem_poll_group_update_ns_reservation(ns, pg_ns);
+	poll_group_reservation_preempt_abort_process(group, ns, pg_ns);
 
-static int
-nvmf_subsystem_update_ns(struct spdk_nvmf_subsystem *subsystem,
-			 spdk_nvmf_subsystem_state_change_done cb_fn, void *cb_arg)
-{
-	struct subsystem_update_ns_ctx *ctx;
-
-	ctx = calloc(1, sizeof(*ctx));
-	if (ctx == NULL) {
-		SPDK_ERRLOG("Can't alloc subsystem poll group update context\n");
-		return -ENOMEM;
-	}
-	ctx->subsystem = subsystem;
-	ctx->cb_fn = cb_fn;
-	ctx->cb_arg = cb_arg;
-
-	spdk_for_each_channel(subsystem->tgt,
-			      subsystem_update_ns_on_pg,
-			      ctx,
-			      subsystem_update_ns_done);
-	return 0;
+	spdk_for_each_channel_continue(i, 0);
 }
 
 static void
@@ -1813,6 +1935,7 @@ spdk_nvmf_subsystem_remove_ns(struct spdk_nvmf_subsystem *subsystem, uint32_t ns
 	}
 
 	free(ns->ptpl_file);
+	free(ns->preempt_abort);
 	nvmf_ns_reservation_clear_all_registrants(ns);
 	spdk_bdev_module_release_bdev(ns->bdev);
 	spdk_bdev_close(ns->desc);
@@ -2972,7 +3095,11 @@ nvmf_ns_update_reservation_info(struct spdk_nvmf_ns *ns)
 			info.registrants[i++].rkey = reg->rkey;
 		} else {
 			SPDK_ERRLOG("More registrants that can fit into reservation info, truncating\n");
-			break;
+			/* This should never happen as we enforce SPDK_NVMF_MAX_NUM_REGISTRANTS
+			 * on ns->registrants. We don't want to continue with missing registrants
+			 * from the ptpl state.
+			 */
+			abort();
 		}
 	}
 
@@ -2980,6 +3107,18 @@ nvmf_ns_update_reservation_info(struct spdk_nvmf_ns *ns)
 	info.ptpl_activated = ns->ptpl_activated;
 
 	return nvmf_ns_reservation_update(ns, &info);
+}
+
+size_t
+nvmf_ns_registrants_get_count(const struct spdk_nvmf_ns *ns)
+{
+	size_t count = 0;
+	struct spdk_nvmf_registrant *reg;
+
+	TAILQ_FOREACH(reg, &ns->registrants, link) {
+		count++;
+	}
+	return count;
 }
 
 static struct spdk_nvmf_registrant *
@@ -3109,6 +3248,11 @@ nvmf_ns_reservation_add_registrant(struct spdk_nvmf_ns *ns,
 {
 	struct spdk_nvmf_registrant *reg;
 
+	if (nvmf_ns_registrants_get_count(ns) >= SPDK_NVMF_MAX_NUM_REGISTRANTS) {
+		SPDK_ERRLOG("Registrant list full on subsystem: %p, nsid: %u\n", ns->subsystem, ns->nsid);
+		return -ENOMEM;
+	}
+
 	reg = calloc(1, sizeof(*reg));
 	if (!reg) {
 		return -ENOMEM;
@@ -3180,6 +3324,19 @@ nvmf_ns_reservation_remove_registrants_by_key(struct spdk_nvmf_ns *ns,
 		}
 	}
 	return count;
+}
+
+static void
+nvmf_ns_reservation_remove_other_registrants_by_key(struct spdk_nvmf_ns *ns,
+		uint64_t rkey, const struct spdk_nvmf_registrant *reg)
+{
+	struct spdk_nvmf_registrant *reg_tmp, *reg_tmp2;
+
+	TAILQ_FOREACH_SAFE(reg_tmp, &ns->registrants, link, reg_tmp2) {
+		if (reg_tmp->rkey == rkey && reg != reg_tmp) {
+			nvmf_ns_reservation_remove_registrant(ns, reg_tmp);
+		}
+	}
 }
 
 static uint32_t
@@ -3342,6 +3499,9 @@ nvmf_ns_reservation_register(struct spdk_nvmf_ns *ns,
 				goto exit;
 			}
 			reg->rkey = key.nrkey;
+			if (nvmf_ns_reservation_registrant_is_holder(ns, reg)) {
+				ns->crkey = key.nrkey;
+			}
 		} else if (iekey) { /* No registrant but IEKEY is set */
 			/* new registrant */
 			rc = nvmf_ns_reservation_add_registrant(ns, ctrlr, key.nrkey);
@@ -3385,6 +3545,8 @@ nvmf_ns_reservation_acquire(struct spdk_nvmf_ns *ns,
 	struct spdk_uuid new_hostid_list[SPDK_NVMF_MAX_NUM_REGISTRANTS];
 	uint32_t new_num_hostid = 0;
 	bool reservation_released = false;
+	bool is_preempt = false;
+	bool is_abort = false;
 	uint8_t status = SPDK_NVME_SC_SUCCESS;
 
 	racqa = cmd->cdw10_bits.resv_acquire.racqa;
@@ -3442,15 +3604,33 @@ nvmf_ns_reservation_acquire(struct spdk_nvmf_ns *ns,
 		}
 		break;
 	case SPDK_NVME_RESERVE_PREEMPT:
+	case SPDK_NVME_RESERVE_PREEMPT_ABORT:
+		is_preempt = true;
+		is_abort = (racqa == SPDK_NVME_RESERVE_PREEMPT_ABORT);
+
+		/* Allocate memory for performing preempt-and-abort on first abort received */
+		if (is_abort && !ns->preempt_abort) {
+			ns->preempt_abort = calloc(1, sizeof(*ns->preempt_abort));
+			if (!ns->preempt_abort) {
+				status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+				update_sgroup = false;
+				goto exit;
+			}
+		}
+
+		/* Build copy of current other hosts so we can generate a delta
+		 * of registrants removed due to the prempt.
+		 */
+		num_hostid = nvmf_ns_reservation_get_all_other_hostid(ns, hostid_list,
+				SPDK_NVMF_MAX_NUM_REGISTRANTS,
+				&ctrlr->hostid);
+
 		/* no reservation holder */
 		if (!ns->holder) {
 			/* unregister with PRKEY */
 			nvmf_ns_reservation_remove_registrants_by_key(ns, key.prkey);
 			break;
 		}
-		num_hostid = nvmf_ns_reservation_get_all_other_hostid(ns, hostid_list,
-				SPDK_NVMF_MAX_NUM_REGISTRANTS,
-				&ctrlr->hostid);
 
 		/* only 1 reservation holder and reservation key is valid */
 		if (!all_regs) {
@@ -3463,7 +3643,7 @@ nvmf_ns_reservation_acquire(struct spdk_nvmf_ns *ns,
 			}
 
 			if (ns->crkey == key.prkey) {
-				nvmf_ns_reservation_remove_registrant(ns, ns->holder);
+				nvmf_ns_reservation_remove_other_registrants_by_key(ns, key.prkey, reg);
 				nvmf_ns_reservation_acquire_reservation(ns, key.crkey, rtype, reg);
 				reservation_released = true;
 			} else if (key.prkey != 0) {
@@ -3498,7 +3678,7 @@ nvmf_ns_reservation_acquire(struct spdk_nvmf_ns *ns,
 	}
 
 exit:
-	if (update_sgroup && racqa == SPDK_NVME_RESERVE_PREEMPT) {
+	if (update_sgroup && is_preempt) {
 		new_num_hostid = nvmf_ns_reservation_get_all_other_hostid(ns, new_hostid_list,
 				 SPDK_NVMF_MAX_NUM_REGISTRANTS,
 				 &ctrlr->hostid);
@@ -3526,6 +3706,19 @@ exit:
 							      new_num_hostid,
 							      SPDK_NVME_RESERVATION_RELEASED);
 
+		}
+
+		/* For Preempt-and-abort copy the hostids for evaluation
+		 * of outstanding IO on those controllers on each poll group */
+		if (is_abort) {
+			struct spdk_nvmf_reservation_preempt_abort_info *p_info = ns->preempt_abort;
+			assert(num_hostid <= SPDK_NVMF_MAX_NUM_REGISTRANTS);
+			memcpy(p_info->hostids, hostid_list,
+			       sizeof(struct spdk_uuid) * num_hostid);
+			p_info->hostids_cnt = (uint8_t)num_hostid;
+			p_info->hostids_gen++;
+			p_info->io_waiting_done = false;
+			p_info->io_waiting_timeout_ticks = 0;
 		}
 	}
 	req->rsp->nvme_cpl.status.sct = SPDK_NVME_SCT_GENERIC;
@@ -3717,6 +3910,132 @@ nvmf_ns_reservation_complete(void *ctx)
 }
 
 static void
+ns_reservation_pg_io_wait_check(struct spdk_io_channel_iter *i)
+{
+	struct spdk_nvmf_ns *ns;
+	struct spdk_nvmf_poll_group *group;
+	struct spdk_nvmf_subsystem_poll_group *sgroup;
+	struct spdk_nvmf_subsystem_pg_ns_info *pg_ns;
+
+	ns = spdk_io_channel_iter_get_ctx(i);
+	group = spdk_io_channel_get_ctx(spdk_io_channel_iter_get_channel(i));
+	sgroup = &group->sgroups[ns->subsystem->id];
+	pg_ns = &sgroup->ns_info[ns->nsid - 1];
+
+	/* Pass io_waiting count as result, this will provide the following:
+	 *	1) If non-zero, this will immedately end the channel walk
+	 *	2) If zero, this will continue to next pg to check their io_waiting.
+	 *	3) If last pg reports 0, all IO waiting is done and completion is
+	 *	called with 0
+	 */
+	spdk_for_each_channel_continue(i, pg_ns->preempt_abort.io_waiting);
+}
+
+static void ns_reservation_sched_next_io_wait_check(struct spdk_nvmf_ns *ns);
+
+static void
+ns_reservation_pg_io_wait_check_done(struct spdk_io_channel_iter *i, int status)
+{
+	struct spdk_nvmf_ns *ns = spdk_io_channel_iter_get_ctx(i);
+
+	if (!status) {
+		SPDK_DEBUGLOG(nvmf, "subsystem: %p, nsid: %u done waiting on IOs\n",
+			      ns->subsystem, ns->nsid);
+		ns->preempt_abort->io_waiting_done = true;
+		_nvmf_ns_reservation_update_done(ns->subsystem,
+						 STAILQ_FIRST(&ns->reservations), 0);
+	} else {
+		SPDK_DEBUGLOG(nvmf, "subsystem: %p, nsid: %u still waiting on %i IOs\n",
+			      ns->subsystem, ns->nsid, status);
+		ns_reservation_sched_next_io_wait_check(ns);
+	}
+}
+
+static void
+ns_reservation_pg_io_wait_clear_done(struct spdk_io_channel_iter *i, int status)
+{
+	struct spdk_nvmf_ns *ns = (struct spdk_nvmf_ns *)spdk_io_channel_iter_get_ctx(i);
+	/* If we entered this function we are always timed out */
+	_nvmf_ns_reservation_update_done(ns->subsystem,
+					 STAILQ_FIRST(&ns->reservations), -ETIMEDOUT);
+}
+
+static void
+ns_reservation_pg_io_wait_clear(struct spdk_io_channel_iter *i)
+{
+	struct spdk_nvmf_ns *ns = (struct spdk_nvmf_ns *)spdk_io_channel_iter_get_ctx(i);
+	struct spdk_nvmf_poll_group *group = spdk_io_channel_get_ctx(spdk_io_channel_iter_get_channel(i));
+	struct spdk_nvmf_request *q_req;
+	struct spdk_nvmf_qpair *qpair;
+	struct spdk_nvmf_reservation_preempt_abort_info *p_info = ns->preempt_abort;
+	bool hostid_match;
+
+	TAILQ_FOREACH(qpair, &group->qpairs, link) {
+		if (!qpair->ctrlr || qpair->ctrlr->subsys != ns->subsystem) {
+			continue;
+		}
+		hostid_match = ns_reservation_hostid_list_contains_id(p_info->hostids,
+				p_info->hostids_cnt, &qpair->ctrlr->hostid);
+		if (!hostid_match) {
+			continue;
+		}
+		TAILQ_FOREACH(q_req, &qpair->outstanding, link) {
+			struct spdk_nvme_cmd *req_cmd = &q_req->cmd->nvme_cmd;
+			if (req_cmd->nsid == ns->nsid && q_req->reservation_waiting) {
+				q_req->reservation_waiting = 0;
+			}
+		}
+	}
+	spdk_for_each_channel_continue(i, 0);
+}
+
+static int
+ns_reservation_next_io_wait_check(void *ctx)
+{
+	struct spdk_nvmf_ns *ns = (struct spdk_nvmf_ns *)ctx;
+	struct spdk_nvmf_reservation_preempt_abort_info *p_info = ns->preempt_abort;
+
+	/* this should not be running if io_waiting is complete */
+	assert(!p_info->io_waiting_done);
+
+	if (spdk_get_ticks() < p_info->io_waiting_timeout_ticks) {
+		/* Start a poll group check */
+		spdk_for_each_channel(ns->subsystem->tgt,
+				      ns_reservation_pg_io_wait_check,
+				      ns,
+				      ns_reservation_pg_io_wait_check_done);
+	} else {
+		/* If the cmd timed out we call update_done during cleanup */
+		spdk_for_each_channel(ns->subsystem->tgt,
+				      ns_reservation_pg_io_wait_clear,
+				      ns,
+				      ns_reservation_pg_io_wait_clear_done);
+	}
+
+	spdk_poller_unregister(&p_info->io_waiting_timer);
+	return SPDK_POLLER_BUSY;
+}
+
+#define NS_RESERVATION_IO_WAIT_CHECK_INTERVAL 100
+#define NS_RESERVATION_IO_WAIT_TIMEOUT_S 10
+static void
+ns_reservation_sched_next_io_wait_check(struct spdk_nvmf_ns *ns)
+{
+	struct spdk_nvmf_reservation_preempt_abort_info *p_info = ns->preempt_abort;
+	assert(p_info);
+	assert(p_info->io_waiting_timer == NULL);
+
+	/* First time scheduling, calculate a total timeout */
+	if (!p_info->io_waiting_timeout_ticks) {
+		p_info->io_waiting_timeout_ticks = spdk_get_ticks() +
+						   NS_RESERVATION_IO_WAIT_TIMEOUT_S * spdk_get_ticks_hz();
+	}
+	/* We use a poller as a one-shot timer for next check */
+	p_info->io_waiting_timer =
+		SPDK_POLLER_REGISTER(ns_reservation_next_io_wait_check, ns, NS_RESERVATION_IO_WAIT_CHECK_INTERVAL);
+}
+
+static void
 _nvmf_ns_reservation_update_done(struct spdk_nvmf_subsystem *subsystem,
 				 void *cb_arg, int status)
 {
@@ -3737,8 +4056,12 @@ _nvmf_ns_reservation_update_done(struct spdk_nvmf_subsystem *subsystem,
 			SPDK_ERRLOG("ns_reservation failed internal device error\n");
 			req->rsp->nvme_cpl.status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 			break;
+		case -ETIMEDOUT:
+			SPDK_ERRLOG("ns_reservation failed due to time out: %i\n", status);
+			req->rsp->nvme_cpl.status.sc = SPDK_NVME_SC_COMMAND_INTERRUPTED;
+			break;
 		default:
-			SPDK_ERRLOG("ns_reservation failed unknown error\n");
+			SPDK_ERRLOG("ns_reservation failed unknown error: %i\n", status);
 			req->rsp->nvme_cpl.status.sc = SPDK_NVME_SC_UNRECOVERED_ERROR;
 			break;
 		}
@@ -3751,6 +4074,15 @@ _nvmf_ns_reservation_update_done(struct spdk_nvmf_subsystem *subsystem,
 	/* sanity check: this req should be head of outstanding */
 	assert(req->reservation_queued == true);
 	assert(req == STAILQ_FIRST(&ns->reservations));
+
+	if (!status && ns_reservation_req_is_preempt_abort(req) && !ns->preempt_abort->io_waiting_done) {
+		/* Check for io_waiting completion */
+		spdk_for_each_channel(ns->subsystem->tgt,
+				      ns_reservation_pg_io_wait_check,
+				      ns,
+				      ns_reservation_pg_io_wait_check_done);
+		return;
+	}
 
 	/* req is complete, remove from queue and continue if there's others */
 	STAILQ_REMOVE_HEAD(&ns->reservations, reservation_link);
@@ -3808,10 +4140,11 @@ nvmf_ns_reservation_update_state(struct spdk_nvmf_ns *ns,
 				req->rsp->nvme_cpl.status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 			}
 		}
-		status = nvmf_subsystem_update_ns(ctrlr->subsys, _nvmf_ns_reservation_update_done, req);
-		if (status == 0) {
-			return;
-		}
+		spdk_for_each_channel(ns->subsystem->tgt,
+				      ns_reservation_pg_update,
+				      ns,
+				      ns_reservation_pg_update_done);
+		return;
 	}
 
 	_nvmf_ns_reservation_update_done(ctrlr->subsys, req, status);
@@ -3859,6 +4192,22 @@ bool
 nvmf_ns_is_ptpl_capable(const struct spdk_nvmf_ns *ns)
 {
 	return g_reservation_ops.is_ptpl_capable(ns);
+}
+
+struct spdk_nvme_rescap
+nvmf_ns_get_rescap(struct spdk_nvmf_ns *ns)
+{
+	struct spdk_nvme_rescap rescap = {
+		.ptpls = nvmf_ns_is_ptpl_capable(ns),
+		.wes = 1,
+		.eas = 1,
+		.weros = 1,
+		.earos = 1,
+		.wears = 1,
+		.eaars = 1,
+		.ieks = 1,
+	};
+	return rescap;
 }
 
 static int

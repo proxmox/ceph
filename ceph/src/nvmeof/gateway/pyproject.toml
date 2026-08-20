@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "ceph-nvmeof"
-version = "1.7.2"
+version = "1.8.2"
 description = "Service to provide Ceph storage over NVMe-oF protocol"
 readme = "README.md"
 requires-python = ">3.9.1"
@@ -23,14 +23,14 @@ maintainers = []
 keywords = []
 classifiers = [] # https://pypi.org/classifiers/
 dependencies = [
-    "grpcio ~= 1.53.0",
-    "grpcio_tools ~= 1.53.0",
+    "grpcio ~= 1.62.0",
+    "grpcio_tools ~= 1.62.0",
     "tabulate>=0.9.0",
     "pyyaml>=6.0.1",
     "prometheus_client ~= 0.19.0",
     "netifaces ~= 0.11.0",
     "cryptography>=43.0.3",
-    "PyKMIP",
+    "PyKMIP @ git+https://github.com/ceph/PyKMIP.git@5b6d6164a78e92d620270fdfa253fb1a188b59ff",
     "setuptools<82.0.0",
 ]
 

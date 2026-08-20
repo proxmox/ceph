@@ -25,11 +25,18 @@ if [[ $(uname -s) == Darwin ]]; then
 		echo "Please install GNU grep"
 		exit 1
 	fi
+	if ! hash gpatch 2> /dev/null; then
+		# We need GNU patch for --merge option
+		echo "Please install GNU patch"
+		exit 1
+	fi
 	GNU_READLINK="greadlink"
 	GNU_GREP="ggrep"
+	GNU_PATCH="gpatch"
 else
 	GNU_READLINK="readlink"
 	GNU_GREP="grep"
+	GNU_PATCH="patch"
 fi
 
 rootdir=$($GNU_READLINK -f "$(dirname "$0")")/..
@@ -464,29 +471,36 @@ function check_attr_packed() {
 function check_python_style() {
 	local rc=0
 
-	if hash pycodestyle 2> /dev/null; then
-		PEP8=pycodestyle
-	elif hash pep8 2> /dev/null; then
-		PEP8=pep8
+	if hash ruff 2> /dev/null; then
+		echo -n "Linting Python with ruff..."
+		if out=$(ruff --config "$rootdir/python/pyproject.toml" check 2>&1); then
+			echo " OK"
+		else
+			cat <<- WARN
+				Python formatting errors detected.
+
+				$out
+			WARN
+			rc=1
+		fi
+	else
+		echo "You do not have ruff installed, so ruff style will not be checked!"
 	fi
 
-	if [ -n "${PEP8}" ]; then
-		echo -n "Checking Python style..."
-
-		PEP8_ARGS=" --max-line-length=140"
-
-		error=0
-		git ls-files '*.py' | xargs -P$(nproc) -n1 $PEP8 $PEP8_ARGS > pep8.log || error=1
-		if [ $error -ne 0 ]; then
-			echo " Python formatting errors detected"
-			cat pep8.log
-			rc=1
-		else
+	if hash mypy 2> /dev/null; then
+		echo -n "Performing static type checking with mypy..."
+		if out=$(mypy --config-file "$rootdir/python/pyproject.toml" python 2>&1); then
 			echo " OK"
+		else
+			cat <<- WARN
+				Python formatting errors detected.
+
+				$out
+			WARN
+			rc=1
 		fi
-		rm -f pep8.log
 	else
-		echo "You do not have pycodestyle or pep8 installed so your Python style is not being checked!"
+		echo "You do not have mypy installed, so mypy style will not be checked!"
 	fi
 
 	return $rc
@@ -566,7 +580,7 @@ function check_bash_style() {
 				# its stderr, hence the diff file should remain empty.
 				rc=1
 				if [[ -s $diff ]]; then
-					if patch --merge -p0 < "$diff"; then
+					if $GNU_PATCH --merge -p0 < "$diff"; then
 						diff_out=$(git diff)
 
 						if [[ -n $diff_out ]]; then
@@ -757,19 +771,23 @@ function check_json_rpc() {
 }
 
 function check_markdown_format() {
-	local rc=0
+	local rc=0 md_files=()
+
+	mapfile -t md_files < <(git ls-files '*.md')
+	mapfile -t md_files < <(get_diffed_dups "${md_files[@]}")
+
+	((${#md_files[@]} > 0)) || return 0
 
 	if hash mdl 2> /dev/null; then
 		echo -n "Checking markdown files format..."
-		mdl -g -s $rootdir/mdl_rules.rb . > mdl.log || true
-		if [ -s mdl.log ]; then
+		local mdl_log
+		if ! mdl_log=$(mdl -s "$rootdir/mdl_rules.rb" "${md_files[@]}" 2>&1); then
 			echo " Errors in .md files detected:"
-			cat mdl.log
+			echo "$mdl_log"
 			rc=1
 		else
 			echo " OK"
 		fi
-		rm -f mdl.log
 	else
 		echo "You do not have markdownlint installed so .md files not being checked!"
 	fi
@@ -781,12 +799,27 @@ function check_rpc_args() {
 	local rc=0
 
 	echo -n "Checking rpc.py argument option names..."
-	grep add_argument scripts/rpc.py | $GNU_GREP -oP "(?<=--)[a-z0-9\-\_]*(?=\')" | grep "_" > badargs.log
+	grep add_argument scripts/rpc.py python/spdk/cli/*.py | $GNU_GREP -oP "(?<=--)[a-z0-9\-_]*(?=['\"])" | grep "_" > badargs.log
 
 	if [[ -s badargs.log ]]; then
 		echo "rpc.py arguments with underscores detected!"
 		cat badargs.log
 		echo "Please convert the underscores to dashes."
+		rc=1
+	else
+		echo " OK"
+	fi
+	rm -f badargs.log
+	return $rc
+}
+
+function check_rpc_schema() {
+	local rc=0
+
+	echo -n "Linting Schema RPCs and documentation..."
+	if ! python "$rootdir"/scripts/genrpc.py --schema "$rootdir"/schema/schema.json > badargs.log 2>&1; then
+		echo "Found bogus JSON in doc/jsonrpc.md.jinja2"
+		cat badargs.log
 		rc=1
 	else
 		echo " OK"
@@ -909,7 +942,20 @@ function check_extern_c() {
 	printf 'OK\n'
 }
 
+check_list() { compgen -A function | grep "^check_" | sort; }
+
+user_checkers() {
+	eval "$(comm -12 \
+		<(printf '%s\n' "$@" | sort) \
+		<(check_list))" || return 1
+}
+
 rc=0
+
+if (($#)); then
+	user_checkers "$@" || rc=1
+	exit $rc
+fi
 
 check_permissions || rc=1
 check_c_style || rc=1
@@ -940,6 +986,7 @@ check_bash_static_analysis || rc=1
 check_changelog || rc=1
 check_json_rpc || rc=1
 check_rpc_args || rc=1
+check_rpc_schema || rc=1
 check_spdx_lic || rc=1
 check_golang_style || rc=1
 check_extern_c || rc=1

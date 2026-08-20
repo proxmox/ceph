@@ -2,6 +2,7 @@
  *   Copyright (C) 2016 Intel Corporation. All rights reserved.
  *   Copyright (c) 2018-2019, 2021 Mellanox Technologies LTD. All rights reserved.
  *   Copyright (c) 2021, 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 #include "spdk/stdinc.h"
@@ -24,6 +25,8 @@ SPDK_LOG_REGISTER_COMPONENT(io_cancel)
 #define SPDK_NVMF_DEFAULT_MAX_SUBSYSTEMS 1024
 
 static TAILQ_HEAD(, spdk_nvmf_tgt) g_nvmf_tgts = TAILQ_HEAD_INITIALIZER(g_nvmf_tgts);
+
+spdk_nvmf_custom_discovery_filter g_custom_discovery_filter;
 
 typedef void (*nvmf_qpair_disconnect_cpl)(void *ctx, int status);
 
@@ -69,6 +72,8 @@ spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
 	struct spdk_nvmf_referral_opts opts = {};
 	struct spdk_nvme_transport_id *trid = &opts.trid;
 
+	assert(spdk_thread_is_app_thread(NULL));
+
 	memcpy(&opts, uopts, spdk_min(uopts->size, sizeof(opts)));
 	if (trid->subnqn[0] == '\0') {
 		snprintf(trid->subnqn, sizeof(trid->subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
@@ -90,6 +95,7 @@ spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
 		return -ENOMEM;
 	}
 
+	referral->tgt = tgt;
 	referral->entry.subtype = nvmf_nqn_is_discovery(trid->subnqn) ?
 				  SPDK_NVMF_SUBTYPE_DISCOVERY :
 				  SPDK_NVMF_SUBTYPE_NVME;
@@ -104,10 +110,22 @@ spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
 	spdk_strcpy_pad(referral->entry.trsvcid, trid->trsvcid, sizeof(referral->entry.trsvcid), ' ');
 	spdk_strcpy_pad(referral->entry.traddr, trid->traddr, sizeof(referral->entry.traddr), ' ');
 
+	referral->allow_any_host = opts.allow_any_host;
+	TAILQ_INIT(&referral->hosts);
+
 	TAILQ_INSERT_HEAD(&tgt->referrals, referral, link);
 	spdk_nvmf_send_discovery_log_notice(tgt, NULL);
 
 	return 0;
+}
+
+static void
+nvmf_referral_remove_host(struct spdk_nvmf_referral *referral, struct spdk_nvmf_host *host)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+
+	TAILQ_REMOVE(&referral->hosts, host, link);
+	free(host);
 }
 
 int
@@ -117,6 +135,9 @@ spdk_nvmf_tgt_remove_referral(struct spdk_nvmf_tgt *tgt,
 	struct spdk_nvmf_referral *referral;
 	struct spdk_nvmf_referral_opts opts = {};
 	struct spdk_nvme_transport_id *trid = &opts.trid;
+	struct spdk_nvmf_host *host, *host_tmp;
+
+	assert(spdk_thread_is_app_thread(NULL));
 
 	memcpy(&opts, uopts, spdk_min(uopts->size, sizeof(opts)));
 	if (trid->subnqn[0] == '\0') {
@@ -128,12 +149,164 @@ spdk_nvmf_tgt_remove_referral(struct spdk_nvmf_tgt *tgt,
 		return -ENOENT;
 	}
 
+	TAILQ_FOREACH_SAFE(host, &referral->hosts, link, host_tmp) {
+		nvmf_referral_remove_host(referral, host);
+	}
+
 	TAILQ_REMOVE(&tgt->referrals, referral, link);
 	spdk_nvmf_send_discovery_log_notice(tgt, NULL);
 
 	free(referral);
 
 	return 0;
+}
+
+static struct spdk_nvmf_host *
+nvmf_referral_find_host(struct spdk_nvmf_referral *referral, const char *hostnqn)
+{
+	struct spdk_nvmf_host *host;
+
+	TAILQ_FOREACH(host, &referral->hosts, link) {
+		if (strcmp(hostnqn, host->nqn) == 0) {
+			return host;
+		}
+	}
+
+	return NULL;
+}
+
+int
+spdk_nvmf_referral_add_host(struct spdk_nvmf_referral *referral,
+			    const char *hostnqn)
+{
+	struct spdk_nvmf_host *host;
+
+	assert(spdk_thread_is_app_thread(NULL));
+
+	if (referral == NULL) {
+		return -EINVAL;
+	}
+
+	if (!nvmf_nqn_is_valid(hostnqn)) {
+		return -EINVAL;
+	}
+
+	if (nvmf_referral_find_host(referral, hostnqn)) {
+		return -EEXIST;
+	}
+
+	host = calloc(1, sizeof(*host));
+	if (!host) {
+		return -ENOMEM;
+	}
+
+	snprintf(host->nqn, sizeof(host->nqn), "%s", hostnqn);
+	TAILQ_INSERT_HEAD(&referral->hosts, host, link);
+
+	spdk_nvmf_send_discovery_log_notice(referral->tgt, hostnqn);
+	return 0;
+}
+
+int
+spdk_nvmf_referral_remove_host(struct spdk_nvmf_referral *referral,
+			       const char *hostnqn)
+{
+	struct spdk_nvmf_host *host;
+
+	assert(spdk_thread_is_app_thread(NULL));
+
+	if (referral == NULL) {
+		return -EINVAL;
+	}
+
+	if (!nvmf_nqn_is_valid(hostnqn)) {
+		return -EINVAL;
+	}
+
+	host = nvmf_referral_find_host(referral, hostnqn);
+	if (!host) {
+		return -ENOENT;
+	}
+
+	nvmf_referral_remove_host(referral, host);
+
+	spdk_nvmf_send_discovery_log_notice(referral->tgt, hostnqn);
+	return 0;
+}
+
+int
+spdk_nvmf_referral_set_allow_any_host(struct spdk_nvmf_referral *referral,
+				      bool allow_any_host)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+
+	if (referral->allow_any_host == allow_any_host) {
+		return 0;
+	}
+
+	referral->allow_any_host = allow_any_host;
+
+	spdk_nvmf_send_discovery_log_notice(referral->tgt, NULL);
+	return 0;
+}
+
+bool
+spdk_nvmf_referral_get_allow_any_host(struct spdk_nvmf_referral *referral)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return referral->allow_any_host;
+}
+
+bool
+spdk_nvmf_referral_host_allowed(struct spdk_nvmf_referral *referral,
+				const char *hostnqn)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+
+	if (!nvmf_nqn_is_valid(hostnqn)) {
+		return false;
+	}
+
+	return referral->allow_any_host || nvmf_referral_find_host(referral, hostnqn);
+}
+
+
+struct spdk_nvmf_host *
+spdk_nvmf_referral_get_first_host(struct spdk_nvmf_referral *referral)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return TAILQ_FIRST(&referral->hosts);
+}
+
+struct spdk_nvmf_host *
+spdk_nvmf_referral_get_next_host(struct spdk_nvmf_referral *referral,
+				 struct spdk_nvmf_host *prev_host)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return TAILQ_NEXT(prev_host, link);
+}
+
+
+struct spdk_nvmf_referral *
+spdk_nvmf_tgt_get_first_referral(struct spdk_nvmf_tgt *tgt)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return TAILQ_FIRST(&tgt->referrals);
+}
+
+struct spdk_nvmf_referral *
+spdk_nvmf_tgt_referral_get_next(struct spdk_nvmf_tgt *tgt,
+				struct spdk_nvmf_referral *prev_referral)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return TAILQ_NEXT(prev_referral, link);
+}
+
+const struct spdk_nvme_transport_id *
+spdk_nvmf_referral_get_trid(struct spdk_nvmf_referral *referral)
+{
+	assert(spdk_thread_is_app_thread(NULL));
+	return &referral->trid;
 }
 
 void
@@ -329,6 +502,12 @@ nvmf_tgt_destroy_poll_group_qpairs(struct spdk_nvmf_poll_group *group)
 	_nvmf_tgt_disconnect_qpairs(ctx);
 }
 
+void
+spdk_nvmf_set_custom_discovery_filter(spdk_nvmf_custom_discovery_filter filter)
+{
+	g_custom_discovery_filter = filter;
+}
+
 struct spdk_nvmf_tgt *
 spdk_nvmf_tgt_create(struct spdk_nvmf_target_opts *_opts)
 {
@@ -349,6 +528,12 @@ spdk_nvmf_tgt_create(struct spdk_nvmf_target_opts *_opts)
 			SPDK_ERRLOG("Provided target name must be unique.\n");
 			return NULL;
 		}
+	}
+
+	if ((opts.discovery_filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_CUSTOM) &&
+	    !g_custom_discovery_filter) {
+		SPDK_ERRLOG("Custom discovery filter callback is NULL.\n");
+		return NULL;
 	}
 
 	tgt = calloc(1, sizeof(*tgt));
@@ -554,6 +739,10 @@ nvmf_write_nvme_subsystem_config(struct spdk_json_write_ctx *w,
 	spdk_json_write_named_uint32(w, "min_cntlid", spdk_nvmf_subsystem_get_min_cntlid(subsystem));
 	spdk_json_write_named_uint32(w, "max_cntlid", spdk_nvmf_subsystem_get_max_cntlid(subsystem));
 	spdk_json_write_named_bool(w, "ana_reporting", spdk_nvmf_subsystem_get_ana_reporting(subsystem));
+	spdk_json_write_named_uint64(w, "max_discard_size_kib", subsystem->max_discard_size_kib);
+	spdk_json_write_named_uint64(w, "max_write_zeroes_size_kib", subsystem->max_write_zeroes_size_kib);
+	spdk_json_write_named_bool(w, "passthrough", subsystem->passthrough);
+	spdk_json_write_named_bool(w, "enable_nssr", subsystem->nssr_enabled);
 
 	/*     } "params" */
 	spdk_json_write_object_end(w);
@@ -664,16 +853,17 @@ nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
 {
 	struct spdk_nvmf_subsystem_listener *listener;
 	struct spdk_nvmf_transport *transport;
-	const struct spdk_nvme_transport_id *trid;
 
 	if (spdk_nvmf_subsystem_get_type(subsystem) == SPDK_NVMF_SUBTYPE_NVME) {
 		nvmf_write_nvme_subsystem_config(w, subsystem);
 	}
 
-	for (listener = spdk_nvmf_subsystem_get_first_listener(subsystem); listener != NULL;
-	     listener = spdk_nvmf_subsystem_get_next_listener(subsystem, listener)) {
+	TAILQ_FOREACH(listener, &subsystem->listeners, link) {
+		if (!nvmf_subsystem_listener_is_active(listener)) {
+			continue;
+		}
+
 		transport = listener->transport;
-		trid = spdk_nvmf_subsystem_listener_get_trid(listener);
 
 		spdk_json_write_object_begin(w);
 		spdk_json_write_named_string(w, "method", "nvmf_subsystem_add_listener");
@@ -684,10 +874,10 @@ nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
 		spdk_json_write_named_string(w, "nqn", spdk_nvmf_subsystem_get_nqn(subsystem));
 
 		spdk_json_write_named_object_begin(w, "listen_address");
-		nvmf_transport_listen_dump_trid(trid, w);
+		nvmf_transport_listen_dump_trid(listener->trid, w);
 		spdk_json_write_object_end(w);
 		if (transport->ops->listen_dump_opts) {
-			transport->ops->listen_dump_opts(transport, trid, w);
+			transport->ops->listen_dump_opts(transport, listener->trid, w);
 		}
 
 		spdk_json_write_named_bool(w, "secure_channel", listener->opts.secure_channel);
@@ -1319,9 +1509,7 @@ _nvmf_qpair_sgroup_req_clean(struct spdk_nvmf_subsystem_poll_group *sgroup,
 	TAILQ_FOREACH_SAFE(req, &sgroup->queued, link, tmp) {
 		if (req->qpair == qpair) {
 			TAILQ_REMOVE(&sgroup->queued, req, link);
-			if (nvmf_transport_req_free(req)) {
-				SPDK_ERRLOG("Transport request free error!\n");
-			}
+			nvmf_transport_req_free(req);
 		}
 	}
 }
@@ -1470,7 +1658,7 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 	struct spdk_io_channel *ch;
 	struct spdk_nvmf_subsystem_pg_ns_info *ns_info;
 	struct spdk_nvmf_ctrlr *ctrlr;
-	bool ns_changed;
+	bool ns_changed, ana_changed;
 
 	/* Make sure our poll group has memory for this subsystem allocated */
 	if (subsystem->id >= group->num_sgroups) {
@@ -1490,6 +1678,7 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 	}
 
 	ns_changed = false;
+	ana_changed = false;
 
 	/* Detect bdevs that were added or removed */
 	for (i = 0; i < sgroup->num_ns; i++) {
@@ -1544,7 +1733,7 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 				      group,
 				      ns_info->anagrpid,
 				      ns->anagrpid);
-			ns_changed = true;
+			ana_changed = true;
 		}
 
 		if (ns == NULL) {
@@ -1557,7 +1746,7 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 		}
 	}
 
-	if (ns_changed) {
+	if (ns_changed || ana_changed) {
 		TAILQ_FOREACH(ctrlr, &subsystem->ctrlrs, link) {
 			if (ctrlr->thread != spdk_get_thread()) {
 				continue;
@@ -1569,8 +1758,12 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 				continue;
 			}
 			if (ctrlr->admin_qpair->group == group) {
-				nvmf_ctrlr_async_event_ns_notice(ctrlr);
-				nvmf_ctrlr_async_event_ana_change_notice(ctrlr);
+				if (ns_changed) {
+					nvmf_ctrlr_async_event_ns_notice(ctrlr);
+				}
+				if (ana_changed) {
+					nvmf_ctrlr_async_event_ana_change_notice(ctrlr);
+				}
 			}
 		}
 	}
@@ -1599,9 +1792,7 @@ nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
 		SPDK_ERRLOG("sgroup->queued not empty when adding subsystem\n");
 		TAILQ_FOREACH_SAFE(req, &sgroup->queued, link, tmp) {
 			TAILQ_REMOVE(&sgroup->queued, req, link);
-			if (nvmf_transport_req_free(req)) {
-				SPDK_ERRLOG("Transport request free error!\n");
-			}
+			nvmf_transport_req_free(req);
 		}
 	}
 

@@ -3,7 +3,7 @@
 
 AC_PREREQ(2.69)
 AC_INIT([libisal_crypto],
-        [2.25.0],
+        [2.26.0],
         [https://github.com/intel/isa-l_crypto/issues],
         [isa-l_crypto])
 AC_CONFIG_SRCDIR([])
@@ -26,25 +26,16 @@ CPU=""
 AS_CASE([$host_cpu],
   [x86_64], [CPU="x86_64"],
   [amd64], [CPU="x86_64"],
-  [i?86], [CPU="x86_32"],
   [aarch64], [CPU="aarch64"],
   [arm64], [CPU="aarch64"],
+  [riscv64], [CPU="riscv64"],
 )
 AM_CONDITIONAL([CPU_X86_64], [test "$CPU" = "x86_64"])
-AM_CONDITIONAL([CPU_X86_32], [test "$CPU" = "x86_32"])
 AM_CONDITIONAL([CPU_AARCH64], [test "$CPU" = "aarch64"])
+AM_CONDITIONAL([CPU_RISCV64], [test "$CPU" = "riscv64"])
+AM_CONDITIONAL([HAVE_RVV], [false])
 AM_CONDITIONAL([CPU_UNDEFINED], [test "x$CPU" = "x"])
 AM_CONDITIONAL([SAFE_PARAM], [test x"$SAFE_PARAM" = x"yes"])
-
-if test "$CPU" = "x86_64"; then
-   is_x86=yes
-else
-   if test "$CPU" = "x86_32"; then
-      is_x86=yes
-   else
-      is_x86=no
-   fi
-fi
 
 # Check for programs
 AC_PROG_CC_STDC
@@ -54,6 +45,37 @@ LT_INIT
 AC_PREFIX_DEFAULT([/usr])
 AC_PROG_SED
 AC_PROG_MKDIR_P
+
+case "${CPU}" in
+
+	x86_64)
+
+		is_x86=yes
+		;;
+
+	riscv64)
+
+		AC_MSG_CHECKING([whether compiler supports RISC-V Vector Extension (RVV)])
+		AC_COMPILE_IFELSE(
+			[AC_LANG_PROGRAM([], [
+				__asm__ volatile(
+					".option arch, +v\n"
+					"vsetivli zero, 0, e8, m1, ta, ma\n"
+				);
+			])],
+			[AC_DEFINE([HAVE_RVV], [1], [Enable RVV instructions])
+			AM_CONDITIONAL([HAVE_RVV], [true]) rvv=yes],
+			[AC_DEFINE([HAVE_RVV], [0], [Disable RVV instructions])
+			AM_CONDITIONAL([HAVE_RVV], [false]) rvv=no]
+		)
+		AC_MSG_RESULT([$rvv])
+		is_x86=no
+		;;
+
+	*)
+		is_x86=no
+
+esac
 
 # Options
 AC_ARG_ENABLE([debug],
@@ -180,6 +202,16 @@ int main(int argc, char **argv)
       fi
     fi
 
+    AC_MSG_CHECKING([for optional nasm SHA512-NI support])
+    AC_LANG_CONFTEST([AC_LANG_SOURCE([[vsha512rnds2 ymm2, ymm1, xmm0;]])])
+    sed -i -e '/vsha512rnds2/!d' conftest.c
+    if nasm -f elf64  conftest.c 2> /dev/null; then
+      AC_MSG_RESULT([yes])
+      as_knows_sha512ni=yes
+    else
+      AC_MSG_RESULT([no])
+    fi
+
     AS=nasm
     as_feature_level=$nasm_feature_level
 
@@ -217,7 +249,7 @@ int main(int argc, char **argv)
     fi
     if test x"$as_feature_level" = x"6"; then
       AC_MSG_CHECKING([for additional as AVX512 support])
-      AC_LANG_CONFTEST([AC_LANG_SOURCE([[vpcompressb zmm0, k1, zmm1;]])])
+      AC_LANG_CONFTEST([AC_LANG_SOURCE([[vpcompressb zmm0 {k1}, zmm1;]])])
       sed -i -e '/vpcompressb/!d' conftest.c
       if $AS -f elf64  conftest.c 2> /dev/null; then
         AC_MSG_RESULT([yes])
@@ -227,12 +259,12 @@ int main(int argc, char **argv)
       fi
     fi
 
-    AC_MSG_CHECKING([for optional nasm SHA-NI support])
-    AC_LANG_CONFTEST([AC_LANG_SOURCE([[sha256rnds2 xmm2,xmm1,xmm0;]])])
-    sed -i -e '/sha256rnds2/!d' conftest.c
+    AC_MSG_CHECKING([for optional nasm SHA512-NI support])
+    AC_LANG_CONFTEST([AC_LANG_SOURCE([[vsha512rnds2 ymm2, ymm1, xmm0;]])])
+    sed -i -e '/vsha512rnds2/!d' conftest.c
     if $AS -f elf64  conftest.c 2> /dev/null; then
       AC_MSG_RESULT([yes])
-      as_knows_shani=yes
+      as_knows_sha512ni=yes
     else
       AC_MSG_RESULT([no])
     fi
@@ -243,11 +275,11 @@ int main(int argc, char **argv)
     AC_MSG_ERROR([No modern nasm found as required. Nasm should be v2.14.01 or later.])
   fi
 
-  if test x"$as_knows_shani" = x"yes"; then
-    AC_DEFINE(HAVE_AS_KNOWS_SHANI, [1], [Assembler can do SHANI.])
-    have_as_knows_shani=yes
+  if test x"$as_knows_sha512ni" = x"yes"; then
+    AC_DEFINE(HAVE_AS_KNOWS_SHA512NI, [1], [Assembler can do SHA521NI.])
+    have_as_knows_sha512ni=yes
   else
-    AC_MSG_RESULT([Assembler does not understand SHANI opcodes.  Consider upgrading for best performance.])
+    AC_MSG_RESULT([Assembler does not understand SHA512NI opcodes.  Consider upgrading for best performance.])
   fi
 
   case $host_os in
@@ -258,19 +290,10 @@ int main(int argc, char **argv)
        *)        arch=unknown asm_args="-f elf64";;
   esac
 
-  AC_DEFINE_UNQUOTED(AS_FEATURE_LEVEL, [$as_feature_level], [Assembler feature level.])
-  if test $as_feature_level -ge 6 ; then
-    AC_DEFINE(HAVE_AS_KNOWS_AVX512, [1], [Assembler can do AVX512.])
-    have_as_knows_avx512=yes
-  else
-    AC_MSG_RESULT([Assembler does not understand AVX512 opcodes.  Consider upgrading for best performance.])
-  fi
-
   AM_CONDITIONAL(SAFE_DATA, test x"$SAFE_DATA" = x"yes")
   AM_CONDITIONAL(FIPS_MODE, test x"$FIPS_MODE" = x"yes")
   AM_CONDITIONAL(USE_NASM, test x"$AS" = x"nasm")
-  AM_CONDITIONAL(WITH_AVX512, test x"$have_as_knows_avx512" = x"yes")
-  AM_CONDITIONAL(WITH_SHANI, test x"$have_as_knows_shani" = x"yes")
+  AM_CONDITIONAL(WITH_SHA512NI, test x"$have_as_knows_sha512ni" = x"yes")
   AC_SUBST([asm_args])
   AM_CONDITIONAL(DARWIN, test x"$arch" = x"darwin")
   AC_MSG_RESULT([Using $AS args target "$arch" "$asm_args"])
@@ -279,8 +302,7 @@ else
   AM_CONDITIONAL(SAFE_DATA, test "x" = "y")
   AM_CONDITIONAL(FIPS_MODE, test "x" = "y")
   AM_CONDITIONAL(USE_NASM, test "x" = "y")
-  AM_CONDITIONAL(WITH_AVX512, test "x" = "y")
-  AM_CONDITIONAL(WITH_SHANI, test "x" = "y")
+  AM_CONDITIONAL(WITH_SHA512NI, test "x" = "y")
   AM_CONDITIONAL(DARWIN, test "x" = "y")
 fi
 

@@ -960,6 +960,7 @@ def ceph_bootstrap(ctx, config):
             args=[
                 'sudo', 'rm', '-f',
                 '/etc/ceph/{}.conf'.format(cluster_name),
+                '/etc/ceph/{}.keyring'.format(cluster_name),
                 '/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
             ],
             check_status=False,  # rm-cluster above should have cleaned these up
@@ -1203,6 +1204,28 @@ def ceph_osds(ctx, config):
             cur += 1
 
         if cur == 0:
+            for remote, devs in devs_by_remote.items():
+                for dev in devs:
+                    log.info(f'Zapping device {dev} on {remote.shortname} before OSD deployment')
+                    remote.run(
+                        args=[
+                            'sudo',
+                            ctx.cephadm,
+                            '--image', ctx.ceph[cluster_name].image,
+                            'ceph-volume',
+                            '-c', '/etc/ceph/{}.conf'.format(cluster_name),
+                            '-k', '/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
+                            '--fsid', ctx.ceph[cluster_name].fsid,
+                            '--', 'lvm', 'zap', dev
+                        ],
+                        check_status=False,
+                     )
+                    remote.run(args=['sudo', 'wipefs', '--all', dev], check_status=False)
+                    remote.run(
+                        args=['sudo', 'dd', 'if=/dev/zero', f'of={dev}', 'bs=1M', 'count=10', 'conv=fsync'],
+                        check_status=False,
+                    )
+            _shell(ctx, cluster_name, remote, ['ceph', 'orch', 'device', 'ls', '--refresh'])
             osd_cmd = ['ceph', 'orch', 'apply', 'osd', '--all-available-devices']
             if raw:
                 osd_cmd.extend(['--method', 'raw'])
@@ -1458,6 +1481,8 @@ def ceph_iscsi(ctx, config):
 def ceph_clients(ctx, config):
     cluster_name = config['cluster']
 
+    client_key_type = config.get('client_key_type', None)
+
     log.info('Setting up client nodes...')
     clients = ctx.cluster.only(teuthology.is_type('client', cluster_name))
     for remote, roles_for_host in clients.remotes.items():
@@ -1466,18 +1491,22 @@ def ceph_clients(ctx, config):
             name = teuthology.ceph_role(role)
             client_keyring = '/etc/ceph/{0}.{1}.keyring'.format(cluster_name,
                                                                 name)
+
+            args = ['ceph', 'auth', 'get-or-create']
+            if client_key_type is not None:
+                args.append(f'--key-type={client_key_type}')
+            args.extend([
+                name,
+                'mon', 'allow *',
+                'osd', 'allow *',
+                'mds', 'allow *',
+                'mgr', 'allow *',
+            ])
             r = _shell(
                 ctx=ctx,
                 cluster_name=cluster_name,
                 remote=remote,
-                args=[
-                    'ceph', 'auth',
-                    'get-or-create', name,
-                    'mon', 'allow *',
-                    'osd', 'allow *',
-                    'mds', 'allow *',
-                    'mgr', 'allow *',
-                ],
+                args=args,
                 stdout=StringIO(),
             )
             keyring = r.stdout.getvalue()
@@ -1838,14 +1867,17 @@ def distribute_config_and_admin_keyring(ctx, config):
             path='/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
             data=ctx.ceph[cluster_name].admin_keyring,
             sudo=True)
+        keyring = f"/etc/ceph/{cluster_name}.keyring"
+        remote.write_file(
+            path=keyring,
+            data=ctx.ceph[cluster_name].admin_keyring,
+            sudo=True)
+        ctx.ceph[cluster_name].keyring = keyring
     try:
         yield
     finally:
-        ctx.cluster.run(args=[
-            'sudo', 'rm', '-f',
-            '/etc/ceph/{}.conf'.format(cluster_name),
-            '/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
-        ])
+        # ceph_bootstrap cleans up keys/confs
+        pass
 
 
 @contextlib.contextmanager
@@ -1886,6 +1918,26 @@ def module_setup(ctx, config):
 def conf_setup(ctx, config):
     cluster_name = config['cluster']
     remote = ctx.ceph[cluster_name].bootstrap_remote
+
+    client_key_type = config.get('client_key_type', None)
+
+    if client_key_type is not None:
+        if client_key_type in ('aes',):
+            args = ['ceph', 'config', 'set', 'mon', 'mon_auth_allow_insecure_key', 'true']
+            _shell(ctx, cluster_name, remote, args=args)
+
+            args = ['ceph', 'mon', 'set', 'auth_allowed_ciphers', f'{client_key_type},aes256k']
+            _shell(ctx, cluster_name, remote, args=args)
+
+            auth_warnings = [
+                'AUTH_INSECURE_CLIENT_KEY_TYPE',
+                'AUTH_INSECURE_KEYS_ALLOWED',
+                'AUTH_INSECURE_KEYS_CREATABLE',
+            ]
+            for w in auth_warnings:
+                args = ['ceph', 'health', 'mute', w, '--sticky']
+                _shell(ctx, cluster_name, remote, args=args)
+
 
     configs = config.get('cluster-conf', {})
     procs = []

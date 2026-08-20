@@ -5,8 +5,10 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
-import sys
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+import argparse
+
+from spdk.rpc.cmd_parser import print_dict
+from spdk.rpc.helpers import DeprecateFalseAction, DeprecateTrueAction
 
 
 def add_parser(subparsers):
@@ -41,17 +43,16 @@ def add_parser(subparsers):
     p.set_defaults(func=framework_wait_init)
 
     def framework_monitor_context_switch(args):
-        enabled = None
-        if args.enable:
-            enabled = True
-        if args.disable:
-            enabled = False
-        print_dict(args.client.framework_monitor_context_switch(enabled=enabled))
+        print_dict(args.client.framework_monitor_context_switch(enabled=args.enabled))
 
     p = subparsers.add_parser('framework_monitor_context_switch',
                               help='Control whether the context switch monitor is enabled')
-    p.add_argument('-e', '--enable', action='store_true', help='Enable context switch monitoring')
-    p.add_argument('-d', '--disable', action='store_true', help='Disable context switch monitoring')
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group()
+    group.add_argument('-e', '--enable', dest='enabled', action=DeprecateTrueAction, help='Enable context switch monitoring')
+    group.add_argument('-d', '--disable', dest='enabled', action=DeprecateFalseAction, help='Disable context switch monitoring')
+    group.add_argument('--monitor', dest='enabled', action=argparse.BooleanOptionalAction,
+                       help='Enable or disable context switch monitoring')
     p.set_defaults(func=framework_monitor_context_switch)
 
     def framework_get_reactors(args):
@@ -126,14 +127,14 @@ def add_parser(subparsers):
     p.set_defaults(func=thread_get_stats)
 
     def thread_set_cpumask(args):
-        ret = args.client.thread_set_cpumask(
+        args.client.thread_set_cpumask(
                                          id=args.id,
                                          cpumask=args.cpumask)
     p = subparsers.add_parser('thread_set_cpumask',
                               help="""set the cpumask of the thread whose ID matches to the
     specified value. The thread may be migrated to one of the specified CPUs.""")
-    p.add_argument('-i', '--id', type=int, help='thread ID')
-    p.add_argument('-m', '--cpumask', help='cpumask for this thread')
+    p.add_argument('-i', '--id', type=int, help='thread ID', required=True)
+    p.add_argument('-m', '--cpumask', help='cpumask for this thread', required=True)
     p.set_defaults(func=thread_set_cpumask)
 
     def thread_get_pollers(args):

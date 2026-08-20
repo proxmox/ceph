@@ -39,7 +39,7 @@
 #	trace - get simulator trace
 #	clean - remove object files
 
-version ?= 2.25.0
+version ?= 2.26.0
 
 
 
@@ -55,11 +55,6 @@ CFLAGS_    = -Wall -Wchar-subscripts -Wformat-security -Wnested-externs -Wpointe
 ASFLAGS_   = -f elf64
 ARFLAGS_   = cr $@
 STRIP_gcc  = strip -d -R .comment $@
-
-# arch=32 build options
-ASFLAGS_32 = -f elf32
-CFLAGS_32  = -m32
-ARFLAGS_32 = cr $@
 
 # arch=win64 build options
 ASFLAGS_win64 = -f win64
@@ -114,7 +109,7 @@ CFLAGS_noarch= -DNOARCH
 ifeq ($(arch),noarch)
   host_cpu=base_aliases
 endif
-INCLUDE   = $(patsubst %,-I%/,$(subst :, ,$(VPATH)))
+INCLUDE   = $(patsubst %,-I%/,$(subst :, ,$(VPATH))) -Iinclude/ -Iinclude/isa-l_crypto/ -Iinclude/internal/
 CFLAGS   = $(CFLAGS_$(arch)) $(CFLAGS_$(CC)) $(DEBUG) -O2 $(DEFINES) $(INCLUDE)
 ASFLAGS  = $(ASFLAGS_$(arch)) $(ASFLAGS_$(CC)) $(DEBUG_$(AS)) $(DEFINES) $(INCLUDE)
 ARFLAGS  = $(ARFLAGS_$(arch))
@@ -180,13 +175,7 @@ as_6  := "vinserti32x8 zmm0, ymm1, 1;"
 as_10 := "vpcompressb zmm0 {k1}, zmm1;"
 
 tmpf := $(shell mktemp)
-as_feature_level := $(call test-as, 4,  $(tmpf), $(as_4),  $(as_feature_level))
-as_feature_level := $(call test-as, 6,  $(tmpf), $(as_6),  $(as_feature_level))
-as_feature_level := $(call test-as, 10, $(tmpf), $(as_10), $(as_feature_level))
 tmpf := $(shell rm ${tmpf})
-
-CFLAGS  += -DAS_FEATURE_LEVEL=$(as_feature_level)
-ASFLAGS += -DAS_FEATURE_LEVEL=$(as_feature_level)
 
 sim test trace: $(addsuffix .run,$(all_unit_tests))
 perf: $(addsuffix .run,$(all_perf_tests))
@@ -299,7 +288,7 @@ isa-l_crypto.h:
 	@echo '#ifndef _ISAL_CRYPTO_H_'	>> $@
 	@echo '#define _ISAL_CRYPTO_H_'	>> $@
 	@echo ''			>> $@
-	@for unit in $(sort $(extern_hdrs)); do echo "#include <isa-l_crypto/$$unit>" | sed -e 's;include/;;' >> $@; done
+	@for unit in $(sort $(extern_hdrs)); do echo "#include <$$unit>" | sed -e 's;include/;;' >> $@; done
 	@echo '#endif //_ISAL_CRYPTO_H_'	>> $@
 
 
@@ -311,8 +300,7 @@ install: $(sort $(extern_hdrs)) | $(install_dirs) $(lib_name) $(so_lib_name) isa
 	install -m 644 $(lib_name) $(prefix)/lib/libisal_crypto.a
 	install -m 644 $^ $(prefix)/include/isa-l_crypto/.
 	install -m 664 isa-l_crypto.h $(prefix)/include/.
-	install -m 664 include/types.h $(prefix)/include/isa-l_crypto/.
-	install -m 664 include/endian_helper.h $(prefix)/include/isa-l_crypto/.
+	install -m 664 include/isa-l_crypto/types.h $(prefix)/include/isa-l_crypto/.
 	install -m 664 $(so_lib_name) $(prefix)/lib/$(so_lib_ver)
 	(cd $(prefix)/lib && ln -f -s $(so_lib_ver) $(soname) && ln -f -s $(so_lib_ver) $(so_lib_inst))
 ifeq ($(shell uname),Darwin)

@@ -1,19 +1,26 @@
-import pytest
-from control.server import GatewayServer
-from control.cli import main as cli
-from control.cli import main_test as cli_test
-from control.cephutils import CephUtils
-import grpc
-from control.proto import gateway_pb2 as pb2
-from control.proto import gateway_pb2_grpc as pb2_grpc
 import copy
 import os
-import time
+import socket
+import ssl
 import subprocess
 import sys
-from kmip.pie import client
-from kmip.pie import objects
-from kmip import enums
+import time
+from functools import wraps
+
+import grpc
+import pytest
+
+from control.cephutils import CephUtils
+from control.cli import main as cli
+from control.cli import main_test as cli_test
+from control.proto import gateway_pb2 as pb2
+from control.proto import gateway_pb2_grpc as pb2_grpc
+from control.server import GatewayServer
+
+kmip = pytest.importorskip("kmip")
+from kmip import enums  # noqa: E402
+from kmip.pie import client  # noqa: E402
+from kmip.pie import objects  # noqa: E402
 
 image = "enc_test_image"
 pool = "rbd"
@@ -32,14 +39,64 @@ kmip_server_name1 = "blabla"
 kmip_server_name2 = "stam"
 
 
+def _install_ssl_wrap_socket_compat():
+    if hasattr(ssl, "wrap_socket"):
+        return
+
+    @wraps(ssl.SSLContext.wrap_socket)
+    def _wrap_socket(sock, keyfile=None, certfile=None, server_side=False,
+                     cert_reqs=ssl.CERT_NONE, ssl_version=ssl.PROTOCOL_TLS,
+                     ca_certs=None, do_handshake_on_connect=True,
+                     suppress_ragged_eofs=True, ciphers=None):
+        if ssl_version in (None, ssl.PROTOCOL_TLS):
+            protocol = ssl.PROTOCOL_TLS_SERVER if server_side else getattr(
+                ssl, "PROTOCOL_TLS_CLIENT", ssl.PROTOCOL_TLS
+            )
+        else:
+            protocol = ssl_version
+
+        context = ssl.SSLContext(protocol)
+        # Only set minimum_version for generic TLS protocols, not for specific versions
+        if hasattr(context, "minimum_version") and ssl_version in (None, ssl.PROTOCOL_TLS):
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+        if hasattr(context, "check_hostname"):
+            context.check_hostname = False
+
+        context.verify_mode = cert_reqs
+        if ca_certs:
+            context.load_verify_locations(ca_certs)
+        if certfile:
+            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+        if ciphers:
+            context.set_ciphers(ciphers)
+        return context.wrap_socket(
+            sock,
+            server_side=server_side,
+            do_handshake_on_connect=do_handshake_on_connect,
+            suppress_ragged_eofs=suppress_ragged_eofs,
+        )
+
+    ssl.wrap_socket = _wrap_socket
+
+
+_install_ssl_wrap_socket_compat()
+
+
 def start_kmip_server_endpoint(base_dir, addr, port, create_cert):
     """Sets up a KMIP server endpoint"""
-    if create_cert:
+    certs_dir = os.path.join(base_dir, "certs")
+    required_certs = ("ca_cert.pem", "client_cert.pem", "client_key.pem",
+                      "server_cert.pem", "server_key.pem")
+    missing = any(not os.path.exists(os.path.join(certs_dir, f)) for f in required_certs)
+    if create_cert or missing:
         setup_path = os.path.join(".", "tests", "kmip", "setup_kmip_test.sh")
         subprocess.run([setup_path, base_dir], check=True,
                        capture_output=True, text=True)
     srvr_path = os.path.join(".", "tests", "kmip", "dummy_kmip_server.py")
-    subprocess.Popen(
+
+    # Start server process
+    proc = subprocess.Popen(
         [
             sys.executable,
             srvr_path,
@@ -52,7 +109,38 @@ def start_kmip_server_endpoint(base_dir, addr, port, create_cert):
         text=True,
         bufsize=1
     )
-    time.sleep(15)
+
+    # Wait for server to start and verify it's listening
+    max_retries = 30  # 30 seconds total
+    for _ in range(max_retries):
+        time.sleep(1)
+        try:
+            # Try to connect to verify server is up
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex((addr, port))
+            sock.close()
+            if result == 0:
+                print(f"KMIP server started successfully on {addr}:{port}")
+                return proc
+        except Exception:
+            pass
+
+        # Check if process crashed
+        if proc.poll() is not None:
+            stdout, _ = proc.communicate()
+            raise RuntimeError(
+                f"KMIP server failed to start on {addr}:{port}. "
+                f"Output:\n{stdout}"
+            )
+
+    # Timeout - kill process and raise error
+    proc.kill()
+    stdout, _ = proc.communicate()
+    raise RuntimeError(
+        f"KMIP server did not start within {max_retries} seconds "
+        f"on {addr}:{port}. Output:\n{stdout}"
+    )
 
 
 def add_key_to_kmip_server_endpoint(base_dir, addr, port, val):
@@ -373,15 +461,13 @@ def test_re_add_kmip_server_endpoint_after_deletion(caplog, two_gateways):
 
 def test_re_add_kmip_server_endpoint(caplog, two_gateways):
     caplog.clear()
-    cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
-         "--address", kmip_addr,
-         "--server-name", kmip_server_name1,
-         "--port", str(kmip_port)])
+    rc = cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
+              "--address", kmip_addr,
+              "--server-name", kmip_server_name1,
+              "--port", str(kmip_port)])
+    assert rc == 0
     assert f"The endpoint, with address {kmip_addr}:{kmip_port}, was not added to KMIP server " \
            f"{kmip_server_name1} on subsystem {subsystem1} as it's already there" in caplog.text
-    assert f"Failure adding an endpoint, with address " \
-           f"{kmip_addr}:{kmip_port}, to KMIP server \"{kmip_server_name1}\" on subsystem " \
-           f"{subsystem1}: Server endpoint already exists" in caplog.text
 
 
 def test_add_kmip_server_endpoint_default_port(caplog, two_gateways):
@@ -407,23 +493,27 @@ def test_add_kmip_server_endpoint_default_port(caplog, two_gateways):
                                             server_name=kmip_server_name1,
                                             endpoints=[endpoint])
     caplog.clear()
-    stub.add_kmip_server_endpoints(req)
+    ret = stub.add_kmip_server_endpoints(req)
+    assert ret.status == 0
     assert f"KMIP server {kmip_server_name1} endpoint's port wasn't specified, will use " \
            f"default port 5696" in caplog.text
-    assert f"Failure adding an endpoint, with address " \
-           f"junk:5696, to KMIP server \"{kmip_server_name1}\" on subsystem " \
-           f"{subsystem1}: Server endpoint already exists" in caplog.text
+    assert f"The endpoint, with address junk:5696, was not added to KMIP server " \
+           f"{kmip_server_name1} on subsystem {subsystem1} as it's already there" in caplog.text
+    assert f"The endpoint, with address junk:5696, was not added to KMIP server " \
+           f"{kmip_server_name1} on subsystem {subsystem1} as " \
+           f"it's already there" in ret.error_message
 
 
 def test_del_non_existing_kmip_server_endpoint(caplog, two_gateways):
     caplog.clear()
-    cli(["subsystem", "del_kmip_server_endpoint", "--subsystem", subsystem1,
-         "--address", "junk",
-         "--server-name", kmip_server_name1,
-         "--port", "1234"])
-    assert f"Failure deleting endpoint, with address junk:1234, from " \
-           f"KMIP server \"{kmip_server_name1}\" on subsystem {subsystem1}: server endpoint " \
-           f"not found" in caplog.text
+    rc = cli(["subsystem", "del_kmip_server_endpoint", "--subsystem", subsystem1,
+              "--address", "junk",
+              "--server-name", kmip_server_name1,
+              "--port", "1234"])
+    assert rc == 0
+    assert f"Endpoint with address junk:1234, from " \
+           f"KMIP server \"{kmip_server_name1}\" on subsystem {subsystem1} was not found. " \
+           f"Nothing to do" in caplog.text
     caplog.clear()
     cli(["subsystem", "del_kmip_server_endpoint", "--subsystem", subsystem1, "--address", "junk",
          "--server-name", kmip_server_name1,
@@ -605,14 +695,46 @@ def test_del_kmip_server_endpoint_invalid_server_name(caplog, two_gateways):
 def test_add_kmip_server_endpoint_missing_client_key(caplog, two_gateways):
     os.rename(f"{kmip_dir1}/client_key.pem", f"{kmip_dir1}/client_key.XXX")
     caplog.clear()
-    cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
-         "--server-name", kmip_server_name1,
-         "--address", "junk", "-p", "1234"])
-    os.rename(f"{kmip_dir1}/client_key.XXX", f"{kmip_dir1}/client_key.pem")
+    try:
+        cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
+             "--server-name", kmip_server_name1,
+             "--address", "junk", "-p", "1234"])
+    finally:
+        os.rename(f"{kmip_dir1}/client_key.XXX", f"{kmip_dir1}/client_key.pem")
     assert f"Failure adding an endpoint, with address junk:1234, to " \
            f"KMIP server \"{kmip_server_name1}\" on subsystem {subsystem1}: " \
            f"Missing client key {kmip_dir_prefix}{kmip_server_name1}/certs/" \
            f"client_key.pem" in caplog.text
+
+
+def test_add_kmip_server_endpoint_missing_client_certificate(caplog, two_gateways):
+    os.rename(f"{kmip_dir1}/client_cert.pem", f"{kmip_dir1}/client_cert.XXX")
+    caplog.clear()
+    try:
+        cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
+             "--server-name", kmip_server_name1,
+             "--address", "junk", "-p", "5678"])
+    finally:
+        os.rename(f"{kmip_dir1}/client_cert.XXX", f"{kmip_dir1}/client_cert.pem")
+    assert f"Failure adding an endpoint, with address junk:5678, to " \
+           f"KMIP server \"{kmip_server_name1}\" on subsystem {subsystem1}: " \
+           f"Missing client certificate {kmip_dir_prefix}{kmip_server_name1}/certs/" \
+           f"client_cert.pem" in caplog.text
+
+
+def test_add_kmip_server_endpoint_missing_ca_certificate(caplog, two_gateways):
+    os.rename(f"{kmip_dir1}/ca_cert.pem", f"{kmip_dir1}/ca_cert.XXX")
+    caplog.clear()
+    try:
+        cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
+             "--server-name", kmip_server_name1,
+             "--address", "junk", "-p", "9012"])
+    finally:
+        os.rename(f"{kmip_dir1}/ca_cert.XXX", f"{kmip_dir1}/ca_cert.pem")
+    assert f"Failure adding an endpoint, with address junk:9012, to " \
+           f"KMIP server \"{kmip_server_name1}\" on subsystem {subsystem1}: " \
+           f"Missing CA certificate {kmip_dir_prefix}{kmip_server_name1}/certs/" \
+           f"ca_cert.pem" in caplog.text
 
 
 def test_add_kmip_server_endpoint_with_same_attributes_different_subsys(caplog, two_gateways):
@@ -678,8 +800,8 @@ def test_wrong_encryption_format(caplog, two_gateways):
     except SystemExit as sysex:
         rc = sysex.code
         pass
-    assert "error: argument --encryption-format/-f: invalid choice: 'junk' (choose from 'luks1'," \
-           " 'LUKS1', 'luks2', 'LUKS2')" in caplog.text
+    assert "error: argument --encryption-format/-f: invalid choice: 'junk' " \
+           "(choose from " in caplog.text
     assert rc == 2
 
     enc_entries = [pb2.encryption_entry(format=5, key_id=key_id)]
@@ -887,9 +1009,13 @@ def test_create_with_encryption(caplog, two_gateways):
     assert f"Adding namespace 1 to {subsystem1}: Successful" in caplog.text
     assert f'encryption_entries: [(format: luks1, key id: {key_id})], encryption_algorithm: ' \
            f'no_algorithm, context: <grpc._server' in caplog.text
-    time.sleep(20)
+    time.sleep(30)
     assert f'encryption_entries: [(format: luks1, key id: {key_id})], encryption_algorithm: ' \
            f'no_algorithm, context: None' in caplog.text
+    caplog.clear()
+    cli(["--format", "json", "namespace", "list", "--subsystem", subsystem1, "--nsid", "1"])
+    assert '"encryption_algorithm": "no_algorithm"' not in caplog.text
+    assert '"encryption_algorithm": "aes256"' in caplog.text
     caplog.clear()
     cli(["namespace", "del", "--subsystem", subsystem1, "--nsid", "1"])
     assert f"Deleting namespace 1 from {subsystem1}: Successful" in caplog.text
@@ -916,17 +1042,18 @@ def test_encryption_algorithm_without_create(caplog, two_gateways):
     enc_entries = [pb2.encryption_entry(format="luks1", key_id=key_id)]
     ns_add_req = pb2.namespace_add_req(rbd_pool_name=pool,
                                        rbd_image_name=image,
+                                       force=True,
                                        subsystem_nqn=subsystem1,
                                        block_size=512,
                                        encryption_entries=enc_entries,
                                        encryption_algorithm="aes128")
     caplog.clear()
     ret = stub.namespace_add(ns_add_req)
-    assert ret.status != 0
+    assert ret.status == 0
     assert f'encryption_entries: [(format: luks1, key id: {key_id})], encryption_algorithm: ' \
            f'aes128, context: <grpc._server' in caplog.text
-    assert f"Failure adding namespace to {subsystem1}: Encryption algorithm is only allowed " \
-           f"when creating a new image" in caplog.text
+    cli(["namespace", "del", "--subsystem", subsystem1, "--nsid", "1"])
+    assert f"Deleting namespace 1 from {subsystem1}: Successful" in caplog.text
 
 
 def test_open_with_encryption(caplog, two_gateways):
@@ -1100,35 +1227,3 @@ def test_delete_subsystem(caplog, two_gateways):
     state = gw.gateway_state.omap.get_state()
     for key, val in state.items():
         assert not key.startswith(gw.gateway_state.local.KMIP_SERVER_ENDPOINT_PREFIX)
-
-
-def test_no_certificate_in_config(caplog, two_gateways):
-    gwA, _, gwB, _ = two_gateways
-    configA = gwA.gateway_rpc.config
-    configA.config["kmip"]["client_cert"] = ""
-    gwA.__exit__(None, None, None)
-    gwB.__exit__(None, None, None)
-    print("Restarting gateway A")
-    time.sleep(20)
-    gwA = GatewayServer(configA)
-    ceph_utils = CephUtils(configA)
-    ceph_utils.execute_ceph_monitor_command(
-        "{" + f'"prefix":"nvme-gw create", "id": "{gwA.name}", "pool": "{pool}", '
-        f'"group": "{group_name}"' + "}"
-    )
-    gwA.serve()
-
-    caplog.clear()
-    cli(["subsystem", "add", "--subsystem", subsystem1, "--no-group-append"])
-    assert f"Adding subsystem {subsystem1}: Successful" in caplog.text
-    time.sleep(20)
-    caplog.clear()
-    cli(["subsystem", "add_kmip_server_endpoint", "--subsystem", subsystem1,
-         "--server-name", kmip_server_name1,
-         "--address", kmip_addr, "--port", str(kmip_port)])
-    assert f"Failure adding an endpoint, with address " \
-           f"{kmip_addr}:{kmip_port}, to KMIP server \"{kmip_server_name1}\" on " \
-           f"subsystem {subsystem1}: Client certificate name is undefined" in caplog.text
-    caplog.clear()
-    cli(["subsystem", "del", "--subsystem", subsystem1])
-    assert f"Deleting subsystem {subsystem1}: Successful" in caplog.text

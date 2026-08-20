@@ -16,6 +16,9 @@ fi
 rootdir=$(readlink -f $(dirname $0))/..
 source "$rootdir/scripts/common.sh"
 
+# Path for persisted sysctl configuration (Linux only usage)
+SYSCTL_SPDK_CONF=/usr/local/lib/sysctl.d/99-spdk.conf
+
 function usage() {
 	if [[ $os == Linux ]]; then
 		options="[config|reset|status|cleanup|interactive|help]"
@@ -93,11 +96,14 @@ function usage() {
 	echo "                  Use with caution."
 	echo "DEV_TYPE"
 	echo "                  Perform action only against selected type of devices. Supported:"
-	echo "                    IOAT|DSA|IAA|VIRTIO|VMD|NVME."
+	echo "                    IOAT|AE4DMA|DSA|IAA|VIRTIO|VMD|NVME."
 	echo "                  Default is to select all types."
 	echo "FORCE_NIC_UIO_REBIND"
 	echo "                  When set to 'yes', an attempt to reload nic_uio will be made regardless"
 	echo "                  of the kernel environment. Applicable only under FreeBSD."
+	echo "PERSIST_HUGE      When set to 'yes', persist number of hugepages to $SYSCTL_SPDK_CONF"
+	echo "                  as vm.nr_hugepages. NUMA per-node persistence is not supported, and this option is ignored"
+	echo "                  when HUGENODE is set."
 	exit 0
 }
 
@@ -352,6 +358,7 @@ function collect_driver() {
 		[[ -n ${iaa_d["$bdf"]} ]] && driver=idxd
 		[[ -n ${virtio_d["$bdf"]} ]] && driver=virtio-pci
 		[[ -n ${vmd_d["$bdf"]} ]] && driver=vmd
+		[[ -n ${ae4dma_d["$bdf"]} ]] && driver=ae4dma
 	fi 2> /dev/null
 	echo "$driver"
 }
@@ -514,7 +521,10 @@ check_hugepages_alloc() {
 	fi
 }
 
-clear_hugepages() { echo 0 > /proc/sys/vm/nr_hugepages; }
+clear_hugepages() {
+	echo 0 > /proc/sys/vm/nr_hugepages
+	rm -f "$SYSCTL_SPDK_CONF"
+}
 
 configure_linux_hugepages() {
 	local node system_nodes
@@ -531,6 +541,17 @@ configure_linux_hugepages() {
 
 	if [[ -z $HUGENODE ]]; then
 		check_hugepages_alloc /proc/sys/vm/nr_hugepages
+
+		# Optionally persist number of hugepages
+		[[ $PERSIST_HUGE == yes ]] || return 0
+		local current_nr
+
+		current_nr=$(< /proc/sys/vm/nr_hugepages)
+		((current_nr > 0)) || return 0
+		echo "Trying to persist vm.nr_hugepages=$current_nr to $SYSCTL_SPDK_CONF"
+		mkdir -p "$(dirname $SYSCTL_SPDK_CONF)"
+		echo "vm.nr_hugepages=$current_nr" > "$SYSCTL_SPDK_CONF"
+
 		return 0
 	fi
 
@@ -709,6 +730,7 @@ function status_linux() {
 		desc=${desc:-${iaa_d["$bdf"]:+IAA}}
 		desc=${desc:-${virtio_d["$bdf"]:+virtio}}
 		desc=${desc:-${vmd_d["$bdf"]:+VMD}}
+		desc=${desc:-${ae4dma_d["$bdf"]:+AE4DMA}}
 
 		printf '%-25s %-15s %-6s %-6s %-7s %-16s %-10s %s\n' \
 			"$desc" "$bdf" "${pci_ids_vendor["$bdf"]#0x}" "${pci_ids_device["$bdf"]#0x}" \
@@ -764,6 +786,7 @@ function status_freebsd() {
 	status_print "DSA" "${!dsa_d[@]}"
 	status_print "IAA" "${!iaa_d[@]}"
 	status_print "VMD" "${!vmd_d[@]}"
+	status_print "AE4DMA" "${!ae4dma_d[@]}"
 }
 
 function configure_freebsd_pci() {
@@ -813,7 +836,7 @@ function warn_unsupported_nic_uio_hw() {
 }
 
 function configure_freebsd() {
-	_configure_freebsd "${!nvme_d[@]}" "${!ioat_d[@]}" "${!dsa_d[@]}" "${!iaa_d[@]}" "${!vmd_d[@]}"
+	_configure_freebsd "${!nvme_d[@]}" "${!ioat_d[@]}" "${!dsa_d[@]}" "${!iaa_d[@]}" "${!vmd_d[@]}" "${!ae4dma_d[@]}"
 }
 
 function _configure_freebsd() {

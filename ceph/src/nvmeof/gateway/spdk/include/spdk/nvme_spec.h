@@ -101,7 +101,16 @@ union spdk_nvme_cap_register {
 		/** controller memory buffer supported */
 		uint32_t cmbs		: 1;
 
-		uint32_t reserved3	: 6;
+		/** NVM subsystem shutdown supported */
+		uint32_t nsss		: 1;
+
+		/** controller ready with media support */
+		uint32_t crwms		: 1;
+
+		/** controller ready independent of media support */
+		uint32_t crims		: 1;
+
+		uint32_t reserved3	: 3;
 	} bits;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cap_register) == 8, "Incorrect size");
@@ -150,7 +159,10 @@ union spdk_nvme_cc_register {
 		/** i/o completion queue entry size */
 		uint32_t iocqes		: 4;
 
-		uint32_t reserved2	: 8;
+		/** controller ready independent of media enable */
+		uint32_t crime		: 1;
+
+		uint32_t reserved2	: 7;
 	} bits;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cc_register) == 4, "Incorrect size");
@@ -290,6 +302,46 @@ union spdk_nvme_cmbsts_register {
 	} bits;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmbsts_register) == 4, "Incorrect size");
+
+union spdk_nvme_cmbebs_register {
+	uint32_t	raw;
+	struct {
+		/** CMB Elasticity Buffer Size Units */
+		uint32_t cmbszu		: 4;
+		/** CMB Read Bypass Behavior */
+		uint32_t cmbrbb		: 1;
+
+		uint32_t reserved	: 3;
+		/** CMB elasticity buffer size base */
+		uint32_t cmbwbz		: 24;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmbebs_register) == 4, "Incorrect size");
+
+union spdk_nvme_cmbswtp_register {
+	uint32_t	raw;
+	struct {
+		/** CMB Sustained Write Throughput Units */
+		uint32_t cmbswtu	: 4;
+
+		uint32_t reserved	: 4;
+		/** CMB Sustained Write Throughput */
+		uint32_t cmbswtv	: 24;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmbswtp_register) == 4, "Incorrect size");
+
+union spdk_nvme_crto_register {
+	uint32_t	raw;
+	struct {
+		/** Controller Ready With Media Timeout */
+		uint32_t crwmt	: 16;
+		/** Controller Ready Independent of Media Timeout */
+		uint32_t crimt	: 16;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_crto_register) == 4, "Incorrect size");
+
 
 union spdk_nvme_pmrcap_register {
 	uint32_t	raw;
@@ -520,7 +572,19 @@ struct spdk_nvme_registers {
 	/** controller memory buffer status */
 	union spdk_nvme_cmbsts_register	cmbsts;
 
-	uint32_t			reserved2[0x369];
+	/** controller memory buffer elasticity buffer size */
+	union spdk_nvme_cmbebs_register	cmbebs;
+
+	/** controller memory buffer sustained write throughput */
+	union spdk_nvme_cmbswtp_register cmbswtp;
+
+	/** NVM subsystem shutdown */
+	uint32_t			nssd;
+
+	/** controller ready timeouts */
+	union spdk_nvme_crto_register	crto;
+
+	uint32_t			reserved2[0x365];
 
 	/** persistent memory region capabilities */
 	union spdk_nvme_pmrcap_register	pmrcap;
@@ -577,6 +641,14 @@ SPDK_STATIC_ASSERT(0x48 == offsetof(struct spdk_nvme_registers, bpmbl),
 SPDK_STATIC_ASSERT(0x50 == offsetof(struct spdk_nvme_registers, cmbmsc),
 		   "Incorrect register offset");
 SPDK_STATIC_ASSERT(0x58 == offsetof(struct spdk_nvme_registers, cmbsts),
+		   "Incorrect register offset");
+SPDK_STATIC_ASSERT(0x5C == offsetof(struct spdk_nvme_registers, cmbebs),
+		   "Incorrect register offset");
+SPDK_STATIC_ASSERT(0x60 == offsetof(struct spdk_nvme_registers, cmbswtp),
+		   "Incorrect register offset");
+SPDK_STATIC_ASSERT(0x64 == offsetof(struct spdk_nvme_registers, nssd),
+		   "Incorrect register offset");
+SPDK_STATIC_ASSERT(0x68 == offsetof(struct spdk_nvme_registers, crto),
 		   "Incorrect register offset");
 SPDK_STATIC_ASSERT(0xE00 == offsetof(struct spdk_nvme_registers, pmrcap),
 		   "Incorrect register offset");
@@ -2047,6 +2119,9 @@ enum spdk_nvme_identify_cns {
 	/** List active NSIDs greater than CDW1.NSID, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_ACTIVE_NS_LIST_IOCS		= 0x07,
 
+	/** I/O Command Set Independent Identify Namespace */
+	SPDK_NVME_IDENTIFY_NS_IOCS_INDEPENDENT		= 0x08,
+
 	/** List allocated NSIDs greater than CDW1.NSID */
 	SPDK_NVME_IDENTIFY_ALLOCATED_NS_LIST		= 0x10,
 
@@ -2064,6 +2139,9 @@ enum spdk_nvme_identify_cns {
 
 	/** Get secondary controller list */
 	SPDK_NVME_IDENTIFY_SECONDARY_CTRLR_LIST		= 0x15,
+
+	/** Get UUID List */
+	SPDK_NVME_IDENTIFY_UUID_LIST			= 0x17,
 
 	/** List allocated NSIDs greater than CDW1.NSID, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_ALLOCATED_NS_LIST_IOCS	= 0x1a,
@@ -2165,58 +2243,131 @@ struct spdk_nvme_cdata_sgls {
 
 /** Identify Controller data Optional NVM Command Support */
 struct spdk_nvme_cdata_oncs {
-	uint16_t	compare : 1;
-	uint16_t	write_unc : 1;
-	uint16_t	dsm: 1;
-	uint16_t	write_zeroes: 1;
-	uint16_t	set_features_save: 1;
-	uint16_t	reservations: 1;
-	uint16_t	timestamp: 1;
-	uint16_t	verify: 1;
-	uint16_t	copy: 1;
-	uint16_t	reserved9: 7;
+	union {
+		uint16_t	raw;
+		struct {
+			/** Compare Command Support */
+			uint16_t	nvmcmps: 1;
+
+			/** Write Uncorrectable Support Variants */
+			uint16_t	nvmwusv: 1;
+
+			/** Dataset Management Support Variants */
+			uint16_t	nvmdsmsv: 1;
+
+			/** Write Zeroes Support Variants */
+			uint16_t	nvmwzsv: 1;
+
+			/** Save and Select Feature Support */
+			uint16_t	ssfs: 1;
+
+			/** Reservations Support */
+			uint16_t	reservs: 1;
+
+			/** Timestamp Support */
+			uint16_t	tss: 1;
+
+			/** Verify Support */
+			uint16_t	nvmvfys: 1;
+
+			/** Copy Support */
+			uint16_t	nvmcpys: 1;
+
+			uint16_t	rsvd : 7;
+		};
+
+		/** Old bit names are deprecated and will be removed in 26.05 release */
+		struct {
+			uint16_t	compare : 1;
+			uint16_t	write_unc : 1;
+			uint16_t	dsm: 1;
+			uint16_t	write_zeroes: 1;
+			uint16_t	set_features_save: 1;
+			uint16_t	reservations: 1;
+			uint16_t	timestamp: 1;
+			uint16_t	verify: 1;
+			uint16_t	copy: 1;
+			uint16_t	reserved9: 7;
+		};
+	};
 };
 
 struct spdk_nvme_cdata_oacs {
-	/* supports security send/receive commands */
-	uint16_t	security  : 1;
+	union {
+		struct {
+			/** Security Send Receive Supported */
+			uint16_t	ssrs  : 1;
 
-	/* supports format nvm command */
-	uint16_t	format    : 1;
+			/** Format NVM Supported */
+			uint16_t	fnvms    : 1;
 
-	/* supports firmware activate/download commands */
-	uint16_t	firmware  : 1;
+			/** Firmware Download Supported */
+			uint16_t	fwds  : 1;
 
-	/* supports ns manage/ns attach commands */
-	uint16_t	ns_manage  : 1;
+			/** Namespace Management Supported */
+			uint16_t	nms  : 1;
 
-	/** Supports device self-test command (SPDK_NVME_OPC_DEVICE_SELF_TEST) */
-	uint16_t	device_self_test : 1;
+			/** Device Self-test Supported */
+			uint16_t	dsts : 1;
 
-	/** Supports SPDK_NVME_OPC_DIRECTIVE_SEND and SPDK_NVME_OPC_DIRECTIVE_RECEIVE */
-	uint16_t	directives : 1;
+			/** Directives Supported */
+			uint16_t	dirs : 1;
 
-	/** Supports NVMe-MI (SPDK_NVME_OPC_NVME_MI_SEND, SPDK_NVME_OPC_NVME_MI_RECEIVE) */
-	uint16_t	nvme_mi : 1;
+			/** Supports NVMe-MI */
+			uint16_t	nsrs : 1;
 
-	/** Supports SPDK_NVME_OPC_VIRTUALIZATION_MANAGEMENT */
-	uint16_t	virtualization_management : 1;
+			/** Virtualization Management Supported */
+			uint16_t	vms : 1;
 
-	/** Supports SPDK_NVME_OPC_DOORBELL_BUFFER_CONFIG */
-	uint16_t	doorbell_buffer_config : 1;
+			/** Doorbell Buffer Config Supported */
+			uint16_t	dbcs : 1;
 
-	/** Supports SPDK_NVME_OPC_GET_LBA_STATUS */
-	uint16_t	get_lba_status : 1;
+			/** Get LBA Status Supported */
+			uint16_t	glss : 1;
 
-	/** Supports command and feature lockdown capability */
-	uint16_t	command_feature_lockdown : 1;
+			/** Command and Feature Lockdown Supported */
+			uint16_t	cfls : 1;
 
-	uint16_t	oacs_rsvd : 5;
+			/** Host Managed Live Migration Support */
+			uint16_t	hmlms : 1;
+
+			uint16_t	rsvd : 4;
+		};
+
+		/** Old bit names are deprecated and will be removed in 26.05 release */
+		struct {
+			uint16_t	security  : 1;
+			uint16_t	format    : 1;
+			uint16_t	firmware  : 1;
+			uint16_t	ns_manage  : 1;
+			uint16_t	device_self_test : 1;
+			uint16_t	directives : 1;
+			uint16_t	nvme_mi : 1;
+			uint16_t	virtualization_management : 1;
+			uint16_t	doorbell_buffer_config : 1;
+			uint16_t	get_lba_status : 1;
+			uint16_t	command_feature_lockdown : 1;
+			uint16_t	oacs_rsvd : 5;
+		};
+	};
 };
 
 struct spdk_nvme_cdata_fuses {
-	uint16_t	compare_and_write : 1;
-	uint16_t	reserved : 15;
+	union {
+		uint16_t	raw;
+		struct {
+			/** Fused Compare and Write Supported */
+			uint16_t	fcws: 1;
+
+			uint16_t	rsvd: 15;
+		};
+
+		/** Old bit names are deprecated and will be removed in 26.05 release */
+		struct {
+			uint16_t	compare_and_write : 1;
+			uint16_t	reserved : 15;
+		};
+	};
 };
 
 struct spdk_nvme_cdata_oaes {
@@ -2343,11 +2494,31 @@ struct spdk_nvme_ctrlr_data {
 
 	/** controller multi-path I/O and namespace sharing capabilities */
 	struct {
-		uint8_t multi_port	: 1;
-		uint8_t multi_ctrlr	: 1;
-		uint8_t sr_iov		: 1;
-		uint8_t ana_reporting	: 1;
-		uint8_t reserved	: 4;
+		union {
+			struct {
+				/* Multiple Ports */
+				uint8_t mports : 1;
+
+				/* Multiple Controllers */
+				uint8_t mctrs: 1;
+
+				/* Function Type */
+				uint8_t ft : 1;
+
+				/* Asymmetric Namespace Access Reporting Support */
+				uint8_t anars : 1;
+				uint8_t rsvd : 4;
+			};
+
+			/** Old bit names are deprecated and will be removed in 26.05 release */
+			struct {
+				uint8_t multi_port	: 1;
+				uint8_t multi_ctrlr	: 1;
+				uint8_t sr_iov		: 1;
+				uint8_t ana_reporting	: 1;
+				uint8_t reserved	: 4;
+			};
+		};
 	} cmic;
 
 	/** maximum data transfer size */
@@ -2448,21 +2619,36 @@ struct spdk_nvme_ctrlr_data {
 
 	/** log page attributes */
 	struct {
-		/* per namespace smart/health log page */
-		uint8_t		ns_smart : 1;
-		/* command effects log page */
-		uint8_t		celp : 1;
-		/* extended data for get log page */
-		uint8_t		edlp: 1;
-		/* telemetry log pages and notices */
-		uint8_t		telemetry : 1;
-		/* Persistent event log */
-		uint8_t		pelp : 1;
-		/* Log pages log page */
-		uint8_t		lplp : 1;
-		/* Data Area 4 for telemetry */
-		uint8_t		da4_telemetry : 1;
-		uint8_t		lpa_rsvd : 1;
+		union {
+			struct {
+				/* SMART Support */
+				uint8_t		smarts : 1;
+				/* Commands Supported and Effects Support */
+				uint8_t		cses : 1;
+				/* Log Page Extended Data Support */
+				uint8_t		lpeds: 1;
+				/* Telemetry Support */
+				uint8_t		ts : 1;
+				/* Persistent Event Support */
+				uint8_t		pes : 1;
+				/* Miscellaneous Log Page Support */
+				uint8_t		mlps : 1;
+				/* Data Area 4 Support */
+				uint8_t		da4s : 1;
+				uint8_t		rsvd : 1;
+			};
+			/** Old bit names are deprecated and will be removed in 26.05 release */
+			struct {
+				uint8_t		ns_smart : 1;
+				uint8_t		celp : 1;
+				uint8_t		edlp: 1;
+				uint8_t		telemetry : 1;
+				uint8_t		pelp : 1;
+				uint8_t		lplp : 1;
+				uint8_t		da4_telemetry : 1;
+				uint8_t		lpa_rsvd : 1;
+			};
+		};
 	} lpa;
 
 	/** error log page entries */
@@ -2793,6 +2979,98 @@ struct spdk_nvme_secondary_ctrl_list {
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_secondary_ctrl_list) == 4096, "Incorrect size");
 #pragma pack(pop)
 
+struct spdk_nvme_rescap {
+	union {
+		struct {
+			/** Persist Through Power Loss Support */
+			uint8_t ptpls	: 1;
+			/** Write Exclusive Support */
+			uint8_t wes	: 1;
+			/** Exclusive Access Support */
+			uint8_t eas	: 1;
+			/** Write Exclusive – Registrants Only Support */
+			uint8_t weros	: 1;
+			/** Exclusive Access – Registrants Only Support */
+			uint8_t	earos	: 1;
+			/** Write Exclusive – All Registrants Support */
+			uint8_t	wears	: 1;
+			/** Exclusive Access – All Registrants Support */
+			uint8_t	eaars	: 1;
+			/** Ignore Existing Key Support */
+			uint8_t	ieks	: 1;
+		};
+
+		/** Old bit naming is deprecated and will be removed in 26.05 release */
+		struct {
+			uint8_t	persist : 1;
+			uint8_t	write_exclusive : 1;
+			uint8_t	exclusive_access : 1;
+			uint8_t	write_exclusive_reg_only : 1;
+			uint8_t	exclusive_access_reg_only : 1;
+			uint8_t	write_exclusive_all_reg : 1;
+			uint8_t	exclusive_access_all_reg : 1;
+			uint8_t	ignore_existing_key : 1;
+		};
+	};
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_rescap) == 1, "Incorrect size");
+
+struct spdk_nvme_fpi {
+	union {
+		struct {
+			/** Remaining Format NVM */
+			uint8_t rfnvm	: 7;
+			/** Format Progress Indicator Support */
+			uint8_t fpis	: 1;
+		};
+
+		/** Old bit naming is deprecated and will be removed in 26.05 release */
+		struct {
+			uint8_t percentage_remaining	: 7;
+			uint8_t	fpi_supported		: 1;
+		};
+	};
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fpi) == 1, "Incorrect size");
+
+struct spdk_nvme_nmic {
+	union {
+		struct {
+			/** Shared Namespace */
+			uint8_t shrns	: 1;
+			/** Dispersed Namespace */
+			uint8_t disns	: 1;
+			/** Reserved */
+			uint8_t	rsvd : 6;
+		};
+
+		/** Old bit naming is deprecated and will be removed in 26.05 release */
+		struct {
+			uint8_t	can_share : 1;
+			uint8_t	reserved : 7;
+		};
+	};
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_nmic) == 1, "Incorrect size");
+
+struct spdk_nvme_nsattr {
+	union {
+		struct {
+			/** Currently Write Protected */
+			uint8_t cwp	: 1;
+			/** Reserved */
+			uint8_t rsvd	: 7;
+		};
+
+		/** Old bit naming is deprecated and will be removed in 26.05 release */
+		struct {
+			uint8_t	write_protected	: 1;
+			uint8_t	reserved	: 7;
+		};
+	};
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_nsattr) == 1, "Incorrect size");
+
 struct spdk_nvme_ns_data {
 	/** namespace size */
 	uint64_t		nsze;
@@ -2879,45 +3157,15 @@ struct spdk_nvme_ns_data {
 	} dps;
 
 	/** namespace multi-path I/O and namespace sharing capabilities */
-	struct {
-		uint8_t		can_share : 1;
-		uint8_t		reserved : 7;
-	} nmic;
+	struct spdk_nvme_nmic nmic;
 
 	/** reservation capabilities */
 	union {
-		struct {
-			/** supports persist through power loss */
-			uint8_t		persist : 1;
-
-			/** supports write exclusive */
-			uint8_t		write_exclusive : 1;
-
-			/** supports exclusive access */
-			uint8_t		exclusive_access : 1;
-
-			/** supports write exclusive - registrants only */
-			uint8_t		write_exclusive_reg_only : 1;
-
-			/** supports exclusive access - registrants only */
-			uint8_t		exclusive_access_reg_only : 1;
-
-			/** supports write exclusive - all registrants */
-			uint8_t		write_exclusive_all_reg : 1;
-
-			/** supports exclusive access - all registrants */
-			uint8_t		exclusive_access_all_reg : 1;
-
-			/** supports ignore existing key */
-			uint8_t		ignore_existing_key : 1;
-		} rescap;
-		uint8_t		raw;
+		struct spdk_nvme_rescap rescap;
+		uint8_t raw;
 	} nsrescap;
 	/** format progress indicator */
-	struct {
-		uint8_t		percentage_remaining : 7;
-		uint8_t		fpi_supported : 1;
-	} fpi;
+	struct spdk_nvme_fpi fpi;
 
 	/** deallocate logical features */
 	union {
@@ -3004,11 +3252,7 @@ struct spdk_nvme_ns_data {
 	uint8_t			reserved96[3];
 
 	/** namespace attributes */
-	struct {
-		/** Namespace write protected */
-		uint8_t	write_protected	: 1;
-		uint8_t	reserved	: 7;
-	} nsattr;
+	struct spdk_nvme_nsattr nsattr;
 
 	/** NVM Set Identifier */
 	uint16_t		nvmsetid;
@@ -3163,6 +3407,73 @@ struct spdk_nvme_zns_ns_data {
 	uint8_t			vendor_specific[256];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_zns_ns_data) == 4096, "Incorrect size");
+
+/** Identify – I/O Command Set Independent Identify Namespace Data Structure (CNS 08h) */
+struct spdk_nvme_ns_iocs_independent_data {
+	/** Common Namespace Features */
+	struct {
+		uint8_t reserved1	: 3;
+		/** UID Reuse */
+		uint8_t uidreuse	: 1;
+		/** Rotational Media */
+		uint8_t rmedia		: 1;
+		/** Volatile Write Cache Not Present */
+		uint8_t vwcnp		: 1;
+		uint8_t reserved2	: 2;
+	} nsfeat;
+
+	/** Namespace Multi-path I/O and Namespace Sharing Capabilities */
+	struct spdk_nvme_nmic nmic;
+
+	/** Reservation Capabilities */
+	struct spdk_nvme_rescap rescap;
+
+	/** Format Progress Indicator */
+	struct spdk_nvme_fpi fpi;
+
+	/** ANA Group Identifier */
+	uint32_t anagrpid;
+
+	/** Namespace Attributes */
+	struct spdk_nvme_nsattr nsattr;
+
+	uint8_t reserved1;
+
+	/** NVM Set Identifier */
+	uint16_t nvmsetid;
+
+	/** Endurance Group Identifier */
+	uint16_t endgid;
+
+	/** Namespace Status */
+	struct {
+		/** Namespace Ready */
+		uint8_t nrdy		: 1;
+		/** I/O Impacted */
+		uint8_t ioi		: 2;
+		uint8_t reserved	: 5;
+	} nstat;
+
+	/** Key Per I/O Status */
+	struct {
+		/** Key Per I/O Enabled in Namespace */
+		uint8_t kpioens		: 1;
+		/** Key Per I/O Supported in Namespace */
+		uint8_t kpiosns		: 1;
+		uint8_t reserved	: 6;
+	} kpios;
+
+	/** Maximum Key Tag */
+	uint16_t maxkt;
+
+	uint16_t reserved2;
+
+	/** Reachability Group Identifier */
+	uint32_t rgrpid;
+
+	uint8_t reserved3[4072];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_iocs_independent_data) == 4096, "Incorrect size");
 
 /**
  * IO command set vector for IDENTIFY_IOCS
@@ -3475,6 +3786,61 @@ enum spdk_nvme_log_page {
 
 #define spdk_nvme_log_page_is_vendor_specific(lid) ((lid) >= SPDK_NVME_LOG_VENDOR_SPECIFIC_START)
 
+struct spdk_nvme_supported_log_pages {
+	/* Log Page Identifier Supported 0-255 */
+	struct {
+		/* LID Supported - 0 */
+		uint32_t lsupp		: 1;
+		/* Index Offset Supported - 1 */
+		uint32_t ios		: 1;
+		/* Reserved - 2:15 */
+		uint32_t reserved	: 14;
+		/* LID Specific Parameter - 16:31 */
+		uint32_t lidsp		: 16;
+	} lids[256];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_supported_log_pages) == 1024, "Incorrect size");
+
+/* Feature Identifiers Effects Log Page */
+struct spdk_nvme_feature_ids_effects_log_page {
+	/* Feature Identifier Supported 0-255 */
+	struct {
+		/* FID Supported - 0 */
+		uint32_t fsupp		: 1;
+		/* User Data Content Change - 1 */
+		uint32_t udcc		: 1;
+		/* Namespace Capability Change - 2 */
+		uint32_t ncc		: 1;
+		/* Namespace Inventory Change - 3 */
+		uint32_t nic		: 1;
+		/* Controller Capability Change - 4 */
+		uint32_t ccc		: 1;
+		/* Reserved - 5:18 */
+		uint32_t reserved	: 14;
+		/* UUID Selection Supported - 19 */
+		uint32_t uss		: 1;
+
+		/* FID scope (FSP) - 20:31 */
+		/* FID scope - Namespace Scope - 0 */
+		uint32_t nscpe		: 1;
+		/* FID scope - Controller Scope - 1 */
+		uint32_t cscpe		: 1;
+		/* FID scope - NVM Set Scope - 2 */
+		uint32_t nsetscpe	: 1;
+		/* FID scope - Endurance Group Scope - 3 */
+		uint32_t egscpe		: 1;
+		/* FID scope - Domain Scope - 4 */
+		uint32_t dscpe		: 1;
+		/* FID scope - NVM Subsystem Scope - 5 */
+		uint32_t nsscpe		: 1;
+		/* FID scope - Controller Data Queue - 6 */
+		uint32_t cdqscpe	: 1;
+		/* FID scope - Reserved - 7:11 */
+		uint32_t fsp_reserved	: 5;
+	} fis[256];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_feature_ids_effects_log_page) == 1024, "Incorrect size");
+
 /**
  * Error information log page (\ref SPDK_NVME_LOG_ERROR)
  */
@@ -3565,7 +3931,30 @@ struct spdk_nvme_cmds_and_effect_entry {
 	 */
 	uint16_t cse : 3;
 
-	uint16_t reserved2 : 13;
+	/** UUID Selection Supported */
+	uint16_t uss : 1;
+
+	/** Command Scope bits (CSP) */
+
+	/** Namespace Scope */
+	uint16_t nscpe		: 1;
+
+	/** Controller Scope */
+	uint16_t cscpe		: 1;
+
+	/** NVM Set Scope */
+	uint16_t nsetscpe	: 1;
+
+	/** Endurance Group Scope */
+	uint16_t egscpe		: 1;
+
+	/** Domain Scope */
+	uint16_t dscpe		: 1;
+
+	/** NVM Subsystem Scope */
+	uint16_t nsscpe		: 1;
+
+	uint16_t csp_reserved	: 6;
 };
 
 /* Commands Supported and Effects Log Page */

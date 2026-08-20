@@ -321,7 +321,7 @@ LDFLAGS += -fsanitize=fuzzer-no-link
 SYS_LIBS += $(CONFIG_FUZZER_LIB)
 endif
 
-SPDK_GIT_COMMIT := 77d121fa4e83eb534daaccf3e377c2dfc1b8b1d2
+SPDK_GIT_COMMIT := da93f4cb13afa0fbf8df26c9c5d0ed1c8ab0aef6
 ifneq (, $(SPDK_GIT_COMMIT))
 COMMON_CFLAGS += -DSPDK_GIT_COMMIT=$(SPDK_GIT_COMMIT)
 endif
@@ -403,6 +403,25 @@ COMPILE_CXX=\
 	$(Q)echo "  CXX $S/$@"; \
 	$(CXX) -o $@ $(DEPFLAGS) $(CXXFLAGS) -c $< && \
 	mv -f $*.d.tmp $*.d && touch -c $@
+
+ifeq ($(CONFIG_CUDA),y)
+CU_SRCS += $(CU_SRCS-y)
+
+OBJS += $(CU_SRCS:.cu=.o)
+
+CUDA_ARCH ?= 60
+
+CUFLAGS = -O2 -DNODEBUG -Xcompiler -fno-exceptions -restrict --gpu-architecture=sm_$(CUDA_ARCH) \
+	-cudart shared -I$(SPDK_ROOT_DIR)/include $(CU_CFLAGS)
+
+SYS_LIBS += -ldl -lcudart -lcuda -lrt -lstdc++
+
+COMPILE_CU=\
+	$(Q)echo "  NVCC $(CUFLAGS) $S/$@"; \
+	nvcc -c -o $@ $(CUFLAGS) $< && \
+	nvcc -c -MM -MF $*.d.tmp $(CUFLAGS) $< && \
+	mv -f $*.d.tmp $*.d && touch -c $@
+endif
 
 ENV_LDFLAGS = $(if $(SPDK_NO_LINK_ENV),,$(ENV_LINKER_ARGS))
 
@@ -541,6 +560,11 @@ UNINSTALL_HEADER=\
 
 %.o: %.cpp %.d $(MAKEFILE_LIST)
 	$(COMPILE_CXX)
+
+ifeq ($(CONFIG_CUDA),y)
+%.o: %.cu %.d $(MAKEFILE_LIST)
+	$(COMPILE_CU)
+endif
 
 %.d: ;
 

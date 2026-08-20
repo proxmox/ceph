@@ -21,18 +21,13 @@ else
 fi
 pkgdep_toolpath pip "$virtdir/bin"
 source "$virtdir/bin/activate"
+python -m pip install pip-tools
+pip-compile --extra dev --strip-extras -o "$rootdir/scripts/pkgdep/requirements.txt" "${rootdir}/python/pyproject.toml"
+pip3 install -r "$rootdir/scripts/pkgdep/requirements.txt"
 
-# install python packages
-pip3 install ninja
-pip3 install meson
-pip3 install pyelftools
-pip3 install ijson
-pip3 install python-magic
-pip3 install grpcio
-pip3 install grpcio-tools
-pip3 install pyyaml
-pip3 install Jinja2
-pip3 install tabulate
+# Fixes issue: #3721
+pkgdep_toolpath meson "${virtdir}/bin"
+
 # Additional dependencies for SPDK CLI
 apt-get install -y python3-configshell-fb python3-pexpect
 
@@ -44,7 +39,7 @@ apt-get install -y autoconf automake libtool help2man
 apt-get install -y systemtap-sdt-dev
 if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 	# Tools for developers
-	apt-get install -y git astyle lcov clang sg3-utils pciutils shellcheck \
+	apt-get install -y git cmake lcov clang sg3-utils pciutils shellcheck \
 		abigail-tools bash-completion ruby-dev pycodestyle bundler rake
 	# Additional dependencies for nvmf performance test script
 	apt-get install -y python3-paramiko

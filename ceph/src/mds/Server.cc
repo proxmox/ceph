@@ -61,6 +61,7 @@
 
 #include "include/stringify.h"
 #include "include/filepath.h"
+#include "common/strescape.h"
 #include "common/ceph_json.h"
 #include "common/debug.h"
 #include "common/Timer.h"
@@ -641,7 +642,11 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
     if (!session->client_opened) {
       session->client_opened = true;
     }
-    if (session->is_opening() ||
+    if (session->is_closing()) {
+      mdlog->wait_for_safe(
+        new MDSInternalContextWrapper(mds, new C_MDS_RetryMessage(mds, m)));
+      return;
+    } else if (session->is_opening() ||
 	session->is_open() ||
 	session->is_stale() ||
 	session->is_killing() ||
@@ -8963,7 +8968,7 @@ void Server::_rmdir_rollback_finish(const MDRequestRef& mdr, metareqid_t reqid, 
  */
 bool Server::_dir_is_nonempty_unlocked(const MDRequestRef& mdr, CInode *in)
 {
-  dout(10) << "dir_is_nonempty_unlocked " << *in << dendl;
+  dout(10) << __func__ << " " << *in << dendl;
   ceph_assert(in->is_auth());
 
   if (in->filelock.is_cached())
@@ -8976,7 +8981,7 @@ bool Server::_dir_is_nonempty_unlocked(const MDRequestRef& mdr, CInode *in)
     // is the frag obviously non-empty?
     if (dir->is_auth()) {
       if (dir->get_projected_fnode()->fragstat.size()) {
-	dout(10) << "dir_is_nonempty_unlocked dirstat has " 
+	dout(10) << __func__ << " dirstat has "
 		 << dir->get_projected_fnode()->fragstat.size() << " items " << *dir << dendl;
 	return true;
       }
@@ -9817,7 +9822,10 @@ void Server::_rename_prepare(const MDRequestRef& mdr,
       {
         std::string t;
         destdn->make_path_string(t, true);
-        dout(20) << " stray_prior_path = " << t << dendl;
+
+	/* Log only 10 final components fo the path to since logging entire
+	 * path is not useful and also reduces readability. */
+        dout(20) << " stray_prior_path = " << get_trimmed_path_str(t) << dendl;
         tpi->stray_prior_path = std::move(t);
       }
       tpi->nlink--;

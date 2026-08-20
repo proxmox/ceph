@@ -12,8 +12,6 @@ MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
 rpc_py="$rootdir/scripts/rpc.py"
-bpf_sh="$rootdir/scripts/bpftrace.sh"
-
 bdevperf_rpc_sock=/var/tmp/bdevperf.sock
 
 nvmftestinit
@@ -28,7 +26,7 @@ $rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK0000000000000
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc0
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-$rootdir/build/examples/bdevperf -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 10 -f &
+run_app_bg "$SPDK_EXAMPLE_DIR/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 10 -f
 bdevperf_pid=$!
 
 waitforlisten $bdevperf_pid $bdevperf_rpc_sock
@@ -70,7 +68,7 @@ killprocess $bdevperf_pid
 # Time to wait until ctrlr is reconnected before failing I/O to ctrlr
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-$rootdir/build/examples/bdevperf -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 10 -f &
+run_app_bg "$SPDK_EXAMPLE_DIR/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 10 -f
 bdevperf_pid=$!
 
 waitforlisten $bdevperf_pid $bdevperf_rpc_sock
@@ -106,13 +104,13 @@ killprocess $bdevperf_pid
 
 # Case 3 test reconnect_delay_sec
 # Time to delay a reconnect trial
-$rootdir/build/examples/bdevperf -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w randread -t 10 -f &
+run_app_bg "$SPDK_EXAMPLE_DIR/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w randread -t 10 -f
 bdevperf_pid=$!
 
 waitforlisten $bdevperf_pid $bdevperf_rpc_sock
 
 #start_trace
-$bpf_sh $bdevperf_pid $rootdir/scripts/bpf/nvmf_timeout.bt &> $testdir/trace.txt &
+bpftrace_setup $bdevperf_pid "$rootdir/scripts/bpf/nvmf_timeout.bt" &> "$testdir/trace.txt"
 dtrace_pid=$!
 
 $rpc_py -s $bdevperf_rpc_sock bdev_nvme_set_options -r -1 -e 9
@@ -151,7 +149,7 @@ ipts -I OUTPUT 1 -d $NVMF_FIRST_TARGET_IP -p tcp --dport 4420 -j DROP
 
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-$rootdir/build/examples/bdevperf -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w randread -t 10 &
+run_app_bg "$SPDK_EXAMPLE_DIR/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w randread -t 10
 bdevperf_pid=$!
 
 waitforlisten $bdevperf_pid $bdevperf_rpc_sock

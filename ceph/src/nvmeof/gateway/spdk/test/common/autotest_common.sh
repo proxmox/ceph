@@ -174,6 +174,8 @@ export SPDK_TEST_SETUP
 export SPDK_TEST_NVME_INTERRUPT
 : ${SPDK_TEST_SKIP_NVMF_KERNEL_TESTS=0}
 export SPDK_TEST_SKIP_NVMF_KERNEL_TESTS
+: ${SPDK_TEST_NO_HUGE=0}
+export SPDK_TEST_NO_HUGE
 
 # always test with SPDK shared objects.
 export SPDK_LIB_DIR="$rootdir/build/lib"
@@ -304,6 +306,10 @@ fi
 export HUGEMEM=$HUGEMEM
 
 NO_HUGE=()
+if [[ $SPDK_TEST_NO_HUGE -eq 1 ]]; then
+	NO_HUGE=(--no-huge -s 1024)
+fi
+
 TEST_MODE=
 for i in "$@"; do
 	case "$i" in
@@ -314,7 +320,8 @@ for i in "$@"; do
 			TEST_TRANSPORT="${i#*=}"
 			;;
 		--no-hugepages)
-			NO_HUGE=(--no-huge -s 1024)
+			echo "Parameter --no-hugepages is deprecated, use the SPDK_TEST_NO_HUGE variable instead"
+			exit 1
 			;;
 		--interrupt-mode)
 			TEST_INTERRUPT_MODE=1
@@ -1347,6 +1354,20 @@ function fio_nvme() {
 	fio_plugin "$rootdir/build/fio/spdk_nvme" "$@"
 }
 
+function run_app() {
+	local app="$1"
+	valid_exec_arg "$app" || return 1
+	shift
+	"$app" "${NO_HUGE[@]}" "$@"
+}
+
+function run_app_bg() {
+	local app="$1"
+	valid_exec_arg "$app" || return 1
+	shift
+	"$app" "${NO_HUGE[@]}" "$@" &
+}
+
 function get_lvs_free_mb() {
 	local lvs_uuid=$1
 	local lvs_info
@@ -1396,7 +1417,7 @@ function autotest_cleanup() {
 	$rootdir/scripts/setup.sh reset
 	$rootdir/scripts/setup.sh cleanup
 	if [ $(uname -s) = "Linux" ]; then
-		modprobe -r uio_pci_generic
+		modprobe -r uio_pci_generic || true
 	fi
 	rm -rf "$asan_suppression_file"
 	if [[ -n ${old_core_pattern:-} ]]; then
@@ -1724,6 +1745,39 @@ function gather_coverage() {
 	$LCOV -q -r "$output_dir/cov_total.info" '*/app/spdk_lspci/*' -o "$output_dir/cov_total.info"
 	$LCOV -q -r "$output_dir/cov_total.info" '*/app/spdk_top/*' -o "$output_dir/cov_total.info"
 	rm -f "$output_dir/cov_base.info" "$output_dir/cov_test.info"
+}
+
+function bpftrace_setup() {
+	local pid=$1 scripts=("${@:2}") bpf_program
+
+	bpf_program=$("$rootdir/scripts/bpf/gen_program.sh" "$pid" "${scripts[@]}") || return 1
+	USE_CMDLINE_BPF_PROGRAM=yes "$rootdir/scripts/bpftrace.sh" "$pid" "$bpf_program" &
+}
+
+function setup_core_pattern() {
+	old_core_pattern=$(< /proc/sys/kernel/core_pattern)
+	mkdir -p "$output_dir/coredumps"
+	# Set core_pattern to a known value to avoid looking for cores handled by different
+	# entities, like apport, systemd-coredump, etc. We also don't want to pipe core to our
+	# own collector as under SELINUX it won't be able to execute due to limitation
+	# kernel_generic_help_t|kernel_t domains may impose. Stick to a simple pattern
+	# pointing at $output_dir/coredumps - when autotest finishes, process_core() will
+	# pick any core from that location.
+	echo "$output_dir/coredumps/%s-%p-%i-%t-%E.core" > /proc/sys/kernel/core_pattern
+}
+
+function init_linux_env() {
+	[[ $(uname -s) == Linux ]] || return 0
+	setup_core_pattern
+
+	# make sure nbd (network block device) driver is loaded if it is available
+	# this ensures that when tests need to use nbd, it will be fully initialized
+	modprobe nbd || true
+
+	if udevadm=$(type -P udevadm); then
+		"$udevadm" monitor --property &> "$output_dir/udev.log" &
+		udevadm_pid=$!
+	fi
 }
 
 # Define temp storage for all the tests. Look for 2GB at minimum

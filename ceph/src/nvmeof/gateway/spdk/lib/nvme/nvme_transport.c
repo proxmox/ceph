@@ -598,6 +598,12 @@ nvme_transport_ctrlr_disconnect_qpair_done(struct spdk_nvme_qpair *qpair)
 	if (qpair->poll_group) {
 		nvme_poll_group_write_disconnect_qpair_fd(qpair->poll_group->group);
 	}
+
+	/* A Fabric command may be outstanding before a disconnect was invoked. */
+	if (qpair->fabric_poll_status && !(qpair->auth.flags.in_auth_poll || qpair->in_connect_poll)) {
+		nvme_fabric_qpair_poll_cleanup(qpair);
+		nvme_fabric_qpair_auth_cleanup(qpair, -ECANCELED);
+	}
 }
 
 int
@@ -738,17 +744,6 @@ nvme_transport_poll_group_create(const struct spdk_nvme_transport *transport)
 	}
 
 	return group;
-}
-
-struct spdk_nvme_transport_poll_group *
-nvme_transport_qpair_get_optimal_poll_group(const struct spdk_nvme_transport *transport,
-		struct spdk_nvme_qpair *qpair)
-{
-	if (transport->ops.qpair_get_optimal_poll_group) {
-		return transport->ops.qpair_get_optimal_poll_group(qpair);
-	} else {
-		return NULL;
-	}
 }
 
 int

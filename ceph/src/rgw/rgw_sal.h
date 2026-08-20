@@ -51,6 +51,7 @@ class RGWZonePlacementInfo;
 struct rgw_pubsub_topic;
 struct RGWOIDCProviderInfo;
 struct RGWRoleInfo;
+class RGWGetObj_Filter;
 
 using RGWBucketListNameFilter = std::function<bool (const std::string&)>;
 
@@ -266,6 +267,29 @@ struct TopicList {
 
 /** A list of key-value attributes */
   using Attrs = std::map<std::string, ceph::buffer::list>;
+
+/**
+ * @brief A factory for DataProcessor instances
+ *
+ * This factory is used to create DataProcessor instances that can process data
+ * in a streaming fashion. It is used by the RGWGetDataCB interface to allow
+ * data to be processed as it is read from the backing store.
+ * The factory is responsible for passing the read data to the DataProcessor
+ * passed through the set_writer() method.
+ */
+class DataProcessorFactory {
+ public:
+  DataProcessorFactory() {}
+  virtual ~DataProcessorFactory() {}
+
+  virtual int set_writer(DataProcessor* writer,
+                         Attrs& attrs,
+                         const DoutPrefixProvider *dpp,
+                         optional_yield y) = 0;
+  virtual RGWGetObj_Filter* get_filter() = 0;
+  virtual bool need_copy_data() = 0;
+  virtual void finalize_attrs(Attrs& attrs) { /* default implementation does nothing */ }
+};
 
 /**
  * @brief Base singleton representing a Store or Filter
@@ -1213,6 +1237,7 @@ class Object {
 	       boost::optional<ceph::real_time> delete_at,
                std::string* version_id, std::string* tag, std::string* etag,
                void (*progress_cb)(off_t, void *), void* progress_data,
+               DataProcessorFactory* dp_factory,
                const DoutPrefixProvider* dpp, optional_yield y) = 0;
 
     /** return logging subsystem */
@@ -1233,6 +1258,8 @@ class Object {
     virtual void set_compressed() = 0;
     /** Check if this object is compressed */
     virtual bool is_compressed() = 0;
+    /** True if this object is a delete marker (newest version is deleted) */
+    virtual bool is_delete_marker() = 0;
     /** Check if object is synced */
     virtual bool is_sync_completed(const DoutPrefixProvider* dpp,
                                    optional_yield y,
@@ -1354,8 +1381,6 @@ class Object {
     virtual void set_hash_source(std::string s) = 0;
     /** Build an Object Identifier string for this object */
     virtual std::string get_oid(void) const = 0;
-    /** True if this object is a delete marker (newest version is deleted) */
-    virtual bool get_delete_marker(void) = 0;
     /** True if this object is stored in the extra data pool */
     virtual bool get_in_extra_data(void) = 0;
     /** True if this object exists in the store */

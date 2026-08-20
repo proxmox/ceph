@@ -2,6 +2,7 @@
  *   Copyright (C) 2016 Intel Corporation. All rights reserved.
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 #ifndef __NVMF_INTERNAL_H__
@@ -55,6 +56,28 @@ enum spdk_nvmf_subsystem_state {
 	SPDK_NVMF_SUBSYSTEM_RESUMING,
 	SPDK_NVMF_SUBSYSTEM_DEACTIVATING,
 	SPDK_NVMF_SUBSYSTEM_NUM_STATES,
+};
+
+enum nvmf_auth_key_type {
+	NVMF_AUTH_KEY_HOST,
+	NVMF_AUTH_KEY_CTRLR,
+};
+
+/*
+ * Asynchronous Event Mask Bit
+ */
+enum spdk_nvme_async_event_mask_bit {
+	/* Mask Namespace Change Notification */
+	SPDK_NVME_ASYNC_EVENT_NS_ATTR_CHANGE_MASK_BIT		= 0,
+	/* Mask Asymmetric Namespace Access Change Notification */
+	SPDK_NVME_ASYNC_EVENT_ANA_CHANGE_MASK_BIT		= 1,
+	/* Mask Discovery Log Change Notification */
+	SPDK_NVME_ASYNC_EVENT_DISCOVERY_LOG_CHANGE_MASK_BIT	= 2,
+	/* Mask Reservation Log Page Available Notification */
+	SPDK_NVME_ASYNC_EVENT_RESERVATION_LOG_AVAIL_MASK_BIT	= 3,
+	/* Mask Error Event */
+	SPDK_NVME_ASYNC_EVENT_ERROR_MASK_BIT			= 4,
+	/* 4 - 63 Reserved */
 };
 
 RB_HEAD(subsystem_tree, spdk_nvmf_subsystem);
@@ -117,10 +140,16 @@ struct spdk_nvmf_subsystem_listener {
 };
 
 struct spdk_nvmf_referral {
+	/* Target to which the referral belongs */
+	struct spdk_nvmf_tgt *tgt;
 	/* Discovery Log Page Entry for this referral */
 	struct spdk_nvmf_discovery_log_page_entry entry;
 	/* Transport ID */
 	struct spdk_nvme_transport_id trid;
+	/* Visible to these hosts */
+	TAILQ_HEAD(, spdk_nvmf_host) hosts;
+	/* Visible to all hosts or not */
+	bool allow_any_host;
 	TAILQ_ENTRY(spdk_nvmf_referral) link;
 };
 
@@ -137,6 +166,12 @@ struct spdk_nvmf_subsystem_pg_ns_info {
 	struct spdk_uuid		reg_hostid[SPDK_NVMF_MAX_NUM_REGISTRANTS];
 	uint64_t			num_blocks;
 	uint32_t			anagrpid;
+	struct {
+		/* Generational counter for preempted hostids list */
+		uint32_t			hostids_gen;
+		/* Count of IOs preempt-and-abort is waiting on */
+		uint64_t			io_waiting;
+	} preempt_abort;
 
 	/* I/O outstanding to this namespace */
 	uint64_t			io_outstanding;
@@ -167,6 +202,21 @@ struct spdk_nvmf_registrant {
 	uint16_t cntlid;
 };
 
+struct spdk_nvmf_reservation_preempt_abort_info {
+	/* preempted controllers */
+	struct spdk_uuid hostids[SPDK_NVMF_MAX_NUM_REGISTRANTS];
+	struct {
+		uint8_t io_waiting_done:	1; /* IO waiting is complete */
+		uint8_t rsvd_1:			7;
+	};
+	uint8_t rsvd_2[2];
+	uint8_t hostids_cnt;
+	uint32_t hostids_gen; /* Generational counter every time the list changes */
+	struct spdk_poller *io_waiting_timer;
+	uint64_t io_waiting_timeout_ticks;
+};
+SPDK_STATIC_ASSERT(SPDK_NVMF_MAX_NUM_REGISTRANTS <= UINT8_MAX, "hostids_cnt storage type");
+
 struct spdk_nvmf_ns {
 	uint32_t nsid;
 	uint32_t anagrpid;
@@ -188,6 +238,7 @@ struct spdk_nvmf_ns {
 	enum spdk_nvme_reservation_type rtype;
 	/* current reservation holder, only valid if reservation type can only have one holder */
 	struct spdk_nvmf_registrant *holder;
+	struct spdk_nvmf_reservation_preempt_abort_info *preempt_abort;
 	/* Persist Through Power Loss file which contains the persistent reservation */
 	char *ptpl_file;
 	/* Persist Through Power Loss feature is enabled */
@@ -370,6 +421,8 @@ struct spdk_nvmf_subsystem {
 	bool						nssr_enabled;
 };
 
+extern spdk_nvmf_custom_discovery_filter g_custom_discovery_filter;
+
 static int
 subsystem_cmp(struct spdk_nvmf_subsystem *subsystem1, struct spdk_nvmf_subsystem *subsystem2)
 {
@@ -392,10 +445,13 @@ void nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
 void nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
 				      struct spdk_nvmf_subsystem *subsystem, spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg);
 
-int nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
-				uint32_t iovcnt, uint64_t offset, uint32_t length,
-				struct spdk_nvme_transport_id *cmd_source_trid);
+void nvmf_get_discovery_log_page_async(struct spdk_nvmf_request *req,
+				       uint64_t offset, uint32_t length,
+				       struct spdk_nvme_transport_id *cmd_source_trid,
+				       bool rae);
 
+void nvmf_ctrlr_unmask_aen(struct spdk_nvmf_ctrlr *ctrlr,
+			   enum spdk_nvme_async_event_mask_bit mask);
 void nvmf_ctrlr_destruct(struct spdk_nvmf_ctrlr *ctrlr);
 int nvmf_ctrlr_process_admin_cmd(struct spdk_nvmf_request *req);
 int nvmf_ctrlr_process_io_cmd(struct spdk_nvmf_request *req);
@@ -441,17 +497,14 @@ void nvmf_subsystem_remove_all_listeners(struct spdk_nvmf_subsystem *subsystem,
 struct spdk_nvmf_ctrlr *nvmf_subsystem_get_ctrlr(struct spdk_nvmf_subsystem *subsystem,
 		uint16_t cntlid);
 bool nvmf_subsystem_host_auth_required(struct spdk_nvmf_subsystem *subsystem, const char *hostnqn);
-enum nvmf_auth_key_type {
-	NVMF_AUTH_KEY_HOST,
-	NVMF_AUTH_KEY_CTRLR,
-};
 struct spdk_key *nvmf_subsystem_get_dhchap_key(struct spdk_nvmf_subsystem *subsys, const char *nqn,
 		enum nvmf_auth_key_type type);
 struct spdk_nvmf_subsystem_listener *nvmf_subsystem_find_listener(
 	struct spdk_nvmf_subsystem *subsystem,
 	const struct spdk_nvme_transport_id *trid);
+bool nvmf_subsystem_listener_is_active(const struct spdk_nvmf_subsystem_listener *listener);
 bool nvmf_subsystem_zone_append_supported(struct spdk_nvmf_subsystem *subsystem);
-int nvmf_subsystem_poll_group_update_ns_reservation(const struct spdk_nvmf_ns *ns,
+void nvmf_subsystem_poll_group_update_ns_reservation(const struct spdk_nvmf_ns *ns,
 		struct spdk_nvmf_subsystem_pg_ns_info *pg_ns);
 struct spdk_nvmf_listener *nvmf_transport_find_listener(
 	struct spdk_nvmf_transport *transport,
@@ -472,6 +525,8 @@ void nvmf_ctrlr_reservation_notice_log(struct spdk_nvmf_ctrlr *ctrlr,
 				       enum spdk_nvme_reservation_notification_log_page_type type);
 
 bool nvmf_ns_is_ptpl_capable(const struct spdk_nvmf_ns *ns);
+struct spdk_nvme_rescap nvmf_ns_get_rescap(struct spdk_nvmf_ns *ns);
+size_t nvmf_ns_registrants_get_count(const struct spdk_nvmf_ns *ns);
 
 static inline struct spdk_nvmf_host *
 nvmf_ns_find_host(struct spdk_nvmf_ns *ns, const char *hostnqn)

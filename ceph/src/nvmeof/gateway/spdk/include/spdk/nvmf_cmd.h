@@ -30,6 +30,34 @@ int spdk_nvmf_ctrlr_identify_ctrlr(struct spdk_nvmf_ctrlr *ctrlr,
 				   struct spdk_nvme_ctrlr_data *cdata);
 
 /**
+ * Fills log page struct with supported cmds and effects log page for specified controller
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param log_page target structure to be filled with cmds and effects supported by the controller
+ */
+void spdk_nvmf_get_cmds_and_effects_log_page(struct spdk_nvmf_ctrlr *ctrlr,
+		struct spdk_nvme_cmds_and_effect_log_page *log_page);
+
+/**
+ * Fills log page struct with feature identifiers effects log page for specified controller
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param log_page target struct to be filled with log page data
+ */
+
+void spdk_nvmf_get_feature_ids_effects_log_page(struct spdk_nvmf_ctrlr *ctrlr,
+		struct spdk_nvme_feature_ids_effects_log_page *log_page);
+
+/**
+ * Fill the log page struct with supported log pages for specified controller
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param log_page target struct to be filled with log pages supported by the controller
+ */
+void spdk_nvmf_get_supported_log_pages(struct spdk_nvmf_ctrlr *ctrlr,
+				       struct spdk_nvme_supported_log_pages *log_page);
+
+/**
  * Fills the I/O Command Set specific Identify Namespace data structure (CNS
  * 05h)
  *
@@ -64,6 +92,22 @@ int spdk_nvmf_ctrlr_identify_iocs_specific(struct spdk_nvmf_ctrlr *ctrlr,
 		struct spdk_nvme_cpl *rsp,
 		void *cdata,
 		size_t cdata_size);
+
+
+/**
+ * Fills the I/O Command Set Independent Identify Namespace Data Structure
+ * (CNS 08h)
+ *
+ * \param ctrlr The NVMe-oF controller
+ * \param cmd The NVMe command
+ * \param rsp The NVMe command completion
+ * \param nsdata The filled in I/O Command Set Independent Identify Namespace Data
+ * \return \ref spdk_nvmf_request_exec_status
+ */
+int spdk_nvmf_identify_ns_iocs_independent(struct spdk_nvmf_ctrlr *ctrlr,
+		struct spdk_nvme_cmd *cmd,
+		struct spdk_nvme_cpl *rsp,
+		struct spdk_nvme_ns_iocs_independent_data *nsdata);
 
 /**
  * Fills the identify namespace attributes for the specified controller

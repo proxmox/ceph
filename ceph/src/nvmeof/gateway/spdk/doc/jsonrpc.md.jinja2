@@ -91,6 +91,14 @@ scripts/rpc.py save_config > config.json
 'config.json' can then be passed to a new SPDK application using the '-c' command line parameter
 to reproduce the same configuration.
 
+### JSON-RPC Remote access
+
+Visit this [link](https://spdk.io/doc/jsonrpc_proxy.html) for detailed information. Usage example:
+
+~~~bash
+spdk/scripts/rpc_http_proxy.py 192.168.0.2 8000 user password
+~~~
+
 ### JSON-RPC batching
 
 'rpc.py' also supports batching of multiple JSON-RPC methods with one invocation.  So instead of
@@ -138,47 +146,16 @@ argument that adds new RPC calls (subparsers.add_parser()).  The new parsers sho
 functions registered within the external module using the SPDK_RPC_REGISTER() macro.  Example:
 
 ~~~python
-from spdk.rpc.client import print_json
-
-
-def example_create(client, num_blocks, block_size, name=None, uuid=None):
-    """Construct an example block device.
-
-    Args:
-        num_blocks: size of block device in blocks
-        block_size: block size of device; must be a power of 2 and at least 512
-        name: name of block device (optional)
-        uuid: UUID of block device (optional)
-
-    Returns:
-        Name of created block device.
-    """
-    params = {'num_blocks': num_blocks, 'block_size': block_size}
-    if name:
-        params['name'] = name
-    if uuid:
-        params['uuid'] = uuid
-    return client.call('bdev_example_create', params)
-
-
-def example_delete(client, name):
-    """Delete example block device.
-
-    Args:
-        bdev_name: name of bdev to delete
-    """
-    params = {'name': name}
-    return client.call('bdev_example_delete', params)
+from spdk.rpc.cmd_parser import print_json
 
 
 def spdk_rpc_plugin_initialize(subparsers):
     def bdev_example_create(args):
         num_blocks = (args.total_size * 1024 * 1024) // args.block_size
-        print_json(example_create(args.client,
-                                  num_blocks=int(num_blocks),
-                                  block_size=args.block_size,
-                                  name=args.name,
-                                  uuid=args.uuid))
+        print_json(args.client.bdev_example_create(num_blocks=int(num_blocks),
+                                                   block_size=args.block_size,
+                                                   name=args.name,
+                                                   uuid=args.uuid))
 
     p = subparsers.add_parser('bdev_example_create',
                               help='Create an example bdev')
@@ -190,8 +167,7 @@ def spdk_rpc_plugin_initialize(subparsers):
     p.set_defaults(func=bdev_example_create)
 
     def bdev_example_delete(args):
-        example_delete(args.client,
-                      name=args.name)
+        args.client.bdev_example_delete(name=args.name)
 
     p = subparsers.add_parser('bdev_example_delete',
                               help='Delete an example disk')
@@ -396,109 +372,9 @@ Example response:
   "jsonrpc": "2.0",
   "id": 1,
   "result": [
-    "framework_start_init",
-    "rpc_get_methods",
-    "scsi_get_devices",
-    "nbd_get_disks",
-    "nbd_stop_disk",
-    "nbd_start_disk",
-    "log_get_flags",
-    "log_clear_flag",
-    "log_set_flag",
-    "log_get_level",
-    "log_set_level",
-    "log_get_print_level",
-    "log_set_print_level",
-    "iscsi_get_options",
-    "iscsi_target_node_add_lun",
-    "iscsi_get_connections",
-    "iscsi_delete_portal_group",
-    "iscsi_create_portal_group",
-    "iscsi_get_portal_groups",
-    "iscsi_delete_target_node",
-    "iscsi_target_node_remove_pg_ig_maps",
-    "iscsi_target_node_add_pg_ig_maps",
-    "iscsi_create_target_node",
-    "iscsi_get_target_nodes",
-    "iscsi_delete_initiator_group",
-    "iscsi_initiator_group_remove_initiators",
-    "iscsi_initiator_group_add_initiators",
-    "iscsi_create_initiator_group",
-    "iscsi_get_initiator_groups",
-    "iscsi_set_options",
-    "bdev_set_options",
-    "bdev_set_qos_limit",
-    "bdev_get_bdevs",
-    "bdev_get_iostat",
-    "framework_get_config",
-    "framework_get_subsystems",
-    "framework_monitor_context_switch",
-    "spdk_kill_instance",
-    "accel_set_options",
-    "accel_set_driver",
-    "accel_crypto_key_create",
-    "accel_crypto_key_destroy",
-    "accel_crypto_keys_get",
-    "accel_assign_opc",
-    "accel_get_module_info",
-    "accel_get_opc_assignments",
-    "accel_error_inject_error",
-    "ioat_scan_accel_module",
-    "dsa_scan_accel_module",
-    "dpdk_cryptodev_scan_accel_module",
-    "dpdk_cryptodev_set_driver",
-    "dpdk_cryptodev_get_driver",
-    "mlx5_scan_accel_module",
-    "accel_mlx5_dump_stats",
-    "bdev_virtio_attach_controller",
-    "bdev_virtio_scsi_get_devices",
-    "bdev_virtio_detach_controller",
-    "bdev_virtio_blk_set_hotplug",
-    "bdev_aio_delete",
-    "bdev_aio_create",
-    "bdev_split_delete",
-    "bdev_split_create",
-    "bdev_error_inject_error",
-    "bdev_error_delete",
-    "bdev_error_create",
-    "bdev_passthru_create",
-    "bdev_passthru_delete",
-    "bdev_nvme_apply_firmware",
-    "bdev_nvme_get_transport_statistics",
-    "bdev_nvme_get_controller_health_info",
-    "bdev_nvme_detach_controller",
-    "bdev_nvme_attach_controller",
-    "bdev_null_create",
-    "bdev_malloc_delete",
-    "bdev_malloc_create",
-    "bdev_ftl_delete",
-    "bdev_ftl_unload",
-    "bdev_ftl_create",
-    "bdev_ftl_load",
-    "bdev_ftl_unmap",
-    "bdev_ftl_get_stats",
-    "bdev_ftl_get_properties",
-    "bdev_ftl_set_property",
-    "bdev_lvol_get_lvstores",
-    "bdev_lvol_delete",
-    "bdev_lvol_resize",
-    "bdev_lvol_set_read_only",
-    "bdev_lvol_decouple_parent",
-    "bdev_lvol_inflate",
-    "bdev_lvol_rename",
-    "bdev_lvol_clone",
-    "bdev_lvol_snapshot",
-    "bdev_lvol_create",
-    "bdev_lvol_delete_lvstore",
-    "bdev_lvol_rename_lvstore",
-    "bdev_lvol_create_lvstore",
-    "bdev_lvol_start_shallow_copy",
-    "bdev_lvol_check_shallow_copy",
-    "bdev_lvol_set_parent",
-    "bdev_lvol_set_parent_bdev",
-    "bdev_daos_delete",
-    "bdev_daos_create",
-    "bdev_daos_resize"
+    {% for name in all_methods | sort -%}
+    "{{ name }}"{% if not loop.last %},{% endif %}
+    {% endfor %}
   ]
 }
 ~~~
@@ -2250,6 +2126,66 @@ Example response:
 }
 ~~~
 
+### ae4dma_scan_accel_module {#rpc_ae4dma_scan_accel_module}
+
+Enable ae4dma accel module offload.
+
+#### Parameters
+
+{{ ae4dma_scan_accel_module_params }}
+
+#### Example
+
+Example request:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "method": "ae4dma_scan_accel_module",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+### cuda_scan_accel_module {#rpc_cuda_scan_accel_module}
+
+Enable cuda accel module offload.
+
+#### Parameters
+
+{{ cuda_scan_accel_module_params }}
+
+#### Example
+
+Example request:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "method": "cuda_scan_accel_module",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
 ### dpdk_cryptodev_scan_accel_module {#rpc_dpdk_cryptodev_scan_accel_module}
 
 Enable dpdk_cryptodev accel offload
@@ -2636,7 +2572,7 @@ Example request:
   "id": 1,
   "method": "bdev_get_iostat",
   "params": {
-    "name": "Nvme0n1",
+    "names": ["Nvme0n1", "Nvme0n2"],
     "per_channel": false
   }
 }
@@ -2653,6 +2589,22 @@ Example response:
     "bdevs": [
       {
         "name": "Nvme0n1",
+        "bytes_read": 36864,
+        "num_read_ops": 2,
+        "bytes_written": 0,
+        "num_write_ops": 0,
+        "bytes_unmapped": 0,
+        "num_unmap_ops": 0,
+        "read_latency_ticks": 178904,
+        "write_latency_ticks": 0,
+        "unmap_latency_ticks": 0,
+        "queue_depth_polling_period": 2,
+        "queue_depth": 0,
+        "io_time": 0,
+        "weighted_io_time": 0
+      },
+      {
+        "name": "Nvme0n2",
         "bytes_read": 36864,
         "num_read_ops": 2,
         "bytes_written": 0,
@@ -3600,7 +3552,7 @@ Example request:
     "preferred_write_alignment": 64,
     "optimal_write_size": 4,
     "preferred_unmap_granularity": 16,
-    "preferred_unmap_alignment": 16,
+    "preferred_unmap_alignment": 16
   },
   "jsonrpc": "2.0",
   "method": "bdev_null_create",
@@ -5542,7 +5494,7 @@ Example response:
 
 Loads FTL bdev.
 
-This RPC is subject to change.
+This RPC is deprecated.
 
 #### Parameters
 
@@ -5624,7 +5576,7 @@ Example response:
 
 Unloads FTL bdev.
 
-This RPC is subject to change.
+This RPC is deprecated.
 
 #### Parameters
 
@@ -6452,12 +6404,7 @@ Create an authentication group for CHAP authentication.
 
 ##### secret {#rpc_iscsi_create_auth_group_secret}
 
- Name    | Optional   | Type   | Description
--------- | ---------- | ------ | ---------------------------
- user    | Required   | string | Unidirectional CHAP name
- secret  | Required   | string | Unidirectional CHAP secret
- muser   | Optional   | string | Bidirectional CHAP name
- msecret | Optional   | string | Bidirectional CHAP secret
+{{ iscsi_auth_secret_object }}
 
 #### Example
 
@@ -7035,10 +6982,7 @@ Add initiator group to portal group mappings to an existing iSCSI target node.
 
 ##### Portal to Initiator group mappings object
 
- Name   | Optional   | Type   | Description
-------- | ---------- | ------ | -----------------------------
- ig_tag | Required   | number | Existing initiator group tag
- pg_tag | Required   | number | Existing portal group tag
+{{ iscsi_pg_ig_map_object }}
 
 #### Example
 
@@ -7089,10 +7033,7 @@ Delete initiator group to portal group mappings from an existing iSCSI target no
 
 ##### Portal to Initiator group mappings object
 
- Name   | Optional   | Type   | Description
-------- | ---------- | ------ | -----------------------------
- ig_tag | Required   | number | Existing initiator group tag
- pg_tag | Required   | number | Existing portal group tag
+{{ iscsi_pg_ig_map_object }}
 
 #### Example
 
@@ -7217,10 +7158,7 @@ Add a portal group.
 
 ##### Portal object
 
- Name   | Optional   | Type   | Description
-------- | ---------- | ------ | -----------------------
- host   | Required   | string | Hostname or IP address
- port   | Required   | string | Port number
+{{ iscsi_portal_object }}
 
 #### Example
 
@@ -7735,6 +7673,7 @@ Example response:
       "allow_any_host": false,
       "serial_number": "abcdef",
       "model_number": "ghijklmnop",
+      "passthrough": false,
       "namespaces": [
         {
           "nsid": 1,
@@ -7834,12 +7773,7 @@ This method will fail if listener with given address already exists.
 The listen_address is used for adding the listeners to the NVMe-oF target
 and for referring to discovery services on other targets.
 
- Name    | Optional   | Type   | Description
--------- | ---------- | ------ | ------------------------------------------------
- trtype  | Required   | string | Transport type ("RDMA")
- adrfam  | Optional   | string | Address family ("IPv4", "IPv6", "IB", or "FC")
- traddr  | Required   | string | Transport address
- trsvcid | Optional   | string | Transport service ID (required for RDMA or TCP)
+{{ nvmf_listen_address_object }}
 
 #### Example
 
@@ -7962,16 +7896,7 @@ Add a namespace to a subsystem. The namespace ID is returned as the result.
 
 ##### namespace {#rpc_nvmf_namespace}
 
- Name          | Optional   | Type   | Description
--------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------
- nsid          | Optional   | number | Namespace ID between 1 and 4294967294, inclusive. Default: Automatically assign NSID.
- bdev_name     | Required   | string | Name of bdev to expose as a namespace.
- nguid         | Optional   | string | 16-byte namespace globally unique identifier in hexadecimal (e.g. "ABCDEF0123456789ABCDEF0123456789")
- eui64         | Optional   | string | 8-byte namespace EUI-64 in hexadecimal (e.g. "ABCDEF0123456789")
- uuid          | Optional   | string | RFC 4122 UUID (e.g. "ceccf520-691e-4b46-9546-34af789907c5")
- ptpl_file     | Optional   | string | File path to save/restore persistent reservation information
- anagrpid      | Optional   | number | ANA group ID. Default: Namespace ID.
- hide_metadata | Optional   | bool   | Enable hide_metadata option to the bdev. Default: false
+{{ nvmf_namespace_object }}
 
 #### Example
 
@@ -8279,7 +8204,7 @@ Example response:
   "result": [
     {
       "cntlid": 1,
-      "cntrltype: "io",
+      "cntrltype": "io",
       "hostnqn": "nqn.2016-06.io.spdk:host1",
       "hostid": "27dad528-6368-41c3-82d3-0b956b49025d",
       "num_io_qpairs": 5
@@ -8620,10 +8545,7 @@ have been initialized.
 
 ##### admin_cmd_passthru {#spdk_nvmf_admin_passthru_conf}
 
- Name           | Optional   | Type   | Description
---------------- | ---------- | ------ | --------------------------------------------------------------------------------------------------------------
- identify_ctrlr | Optional   | bool   | If true, enables custom identify handler that reports some identify attributes from the underlying NVMe drive
- vendor_specific| Optional   | bool   | If true, enables passthru command handlers for underlying NVMe drive for vendor specific cmds (OPCs: 0xC0-0xFF)
+{{ nvmf_admin_cmd_passthru_object }}
 
 #### Example
 
@@ -9358,39 +9280,25 @@ Response is an array of objects describing requested controller(s). Common field
 
 `backend_specific` contains one `block` object  of type:
 
- Name                    | Type        | Description
------------------------- | ----------- | -----------
- bdev                    | string      | Backing bdev name or Null if bdev is hot-removed
- readonly                | boolean     | True if controllers is readonly, false otherwise
+{{ vhost_blk_controller_params_object }}
 
 ##### Vhost SCSI {#rpc_vhost_get_controllers_scsi}
 
 `backend_specific` contains `scsi` array of following objects:
 
- Name                    | Type        | Description
------------------------- | ----------- | -----------
- target_name             | string      | Name of this SCSI target
- id                      | number      | Unique SPDK global SCSI target ID
- scsi_dev_num            | number      | SCSI target ID initiator will see when scanning this controller
- luns                    | array       | array of objects describing @ref rpc_vhost_get_controllers_scsi_luns
+{{ vhost_scsi_controller_params_object }}
 
 ##### Vhost SCSI LUN {#rpc_vhost_get_controllers_scsi_luns}
 
 Object of type:
 
- Name                    | Type        | Description
------------------------- | ----------- | -----------
- id                      | number      | SCSI LUN ID
- bdev_name               | string      | Backing bdev name
+{{ vhost_scsi_luns_controller_params_object }}
 
 ##### Vhost NVMe {#rpc_vhost_get_controllers_nvme}
 
 `backend_specific` contains `namespaces` array of following objects:
 
- Name                    | Type        | Description
------------------------- | ----------- | -----------
- nsid                    | number      | Namespace ID
- bdev                    | string      | Backing bdev name
+{{ vhost_nvme_controller_params_object }}
 
 #### Example
 
@@ -9547,7 +9455,8 @@ wanting to support future growth. For example,
 num_md_pages_per_cluster_ratio = 200 would support future 2x growth of
 the logical volume store, and would result in 0.2% of the underlying
 block device allocated for metadata (with a default 4MiB cluster
-size).
+size). The amount of future growth can be determined with the `max_growable_size`
+parameter from the bdev_lvol_get_lvstores RPC.
 
 {{ bdev_lvol_create_lvstore_params }}
 
@@ -9658,8 +9567,9 @@ Example response:
       "cluster_size": 4194304,
       "total_data_clusters": 31,
       "block_size": 4096,
-      "name": "LVS0"
-    }
+      "name": "LVS0",
+      "max_growable_size": 137271181312
+   }
   ]
 }
 ~~~
@@ -9701,6 +9611,12 @@ Example response:
 ### bdev_lvol_grow_lvstore {#rpc_bdev_lvol_grow_lvstore}
 
 Grow the logical volume store to fill the underlying bdev
+
+Growth is limited by the number of metadata pages allocated when the lvstore was created,
+and its specific max size can be found using the `max_growable_size` parameter from the
+bdev_lvol_get_lvstores RPC.
+
+This RPC can be called to grow an lvolstore when the underlying bdev has increased in size.
 
 #### Parameters
 

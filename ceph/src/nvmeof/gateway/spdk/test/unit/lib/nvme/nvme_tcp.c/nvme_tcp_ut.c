@@ -62,6 +62,9 @@ DEFINE_STUB(spdk_memory_domain_translate_data, int,
 DEFINE_STUB_V(spdk_memory_domain_invalidate_data, (struct spdk_memory_domain *domain,
 		void *domain_ctx, struct iovec *iov, uint32_t iovcnt));
 
+DEFINE_STUB_V(nvme_fabric_qpair_poll_cleanup, (struct spdk_nvme_qpair *qpair));
+DEFINE_STUB_V(nvme_fabric_qpair_auth_cleanup, (struct spdk_nvme_qpair *qpair, int status));
+
 static void
 nvme_transport_ctrlr_disconnect_qpair_done_mocked(struct spdk_nvme_qpair *qpair)
 {
@@ -240,10 +243,10 @@ nvme_tcp_ut_next_sge(void *cb_arg, void **address, uint32_t *length)
 static void
 test_nvme_tcp_build_sgl_request(void)
 {
-	struct nvme_tcp_qpair tqpair = {{0}};
-	struct spdk_nvme_ctrlr ctrlr = {{0}};
-	struct nvme_tcp_req tcp_req = {0};
-	struct nvme_request req = {{0}};
+	struct nvme_tcp_qpair tqpair = {};
+	struct spdk_nvme_ctrlr ctrlr = {};
+	struct nvme_tcp_req tcp_req = {};
+	struct nvme_request req = {};
 	struct nvme_tcp_ut_bdev_io bio;
 	uint64_t i;
 	int rc;
@@ -468,9 +471,9 @@ static void
 test_nvme_tcp_req_complete_safe(void)
 {
 	bool rc;
-	struct nvme_tcp_req	tcp_req = {0};
-	struct nvme_request	req = {{0}};
-	struct nvme_tcp_qpair	tqpair = {{0}};
+	struct nvme_tcp_req	tcp_req = {};
+	struct nvme_request	req = {};
+	struct nvme_tcp_qpair	tqpair = {};
 
 	tcp_req.req = &req;
 	tcp_req.req->qpair = &tqpair.qpair;
@@ -534,8 +537,8 @@ test_nvme_tcp_req_init(void)
 {
 	struct nvme_tcp_qpair tqpair = {};
 	struct nvme_request req = {};
-	struct nvme_tcp_req tcp_req = {0};
-	struct spdk_nvme_ctrlr ctrlr = {{0}};
+	struct nvme_tcp_req tcp_req = {};
+	struct spdk_nvme_ctrlr ctrlr = {};
 	struct nvme_tcp_ut_bdev_io bio = {};
 	int rc;
 
@@ -596,7 +599,7 @@ test_nvme_tcp_req_init(void)
 static void
 test_nvme_tcp_req_get(void)
 {
-	struct nvme_tcp_req tcp_req = {0};
+	struct nvme_tcp_req tcp_req = {};
 	struct nvme_tcp_qpair tqpair = {};
 	struct nvme_tcp_pdu send_pdu = {};
 
@@ -1494,6 +1497,9 @@ test_nvme_tcp_ctrlr_disconnect_qpair(void)
 	struct nvme_tcp_req treq = { .req = &req, .tqpair = &tqpair };
 	int rc, disconnected;
 
+	tgroup.sock_group = spdk_sock_group_create(&tgroup);
+	SPDK_CU_ASSERT_FATAL(tgroup.sock_group != NULL);
+
 	qpair = &tqpair.qpair;
 	qpair->poll_group = &tgroup.group;
 	tqpair.sock = (struct spdk_sock *)0xDEADBEEF;
@@ -1620,6 +1626,8 @@ test_nvme_tcp_ctrlr_disconnect_qpair(void)
 	nvme_tcp_ctrlr_disconnect_qpair(&ctrlr, qpair);
 
 	CU_ASSERT_EQUAL(qpair->state, NVME_QPAIR_DISCONNECTED);
+
+	spdk_sock_group_close(&tgroup.sock_group);
 }
 
 static void
@@ -1715,12 +1723,10 @@ static void
 test_nvme_tcp_poll_group_get_stats(void)
 {
 	int rc = 0;
-	struct spdk_sock_group sgroup = {};
 	struct nvme_tcp_poll_group *pgroup = NULL;
 	struct spdk_nvme_transport_poll_group *tgroup = NULL;
 	struct spdk_nvme_transport_poll_group_stat *tgroup_stat = NULL;
 
-	MOCK_SET(spdk_sock_group_create, &sgroup);
 	tgroup = nvme_tcp_poll_group_create();
 	CU_ASSERT(tgroup != NULL);
 	pgroup = nvme_tcp_poll_group(tgroup);
@@ -1745,8 +1751,6 @@ test_nvme_tcp_poll_group_get_stats(void)
 	nvme_tcp_poll_group_free_stats(tgroup, tgroup_stat);
 	rc = nvme_tcp_poll_group_destroy(tgroup);
 	CU_ASSERT(rc == 0);
-
-	MOCK_CLEAR(spdk_sock_group_create);
 }
 
 static void
@@ -1767,6 +1771,7 @@ test_nvme_tcp_ctrlr_construct(void)
 		.src_addr = "192.168.1.77",
 		.src_svcid = "23",
 	};
+	int rc;
 
 	/* Transmit ACK timeout value exceeds max, expected to pass and using max */
 	opts.transport_ack_timeout = NVME_TCP_CTRLR_MAX_TRANSPORT_ACK_TIMEOUT + 1;
@@ -1805,13 +1810,17 @@ test_nvme_tcp_ctrlr_construct(void)
 	opts.admin_queue_size = 2;
 	trid.adrfam = SPDK_NVMF_ADRFAM_INTRA_HOST;
 	ctrlr = nvme_tcp_ctrlr_construct(&trid, &opts, NULL);
-	CU_ASSERT(ctrlr == NULL);
+	rc = nvme_tcp_ctrlr_connect_qpair(ctrlr, ctrlr->adminq);
+	CU_ASSERT(rc == -1);
+	nvme_tcp_ctrlr_destruct(ctrlr);
 
 	/* Error connecting socket, expected to create Admin qpair failed */
 	trid.adrfam = SPDK_NVMF_ADRFAM_IPV4;
 	MOCK_SET(spdk_sock_connect_async, NULL);
 	ctrlr = nvme_tcp_ctrlr_construct(&trid, &opts, NULL);
-	CU_ASSERT(ctrlr == NULL);
+	rc = nvme_tcp_ctrlr_connect_qpair(ctrlr, ctrlr->adminq);
+	CU_ASSERT(rc == -1);
+	nvme_tcp_ctrlr_destruct(ctrlr);
 
 	MOCK_CLEAR(spdk_sock_connect_async);
 }

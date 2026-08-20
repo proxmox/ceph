@@ -410,10 +410,26 @@ nvme_request_check_timeout(struct nvme_request *req, uint16_t cid,
 {
 	struct spdk_nvme_qpair *qpair = req->qpair;
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
-	uint64_t timeout_ticks = nvme_qpair_is_admin_queue(qpair) ?
-				 active_proc->timeout_admin_ticks : active_proc->timeout_io_ticks;
+	uint64_t timeout_ticks = active_proc->timeout_io_ticks;
 
 	assert(active_proc->timeout_cb_fn != NULL);
+
+	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair))) {
+		if (req->cmd.opc == SPDK_NVME_OPC_ASYNC_EVENT_REQUEST) {
+			return 0;
+		}
+
+		timeout_ticks = active_proc->timeout_admin_ticks;
+		if (req->cmd.opc == SPDK_NVME_OPC_KEEP_ALIVE && ctrlr->opts.keep_alive_timeout_ms) {
+			timeout_ticks = ctrlr->opts.keep_alive_timeout_ms * spdk_get_ticks_hz() / SPDK_SEC_TO_MSEC;
+		}
+
+		/*
+		 * We don't want to expose the admin queue to the user, so when
+		 * we're timing out admin commands set the qpair to NULL.
+		 */
+		qpair = NULL;
+	}
 
 	if (spdk_unlikely(req->timed_out || req->submit_tick == 0)) {
 		return 0;
@@ -423,25 +439,12 @@ nvme_request_check_timeout(struct nvme_request *req, uint16_t cid,
 		return 0;
 	}
 
-	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair) &&
-			  req->cmd.opc == SPDK_NVME_OPC_ASYNC_EVENT_REQUEST)) {
-		return 0;
-	}
-
 	if (spdk_likely(req->submit_tick + timeout_ticks > now_tick)) {
 		return 1;
 	}
 
 	req->timed_out = true;
-
-	/*
-	 * We don't want to expose the admin queue to the user,
-	 * so when we're timing out admin commands set the
-	 * qpair to NULL.
-	 */
-	active_proc->timeout_cb_fn(active_proc->timeout_cb_arg, ctrlr,
-				   nvme_qpair_is_admin_queue(qpair) ? NULL : qpair,
-				   cid);
+	active_proc->timeout_cb_fn(active_proc->timeout_cb_arg, ctrlr, qpair, cid);
 	return 0;
 }
 
@@ -617,7 +620,6 @@ nvme_ctrlr_probe(const struct spdk_nvme_transport_id *trid,
 		ctrlr->remove_cb = probe_ctx->remove_cb;
 		ctrlr->cb_ctx = probe_ctx->cb_ctx;
 
-		nvme_qpair_set_state(ctrlr->adminq, NVME_QPAIR_ENABLED);
 		TAILQ_INSERT_TAIL(&probe_ctx->init_ctrlrs, ctrlr, tailq);
 		return 0;
 	}

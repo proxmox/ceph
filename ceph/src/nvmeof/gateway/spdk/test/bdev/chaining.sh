@@ -26,7 +26,7 @@ spdk_dd() {
 
 	# Disable auto-examine to avoid seeing the examine callbacks' reads in accel stats
 	config=$("$rootdir/scripts/gen_nvme.sh" --mode=remote --json-with-subsystems \
-		--trid="$TEST_TRANSPORT:$NVMF_FIRST_TARGET_IP:$NVMF_PORT:$nqn" \
+		--trid="transport=$TEST_TRANSPORT ip_addr=$NVMF_FIRST_TARGET_IP svc_port=$NVMF_PORT nqn=$nqn" \
 		| jq '.subsystems[0].config[.subsystems[0].config | length] |=
 			{"method": "bdev_set_options", "params": {"bdev_auto_examine": false}}')
 
@@ -190,7 +190,7 @@ bperfpid=$!
 
 waitforlisten $bperfpid "$bperfsock"
 rpc_bperf <<- CONFIG
-	bdev_set_options --disable-auto-examine
+	bdev_set_options --no-auto-examine
 	bdev_nvme_set_options --allow-accel-sequence
 	framework_start_init
 	bdev_nvme_attach_controller -t tcp -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -f ipv4 -n $nqn -b nvme0 --ddgst
@@ -220,7 +220,7 @@ bperfpid=$!
 
 waitforlisten $bperfpid "$bperfsock"
 rpc_bperf <<- CONFIG
-	bdev_set_options --disable-auto-examine
+	bdev_set_options --no-auto-examine
 	bdev_nvme_set_options --allow-accel-sequence
 	framework_start_init
 	bdev_nvme_attach_controller -t tcp -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -f ipv4 -n $nqn -b nvme0 --ddgst

@@ -13,17 +13,10 @@ pacman -Sy --needed --noconfirm python-pexpect python-pip libffi
 virtdir=${PIP_VIRTDIR:-/var/spdk/dependencies/pip}
 python3 -m venv --upgrade-deps --system-site-packages "$virtdir"
 source "$virtdir/bin/activate"
+python -m pip install pip-tools
+pip-compile --extra dev --strip-extras -o "$rootdir/scripts/pkgdep/requirements.txt" "${rootdir}/python/pyproject.toml"
+pip install -r "$rootdir/scripts/pkgdep/requirements.txt"
 
-# install python packages
-pip install configshell_fb
-pip install pyelftools
-pip install ijson
-pip install python-magic
-pip install grpcio
-pip install grpcio-tools
-pip install pyyaml
-pip install Jinja2
-pip install tabulate
 # Additional dependencies for DPDK
 pacman -Sy --needed --noconfirm numactl nasm
 # Additional dependencies for ISA-L used in compression

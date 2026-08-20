@@ -28,6 +28,8 @@
 #include "spdk/nvmf.h"
 #include "spdk/keyring.h"
 #include "spdk/module/keyring/file.h"
+#include "spdk/event.h"
+#include "spdk/trace.h"
 
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
@@ -86,7 +88,6 @@ struct ns_entry {
 	uint32_t		block_size;
 	uint32_t		md_size;
 	bool			md_interleave;
-	uint64_t		seed;
 	struct spdk_zipf	*zipf;
 	bool			pi_loc;
 	enum spdk_nvme_pi_type	pi_type;
@@ -218,7 +219,8 @@ static bool g_vmd;
 static const char *g_workload_type;
 static TAILQ_HEAD(, ctrlr_entry) g_controllers = TAILQ_HEAD_INITIALIZER(g_controllers);
 static TAILQ_HEAD(, ns_entry) g_namespaces = TAILQ_HEAD_INITIALIZER(g_namespaces);
-static uint32_t g_num_namespaces;
+static uint32_t g_num_namespaces = 0;
+static uint32_t g_num_async_devs = 0;
 static TAILQ_HEAD(, worker_thread) g_workers = TAILQ_HEAD_INITIALIZER(g_workers);
 static uint32_t g_num_workers = 0;
 static bool g_use_every_core = false;
@@ -255,6 +257,7 @@ static bool g_header_digest;
 static bool g_data_digest;
 static bool g_no_shn_notification;
 static bool g_mix_specified;
+static char *g_tpoint_group_mask = NULL;
 /* The flag is used to exit the program while keep alive fails on the transport */
 static bool g_exit;
 /* Default to 10 seconds for the keep alive value. This value is arbitrary. */
@@ -267,6 +270,8 @@ static double g_zipf_theta;
  */
 static uint32_t g_io_queue_size = UINT16_MAX;
 
+static enum spdk_log_level g_log_level = SPDK_LOG_ERROR;
+
 static uint32_t g_sock_zcopy_threshold;
 static char *g_sock_threshold_impl;
 
@@ -274,6 +279,7 @@ static uint8_t g_transport_tos = 0;
 
 static uint32_t g_rdma_srq_size;
 static struct spdk_key *g_psk = NULL, *g_dhchap = NULL, *g_dhchap_ctrlr = NULL;
+static char *g_vf_token = NULL;
 
 /* When user specifies -Q, some error messages are rate limited.  When rate
  * limited, we only print the error message every g_quiet_count times the
@@ -308,6 +314,8 @@ struct _trid_entry {
 	TAILQ_ENTRY(_trid_entry) tailq;
 };
 
+SPDK_LOG_DEPRECATION_REGISTER(perf_g_option, "perf -G option", "v26.05", 0);
+
 #define MAX_TRID_ENTRY 256
 static struct _trid_entry g_trids[MAX_TRID_ENTRY];
 static TAILQ_HEAD(, _trid_entry) g_trid_list = TAILQ_HEAD_INITIALIZER(g_trid_list);
@@ -324,12 +332,12 @@ perf_set_sock_opts(const char *impl_name, const char *field, uint32_t val, const
 	int rc;
 
 	rc = spdk_sock_impl_get_opts(impl_name, &sock_opts, &opts_size);
-	if (rc != 0) {
-		if (errno == EINVAL) {
+	if (rc < 0) {
+		if (rc == -EINVAL) {
 			fprintf(stderr, "Unknown sock impl %s\n", impl_name);
 		} else {
-			fprintf(stderr, "Failed to get opts for sock impl %s: error %d (%s)\n", impl_name, errno,
-				strerror(errno));
+			fprintf(stderr, "spdk_sock_impl_get_opts() failed, sock impl %s, %d: %s\n", impl_name, rc,
+				spdk_strerror(-rc));
 		}
 		return;
 	}
@@ -358,9 +366,10 @@ perf_set_sock_opts(const char *impl_name, const char *field, uint32_t val, const
 		return;
 	}
 
-	if (spdk_sock_impl_set_opts(impl_name, &sock_opts, opts_size)) {
-		fprintf(stderr, "Failed to set %s: %d for sock impl %s : error %d (%s)\n", field, val, impl_name,
-			errno, strerror(errno));
+	rc = spdk_sock_impl_set_opts(impl_name, &sock_opts, opts_size);
+	if (rc < 0) {
+		fprintf(stderr, "spdk_sock_impl_set_opts() failed to set %s: %d for sock impl %s, rc %d: %s\n",
+			field, val, impl_name, rc, strerror(-rc));
 	}
 }
 
@@ -774,7 +783,6 @@ register_file(const char *path)
 	entry->io_size_blocks = g_io_size_bytes / blklen;
 
 	if (g_is_random) {
-		entry->seed = rand();
 		if (g_zipf_theta > 0) {
 			entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
 		}
@@ -783,6 +791,7 @@ register_file(const char *path)
 	snprintf(entry->name, sizeof(entry->name), "%s", path);
 
 	g_num_namespaces++;
+	g_num_async_devs++;
 	TAILQ_INSERT_TAIL(&g_namespaces, entry, link);
 
 	return 0;
@@ -1030,7 +1039,7 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 		opts.io_queue_requests = entry->num_io_requests;
 	}
 
-	opts.delay_cmd_submit = g_enable_interrupt ? false : true;
+	opts.delay_cmd_submit = !g_enable_interrupt;
 	opts.create_only = true;
 
 	ctrlr_opts = spdk_nvme_ctrlr_get_opts(entry->u.nvme.ctrlr);
@@ -1281,7 +1290,6 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->io_size_blocks = g_io_size_bytes / sector_size;
 
 	if (g_is_random) {
-		entry->seed = spdk_rand_xorshift64_seed();
 		if (g_zipf_theta > 0) {
 			entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
 		}
@@ -1436,6 +1444,8 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_trid_entry *trid_
 	}
 }
 
+static __thread uint64_t seed = 0;
+
 static inline void
 submit_single_io(struct perf_task *task)
 {
@@ -1449,7 +1459,7 @@ submit_single_io(struct perf_task *task)
 	if (entry->zipf) {
 		offset_in_ios = spdk_zipf_generate(entry->zipf);
 	} else if (g_is_random) {
-		rand_value = spdk_rand_xorshift64(&entry->seed);
+		rand_value = spdk_rand_xorshift64(&seed);
 		offset_in_ios = rand_value % entry->size_in_ios;
 	} else {
 		offset_in_ios = ns_ctx->offset_in_ios++;
@@ -1462,7 +1472,7 @@ submit_single_io(struct perf_task *task)
 
 	if ((g_rw_percentage == 100) ||
 	    (g_rw_percentage != 0 &&
-	     ((spdk_rand_xorshift64(&entry->seed) % 100) < (uint64_t)g_rw_percentage))) {
+	     ((spdk_rand_xorshift64(&seed) % 100) < (uint64_t)g_rw_percentage))) {
 		task->is_read = true;
 	} else {
 		task->is_read = false;
@@ -1687,6 +1697,9 @@ work_fn(void *arg)
 	TAILQ_HEAD(, perf_task)	swap;
 	struct perf_task *task;
 
+	/* Initialize thread local seed. */
+	seed = spdk_rand_xorshift64_seed();
+
 	/* Allocate queue pairs for each namespace. */
 	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 		if (init_ns_worker_ctx(ns_ctx) != 0) {
@@ -1836,6 +1849,28 @@ work_fn(void *arg)
 }
 
 static void
+usage_basic(char *program_name)
+{
+	printf("%s - NVMe Performance Testing Tool\n\n", program_name);
+	printf("ESSENTIAL OPTIONS:\n");
+	printf("  -q, --io-depth <val>     Queue depth (required)\n");
+	printf("  -o, --io-size <val>      I/O size in bytes (required)\n");
+	printf("  -w, --io-pattern <type>  Workload: read, write, randread, randwrite, rw, randrw (required)\n");
+	printf("  -t, --time <sec>         Test duration in seconds (required)\n");
+	printf("  -r, --transport <fmt>    Target device/transport (required)\n");
+	printf("  -c, --core-mask <mask>   CPU core mask (default: 1)\n");
+	printf("\n");
+	printf("EXAMPLES:\n");
+	printf("  Local NVMe:  %s -q 64 -o 4k -w randread -t 60 -r 'trtype:PCIe traddr:0000:01:00.0'\n",
+	       program_name);
+	printf("  NVMe-oF TCP: %s -q 64 -o 4K -w randread -t 60 -r 'trtype:TCP adrfam:IPv4 traddr:192.168.1.100 trsvcid:4420'\n",
+	       program_name);
+	printf("\n");
+	printf("For complete options: %s --help-full or -v\n", program_name);
+	printf("For documentation: see app/spdk_nvme_perf/README.md\n");
+}
+
+static void
 usage(char *program_name)
 {
 	printf("%s options", program_name);
@@ -1886,6 +1921,9 @@ usage(char *program_name)
 #endif
 	printf("\t--iova-mode <mode> specify DPDK IOVA mode: va|pa\n");
 	printf("\t--no-huge, SPDK is run without hugepages\n");
+	printf("\t--enforce-numa, SPDK is run with enforce-numa environment flag, useful to enforce NUMA restrictions on huge page allocations\n");
+	printf("\t--vfio-vf-token <token> VF token (UUID) shared between SR-IOV PF and VFs for vfio_pci driver\n");
+	spdk_trace_mask_usage(stdout, "-y");
 	printf("\n");
 
 	printf("==== PCIe OPTIONS ====\n\n");
@@ -1921,6 +1959,8 @@ usage(char *program_name)
 	printf("\n");
 
 	printf("==== LOGGING ====\n\n");
+	printf("\t--log-level <level>   set log level (error, warning, notice, info, debug)\n");
+	printf("\t                   (Note: use -T to enable component-specific logs)\n");
 	printf("\t-L, --enable-sw-latency-tracking enable latency tracking via sw, default: disabled\n");
 	printf("\t\t-L for latency summary, -LL for detailed histogram\n");
 	printf("\t-l, --enable-ssd-latency-tracking enable latency tracking via ssd (if supported), default: disabled\n");
@@ -2296,7 +2336,7 @@ alloc_key(const char *name, const char *path)
 	return key;
 }
 
-#define PERF_GETOPT_SHORT "a:b:c:d:e:ghi:lmo:q:r:k:s:t:w:z:A:C:DEF:GHILM:NO:P:Q:RS:T:U:VZ:"
+#define PERF_GETOPT_SHORT "a:b:c:d:e:ghi:lmo:q:r:k:s:t:v:w:y:z:A:C:DEF:GHILM:NO:P:Q:RS:T:U:VZ:"
 
 static const struct option g_perf_cmdline_opts[] = {
 #define PERF_WARMUP_TIME	'a'
@@ -2375,6 +2415,8 @@ static const struct option g_perf_cmdline_opts[] = {
 	{"enable-vmd", no_argument, NULL, PERF_ENABLE_VMD},
 #define PERF_ENABLE_ZCOPY	'Z'
 	{"enable-zcopy",			required_argument,	NULL, PERF_ENABLE_ZCOPY},
+#define PERF_TRACING_MASK 'y'
+	{ "tpoint-group-mask", required_argument, NULL, PERF_TRACING_MASK},
 #define PERF_TRANSPORT_STATISTICS	257
 	{"transport-stats", no_argument, NULL, PERF_TRANSPORT_STATISTICS},
 #define PERF_IOVA_MODE		258
@@ -2407,6 +2449,14 @@ static const struct option g_perf_cmdline_opts[] = {
 	{"dhchap-key", required_argument, NULL, PERF_DHCHAP_PATH},
 #define PERF_DHCHAP_CTRLR_PATH		272
 	{"dhchap-ctrlr-key", required_argument, NULL, PERF_DHCHAP_CTRLR_PATH},
+#define PERF_VFIO_VF_TOKEN  273
+	{"vfio-vf-token", required_argument, NULL, PERF_VFIO_VF_TOKEN},
+#define PERF_LOG_LEVEL		274
+	{"log-level", required_argument, NULL, PERF_LOG_LEVEL},
+#define PERF_ENFORCE_NUMA   275
+	{"enforce-numa",			no_argument,	NULL, PERF_ENFORCE_NUMA},
+#define PERF_HELP_FULL 'v'
+	{"help-full", no_argument, NULL, PERF_HELP_FULL},
 	/* Should be the last element */
 	{0, 0, 0, 0}
 };
@@ -2436,6 +2486,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 	bool ssl_used = false;
 	char *sock_impl = "posix";
 	uint32_t trid_count = 0;
+	bool log_level_set = false;
+	bool debug_implied = false;
 
 	while ((op = getopt_long(argc, argv, PERF_GETOPT_SHORT, g_perf_cmdline_opts, &long_idx)) != -1) {
 		switch (op) {
@@ -2608,8 +2660,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			usage(argv[0]);
 			return 1;
 #else
+			SPDK_LOG_DEPRECATED(perf_g_option);
 			spdk_log_set_flag("nvme");
-			spdk_log_set_print_level(SPDK_LOG_DEBUG);
+			debug_implied = true;
 			break;
 #endif
 		case PERF_ENABLE_TCP_HDGST:
@@ -2641,7 +2694,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 				exit(EXIT_FAILURE);
 			}
 #ifdef DEBUG
-			spdk_log_set_print_level(SPDK_LOG_DEBUG);
+			debug_implied = true;
 #endif
 			break;
 		case PERF_ENABLE_VMD:
@@ -2706,7 +2759,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			sock_impl = optarg;
 			rc = spdk_sock_set_default_impl(optarg);
 			if (rc) {
-				fprintf(stderr, "Failed to set sock impl %s, err %d (%s)\n", optarg, errno, strerror(errno));
+				fprintf(stderr, "spdk_sock_set_default_impl() failed to set sock impl %s, rc %d: %s\n", optarg, rc,
+					spdk_strerror(-rc));
 				return 1;
 			}
 			break;
@@ -2730,7 +2784,36 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_NO_HUGE:
 			env_opts->no_huge = true;
 			break;
+		case PERF_ENFORCE_NUMA:
+			env_opts->enforce_numa = true;
+			break;
+		case PERF_VFIO_VF_TOKEN:
+			g_vf_token = strdup(optarg);
+			break;
+		case PERF_TRACING_MASK:
+			g_tpoint_group_mask = strdup(optarg);
+			break;
+		case PERF_LOG_LEVEL:
+			if (!strcmp(optarg, "error")) {
+				g_log_level = SPDK_LOG_ERROR;
+			} else if (!strcmp(optarg, "warning")) {
+				g_log_level = SPDK_LOG_WARN;
+			} else if (!strcmp(optarg, "notice")) {
+				g_log_level = SPDK_LOG_NOTICE;
+			} else if (!strcmp(optarg, "info")) {
+				g_log_level = SPDK_LOG_INFO;
+			} else if (!strcmp(optarg, "debug")) {
+				g_log_level = SPDK_LOG_DEBUG;
+			} else {
+				fprintf(stderr, "unknown log level %s\n", optarg);
+				return 1;
+			}
+			log_level_set = true;
+			break;
 		case PERF_HELP:
+			usage_basic(argv[0]);
+			return HELP_RETURN_CODE;
+		case PERF_HELP_FULL:
 			usage(argv[0]);
 			return HELP_RETURN_CODE;
 		default:
@@ -2859,6 +2942,14 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 				break;
 			}
 		}
+	}
+
+	/*
+	 * If the user didn't explicitly set a log level, but used -G or -T,
+	 * default to DEBUG to preserve legacy behavior.
+	 */
+	if (!log_level_set && debug_implied) {
+		g_log_level = SPDK_LOG_DEBUG;
 	}
 
 	g_file_optind = optind;
@@ -3111,6 +3202,10 @@ nvme_poll_ctrlrs(void *arg)
 
 	spdk_unaffinitize_thread();
 
+	if (g_tpoint_group_mask) {
+		spdk_trace_register_user_thread();
+	}
+
 	while (true) {
 		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
 
@@ -3161,6 +3256,34 @@ setup_sig_handlers(void)
 	return 0;
 }
 
+static int
+setup_spdk_tracing(const char *app_name, const char *tpoint_group_mask, int num_threads)
+{
+	struct spdk_app_opts app_opts;
+
+	if (!tpoint_group_mask) {
+		return 0;
+	}
+
+	spdk_app_opts_init(&app_opts, sizeof(app_opts));
+	app_opts.name = app_name;
+	app_opts.num_trace_threads = num_threads;
+	app_opts.tpoint_group_mask = tpoint_group_mask;
+
+	return spdk_app_setup_trace(&app_opts);
+}
+
+static void
+free_globals(void)
+{
+	free(g_vf_token);
+	free(g_tpoint_group_mask);
+
+	free_key(&g_psk);
+	free_key(&g_dhchap);
+	free_key(&g_dhchap_ctrlr);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3179,67 +3302,66 @@ main(int argc, char **argv)
 	opts.pci_allowed = g_allowed_pci_addr;
 	rc = parse_args(argc, argv, &opts);
 	if (rc != 0 || rc == HELP_RETURN_CODE) {
-		free_key(&g_psk);
-		free_key(&g_dhchap);
-		free_key(&g_dhchap_ctrlr);
+		free_globals();
 		if (rc == HELP_RETURN_CODE) {
 			return 0;
 		}
 
-		return rc;
+		goto out;
 	}
+
 	/* Transport statistics are printed from each thread.
 	 * To avoid mess in terminal, init and use mutex */
 	rc = pthread_mutex_init(&g_stats_mutex, NULL);
 	if (rc != 0) {
 		fprintf(stderr, "Failed to init mutex\n");
-		free_key(&g_psk);
-		free_key(&g_dhchap);
-		free_key(&g_dhchap_ctrlr);
-		return -1;
+		free_globals();
+		goto out;
 	}
-	if (spdk_env_init(&opts) < 0) {
+
+	opts.vf_token = g_vf_token;
+	rc = spdk_env_init(&opts);
+	if (rc < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
 		pthread_mutex_destroy(&g_stats_mutex);
-		free_key(&g_psk);
-		free_key(&g_dhchap);
-		free_key(&g_dhchap_ctrlr);
-		return -1;
+		free_globals();
+		goto out;
 	}
 
 	rc = spdk_keyring_init();
 	if (rc != 0) {
 		fprintf(stderr, "Unable to initialize keyring: %s\n", spdk_strerror(-rc));
 		pthread_mutex_destroy(&g_stats_mutex);
-		free_key(&g_psk);
-		free_key(&g_dhchap);
-		free_key(&g_dhchap_ctrlr);
+		free_globals();
 		spdk_env_fini();
-		return -1;
+		goto out;
 	}
+
+	spdk_log_open(NULL);
+	spdk_log_set_print_level(g_log_level);
+	spdk_log_set_level(g_log_level);
 
 	rc = setup_sig_handlers();
 	if (rc != 0) {
-		rc = -1;
 		goto cleanup;
 	}
 
 	g_tsc_rate = spdk_get_ticks_hz();
 
-	if (register_workers() != 0) {
-		rc = -1;
+	rc = register_workers();
+	if (rc != 0) {
 		goto cleanup;
 	}
 
 #if defined(HAVE_LIBAIO) || defined(SPDK_CONFIG_URING)
-	if (register_files(argc, argv) != 0) {
-		rc = -1;
+	rc = register_files(argc, argv);
+	if (rc != 0) {
 		goto cleanup;
 	}
 #endif
 
-	if (register_controllers() != 0) {
-		rc = -1;
+	rc = register_controllers();
+	if (rc != 0) {
 		goto cleanup;
 	}
 
@@ -3247,8 +3369,19 @@ main(int argc, char **argv)
 		printf("WARNING: Some requested NVMe devices were skipped\n");
 	}
 
+	/* check controllers; no controllers is ok when running with AIO/URING devices only */
+	if ((g_num_async_devs == 0) && (TAILQ_EMPTY(&g_controllers))) {
+		fprintf(stderr, "No valid NVMe controllers found\n");
+		goto cleanup;
+	}
+
 	if (g_num_namespaces == 0) {
-		fprintf(stderr, "No valid NVMe controllers or AIO or URING devices found\n");
+		if (g_num_async_devs == 0) {
+			fprintf(stderr, "No valid AIO or URING devices found\n");
+		} else {
+			fprintf(stderr, "No active namespaces found\n");
+		}
+
 		goto cleanup;
 	}
 
@@ -3257,14 +3390,19 @@ main(int argc, char **argv)
 		fprintf(stderr, "Error suppression count may not be exact.\n");
 	}
 
+	rc = setup_spdk_tracing("spdk_nvme_perf", g_tpoint_group_mask, g_num_workers);
+	if (rc != 0) {
+		goto cleanup;
+	}
+
 	rc = pthread_create(&thread_id, NULL, &nvme_poll_ctrlrs, NULL);
 	if (rc != 0) {
 		fprintf(stderr, "Unable to spawn a thread to poll admin queues.\n");
 		goto cleanup;
 	}
 
-	if (associate_workers_with_ns() != 0) {
-		rc = -1;
+	rc = associate_workers_with_ns();
+	if (rc != 0) {
 		goto cleanup;
 	}
 
@@ -3322,14 +3460,15 @@ cleanup:
 	unregister_controllers();
 	unregister_workers();
 
-	free_key(&g_psk);
-	free_key(&g_dhchap);
-	free_key(&g_dhchap_ctrlr);
+	free_globals();
+
 	spdk_keyring_cleanup();
+	spdk_log_close();
 	spdk_env_fini();
 
 	pthread_mutex_destroy(&g_stats_mutex);
 
+out:
 	if (rc != 0) {
 		fprintf(stderr, "%s: errors occurred\n", argv[0]);
 	}

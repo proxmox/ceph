@@ -782,6 +782,7 @@ public:
 	       boost::optional<ceph::real_time> delete_at,
                std::string* version_id, std::string* tag, std::string* etag,
                void (*progress_cb)(off_t, void *), void* progress_data,
+               rgw::sal::DataProcessorFactory* dp_factory,
                const DoutPrefixProvider* dpp, optional_yield y) override;
   virtual RGWAccessControlPolicy& get_acl(void) override;
   virtual int set_acl(const RGWAccessControlPolicy& acl) override { return next->set_acl(acl); }
@@ -791,6 +792,7 @@ public:
   virtual bool is_prefetch_data() override { return next->is_prefetch_data(); }
   virtual void set_compressed() override { return next->set_compressed(); }
   virtual bool is_compressed() override { return next->is_compressed(); }
+  virtual bool is_delete_marker() override { return next->is_delete_marker(); }
   bool is_sync_completed(const DoutPrefixProvider* dpp, optional_yield y,
                          const ceph::real_time& obj_mtime) override {
     return next->is_sync_completed(dpp, y, obj_mtime);
@@ -865,7 +867,6 @@ public:
   virtual std::string get_hash_source(void) override { return next->get_hash_source(); };
   virtual void set_hash_source(std::string s) override { return next->set_hash_source(s); };
   virtual std::string get_oid(void) const override { return next->get_oid(); };
-  virtual bool get_delete_marker(void) override { return next->get_delete_marker(); };
   virtual bool get_in_extra_data(void) override { return next->get_in_extra_data(); };
   virtual bool exists(void) override { return next->exists(); };
   virtual void set_in_extra_data(bool i) override { return next->set_in_extra_data(i); };

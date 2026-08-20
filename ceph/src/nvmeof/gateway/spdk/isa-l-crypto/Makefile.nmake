@@ -93,7 +93,7 @@ objs = \
 	bin\sha512_ctx_sse.obj \
 	bin\sha512_ctx_avx.obj \
 	bin\sha512_ctx_avx2.obj \
-	bin\sha512_ctx_sb_sse4.obj \
+	bin\sha512_ctx_avx2_ni.obj \
 	bin\sha512_ctx_base.obj \
 	bin\sha512_mb_mgr_init_sse.obj \
 	bin\sha512_mb_mgr_init_avx2.obj \
@@ -104,6 +104,9 @@ objs = \
 	bin\sha512_mb_mgr_flush_sse.obj \
 	bin\sha512_mb_mgr_flush_avx.obj \
 	bin\sha512_mb_mgr_flush_avx2.obj \
+	bin\sha512_mb_mgr_submit_ni_avx2.obj \
+	bin\sha512_mb_mgr_flush_ni_avx2.obj \
+	bin\sha512_x2_ni_avx2.obj \
 	bin\sha512_mb_x2_sse.obj \
 	bin\sha512_mb_x2_avx.obj \
 	bin\sha512_mb_x4_avx2.obj \
@@ -184,6 +187,10 @@ objs = \
 	bin\sm3_mb_mgr_submit_avx2.obj \
 	bin\sm3_mb_mgr_flush_avx2.obj \
 	bin\sm3_mb_x8_avx2.obj \
+	bin\sm3_ctx_avx2_ni.obj \
+	bin\sm3_mb_mgr_submit_avx2_ni.obj \
+	bin\sm3_mb_mgr_flush_avx2_ni.obj \
+	bin\sm3_mb_x1_avx2_ni.obj \
 	bin\gcm_multibinary.obj \
 	bin\gcm_pre.obj \
 	bin\gcm128_avx_gen2.obj \
@@ -264,11 +271,10 @@ objs = \
 	bin\version.obj
 
 
-INCLUDES  = -I./ -Isha1_mb/ -Isha256_mb/ -Isha512_mb/ -Imd5_mb/ -Imh_sha1/ -Imh_sha1_murmur3_x64_128/ -Imh_sha256/ -Irolling_hash/ -Ism3_mb/ -Iaes/ -Iinclude/ -Iintel-ipsec-mb/lib
+INCLUDES  = -I./ -Isha1_mb/ -Isha256_mb/ -Isha512_mb/ -Imd5_mb/ -Imh_sha1/ -Imh_sha1_murmur3_x64_128/ -Imh_sha256/ -Irolling_hash/ -Ism3_mb/ -Iaes/ -Iinclude/ -Iinclude/isa-l_crypto/ -Iinclude/internal/ -Iintel-ipsec-mb/lib
 # Modern asm feature level, consider upgrading nasm before decreasing feature_level
-FEAT_FLAGS = -DAS_FEATURE_LEVEL=10
-CFLAGS_REL = -O2 -DNDEBUG /Z7 /Gy /ZH:SHA_256 /guard:cf
-CFLAGS_DBG = -Od -DDEBUG /Z7
+CFLAGS_REL = -O2 -DNDEBUG /Z7 /MD /Gy /ZH:SHA_256 /guard:cf
+CFLAGS_DBG = -Od -DDEBUG /Z7 /MDd
 
 !if "$(CONFIG)" == "DEBUG"
 CFLAGS=$(CFLAGS_DBG)
@@ -277,8 +283,8 @@ CFLAGS=$(CFLAGS_REL)
 !endif
 
 LINKFLAGS  = -nologo -incremental:no -debug -guard:cf -DYNAMICBASE -CETCOMPAT
-CFLAGS     = $(CFLAGS) -nologo -D_USE_MATH_DEFINES -DNO_COMPAT_ISAL_CRYPTO_API_2_24 $(FEAT_FLAGS) $(INCLUDES) $(D) /W3
-AFLAGS     = -f win64 $(FEAT_FLAGS) $(INCLUDES) $(D)
+CFLAGS     = $(CFLAGS) -nologo -D_USE_MATH_DEFINES -DNO_COMPAT_ISAL_CRYPTO_API_2_24 $(INCLUDES) $(D) /W3
+AFLAGS     = -f win64 $(INCLUDES) $(D)
 CC         = cl
 # or CC    = icl -Qstd=c99
 AS         = nasm
@@ -479,7 +485,8 @@ perfs = \
 	xts_128_dec_ossl_perf.exe \
 	xts_256_enc_perf.exe \
 	xts_256_dec_perf.exe \
-	xts_256_dec_ossl_perf.exe
+	xts_256_dec_ossl_perf.exe \
+        aes_perf.exe
 
 perfs: lib $(perfs)
 $(perfs): $(@B).obj
@@ -542,6 +549,7 @@ sm3_mb_vs_ossl_shortage_perf.exe: sm3_test_helper.obj
 cbc_ossl_perf.exe:  libcrypto.lib
 cbc_std_vectors_random_test.exe:  libcrypto.lib
 gcm_ossl_perf.exe:  libcrypto.lib
+aes_perf.exe:  libcrypto.lib
 gcm_std_vectors_random_test.exe:  libcrypto.lib
 gcm_nt_rand_test.exe:  libcrypto.lib
 xts_128_enc_ossl_perf.exe:  libcrypto.lib

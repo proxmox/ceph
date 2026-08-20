@@ -31,7 +31,7 @@ perf_opt=(-q 4 -o 131072 -w randread -r "$perf_transport_opt")
 
 # set the number of available small iobuf entries low enough to trigger buffer allocation retry scenario
 $rpc_py accel_set_options --small-cache-size 0 --large-cache-size 0
-$rpc_py iobuf_set_options --small-pool-count 154 --small_bufsize=8192
+$rpc_py iobuf_set_options --small-pool-count 154 --small-bufsize=8192
 $rpc_py framework_start_init
 $rpc_py bdev_malloc_create -b Malloc0 32 512
 $rpc_py nvmf_create_transport "$NVMF_TRANSPORT_OPTS" -u 8192 -n 24 -b 24
@@ -44,14 +44,14 @@ $rpc_py nvmf_subsystem_add_listener "$subnqn" -t "$TEST_TRANSPORT" -a "$NVMF_FIR
 
 if [ "$CLEAN_FLOW" -eq 1 ]; then
 	# Clean flow tests if everything works fine with regular traffic scenario.
-	$perf "${perf_opt[@]}" -t 1 "${NO_HUGE[@]}"
+	run_app "$perf" "${perf_opt[@]}" -t 1
 	retry_count=$($rpc_py iobuf_get_stats | jq -r '.[] | select(.module == "nvmf_TCP") | .small_pool.retry')
 	if [[ $retry_count -eq 0 ]]; then
 		return 1
 	fi
 else
 	# Dirty flow tests if target can correctly clean up awaiting requests when initiator is suddenly gone.
-	$perf "${perf_opt[@]}" -t 10 "${NO_HUGE[@]}" &
+	run_app_bg "$perf" "${perf_opt[@]}" -t 10
 	perf_pid=$!
 	sleep 4
 	kill -9 $perfpid || true

@@ -100,7 +100,7 @@ free_rpc_initiator_group(struct rpc_initiator_group *ig)
 	free_rpc_netmask_list(&ig->netmask_list);
 }
 
-static const struct spdk_json_object_decoder rpc_initiator_group_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_create_initiator_group_decoders[] = {
 	{"tag", offsetof(struct rpc_initiator_group, tag), spdk_json_decode_int32},
 	{"initiators", offsetof(struct rpc_initiator_group, initiator_list), decode_rpc_initiator_list},
 	{"netmasks", offsetof(struct rpc_initiator_group, netmask_list), decode_rpc_netmask_list},
@@ -112,8 +112,8 @@ rpc_iscsi_create_initiator_group(struct spdk_jsonrpc_request *request,
 {
 	struct rpc_initiator_group req = {};
 
-	if (spdk_json_decode_object(params, rpc_initiator_group_decoders,
-				    SPDK_COUNTOF(rpc_initiator_group_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_create_initiator_group_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_create_initiator_group_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
 	}
@@ -144,7 +144,7 @@ invalid:
 SPDK_RPC_REGISTER("iscsi_create_initiator_group", rpc_iscsi_create_initiator_group,
 		  SPDK_RPC_RUNTIME)
 
-static const struct spdk_json_object_decoder rpc_add_or_delete_initiators_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_initiator_group_add_initiators_decoders[] = {
 	{"tag", offsetof(struct rpc_initiator_group, tag), spdk_json_decode_int32},
 	{"initiators", offsetof(struct rpc_initiator_group, initiator_list), decode_rpc_initiator_list, true},
 	{"netmasks", offsetof(struct rpc_initiator_group, netmask_list), decode_rpc_netmask_list, true},
@@ -156,8 +156,8 @@ rpc_iscsi_initiator_group_add_initiators(struct spdk_jsonrpc_request *request,
 {
 	struct rpc_initiator_group req = {};
 
-	if (spdk_json_decode_object(params, rpc_add_or_delete_initiators_decoders,
-				    SPDK_COUNTOF(rpc_add_or_delete_initiators_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_initiator_group_add_initiators_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_initiator_group_add_initiators_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
 	}
@@ -189,8 +189,8 @@ rpc_iscsi_initiator_group_remove_initiators(struct spdk_jsonrpc_request *request
 {
 	struct rpc_initiator_group req = {};
 
-	if (spdk_json_decode_object(params, rpc_add_or_delete_initiators_decoders,
-				    SPDK_COUNTOF(rpc_add_or_delete_initiators_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_initiator_group_add_initiators_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_initiator_group_add_initiators_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
 	}
@@ -280,7 +280,7 @@ struct rpc_pg_ig_map {
 	int32_t ig_tag;
 };
 
-static const struct spdk_json_object_decoder rpc_pg_ig_map_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_pg_ig_map_decoders[] = {
 	{"pg_tag", offsetof(struct rpc_pg_ig_map, pg_tag), spdk_json_decode_int32},
 	{"ig_tag", offsetof(struct rpc_pg_ig_map, ig_tag), spdk_json_decode_int32},
 };
@@ -290,8 +290,8 @@ decode_rpc_pg_ig_map(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_pg_ig_map *pg_ig_map = out;
 
-	return spdk_json_decode_object(val, rpc_pg_ig_map_decoders,
-				       SPDK_COUNTOF(rpc_pg_ig_map_decoders),
+	return spdk_json_decode_object(val, rpc_iscsi_pg_ig_map_decoders,
+				       SPDK_COUNTOF(rpc_iscsi_pg_ig_map_decoders),
 				       pg_ig_map);
 }
 
@@ -317,7 +317,7 @@ struct rpc_lun {
 	int32_t lun_id;
 };
 
-static const struct spdk_json_object_decoder rpc_lun_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_lun_decoders[] = {
 	{"bdev_name", offsetof(struct rpc_lun, bdev_name), spdk_json_decode_string},
 	{"lun_id", offsetof(struct rpc_lun, lun_id), spdk_json_decode_int32},
 };
@@ -327,8 +327,8 @@ decode_rpc_lun(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_lun *lun = out;
 
-	return spdk_json_decode_object(val, rpc_lun_decoders,
-				       SPDK_COUNTOF(rpc_lun_decoders), lun);
+	return spdk_json_decode_object(val, rpc_iscsi_lun_decoders,
+				       SPDK_COUNTOF(rpc_iscsi_lun_decoders), lun);
 }
 
 struct rpc_luns {
@@ -381,7 +381,7 @@ free_rpc_target_node(struct rpc_target_node *req)
 	free_rpc_luns(&req->luns);
 }
 
-static const struct spdk_json_object_decoder rpc_target_node_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_create_target_node_decoders[] = {
 	{"name", offsetof(struct rpc_target_node, name), spdk_json_decode_string},
 	{"alias_name", offsetof(struct rpc_target_node, alias_name), spdk_json_decode_string},
 	{"pg_ig_maps", offsetof(struct rpc_target_node, pg_ig_maps), decode_rpc_pg_ig_maps},
@@ -406,8 +406,8 @@ rpc_iscsi_create_target_node(struct spdk_jsonrpc_request *request,
 	int32_t lun_ids[RPC_ISCSI_CREATE_TARGET_NODE_MAX_LUN] = {0};
 	size_t i;
 
-	if (spdk_json_decode_object(params, rpc_target_node_decoders,
-				    SPDK_COUNTOF(rpc_target_node_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_create_target_node_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_create_target_node_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
@@ -463,7 +463,7 @@ struct rpc_tgt_node_pg_ig_maps {
 	struct rpc_pg_ig_maps pg_ig_maps;
 };
 
-static const struct spdk_json_object_decoder rpc_tgt_node_pg_ig_maps_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_target_node_add_pg_ig_maps_decoders[] = {
 	{"name", offsetof(struct rpc_tgt_node_pg_ig_maps, name), spdk_json_decode_string},
 	{"pg_ig_maps", offsetof(struct rpc_tgt_node_pg_ig_maps, pg_ig_maps), decode_rpc_pg_ig_maps},
 };
@@ -478,8 +478,8 @@ rpc_iscsi_target_node_add_pg_ig_maps(struct spdk_jsonrpc_request *request,
 	size_t i;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_tgt_node_pg_ig_maps_decoders,
-				    SPDK_COUNTOF(rpc_tgt_node_pg_ig_maps_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_add_pg_ig_maps_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_add_pg_ig_maps_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
@@ -526,8 +526,8 @@ rpc_iscsi_target_node_remove_pg_ig_maps(struct spdk_jsonrpc_request *request,
 	size_t i;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_tgt_node_pg_ig_maps_decoders,
-				    SPDK_COUNTOF(rpc_tgt_node_pg_ig_maps_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_add_pg_ig_maps_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_add_pg_ig_maps_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
@@ -697,7 +697,7 @@ free_rpc_portal_group(struct rpc_portal_group *pg)
 	free_rpc_portal_list(&pg->portal_list);
 }
 
-static const struct spdk_json_object_decoder rpc_portal_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_portal_decoders[] = {
 	{"host", offsetof(struct rpc_portal, host), spdk_json_decode_string},
 	{"port", offsetof(struct rpc_portal, port), spdk_json_decode_string},
 };
@@ -707,8 +707,8 @@ decode_rpc_portal(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_portal *portal = out;
 
-	return spdk_json_decode_object(val, rpc_portal_decoders,
-				       SPDK_COUNTOF(rpc_portal_decoders),
+	return spdk_json_decode_object(val, rpc_iscsi_portal_decoders,
+				       SPDK_COUNTOF(rpc_iscsi_portal_decoders),
 				       portal);
 }
 
@@ -721,7 +721,7 @@ decode_rpc_portal_list(const struct spdk_json_val *val, void *out)
 				      sizeof(struct rpc_portal));
 }
 
-static const struct spdk_json_object_decoder rpc_portal_group_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_create_portal_group_decoders[] = {
 	{"tag", offsetof(struct rpc_portal_group, tag), spdk_json_decode_int32},
 	{"portals", offsetof(struct rpc_portal_group, portal_list), decode_rpc_portal_list},
 	{"private", offsetof(struct rpc_portal_group, is_private), spdk_json_decode_bool, true},
@@ -738,8 +738,8 @@ rpc_iscsi_create_portal_group(struct spdk_jsonrpc_request *request,
 	size_t i = 0;
 	int rc = -1;
 
-	if (spdk_json_decode_object(params, rpc_portal_group_decoders,
-				    SPDK_COUNTOF(rpc_portal_group_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_create_portal_group_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_create_portal_group_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto out;
@@ -855,7 +855,7 @@ _rpc_iscsi_start_portal_group(int pg_tag)
 		return -ENODEV;
 	}
 
-	iscsi_portal_grp_resume(pg);
+	spdk_poller_resume(pg->acceptor_poller);
 	return 0;
 }
 
@@ -875,7 +875,7 @@ struct rpc_portal_group_auth {
 	int32_t chap_group;
 };
 
-static const struct spdk_json_object_decoder rpc_portal_group_auth_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_portal_group_set_auth_decoders[] = {
 	{"tag", offsetof(struct rpc_portal_group_auth, tag), spdk_json_decode_int32},
 	{"disable_chap", offsetof(struct rpc_portal_group_auth, disable_chap), spdk_json_decode_bool, true},
 	{"require_chap", offsetof(struct rpc_portal_group_auth, require_chap), spdk_json_decode_bool, true},
@@ -891,8 +891,8 @@ rpc_iscsi_portal_group_set_auth(struct spdk_jsonrpc_request *request,
 	struct spdk_iscsi_portal_grp *pg;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_portal_group_auth_decoders,
-				    SPDK_COUNTOF(rpc_portal_group_auth_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_portal_group_set_auth_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_portal_group_set_auth_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1096,7 +1096,7 @@ free_rpc_target_lun(struct rpc_target_lun *req)
 	free(req->bdev_name);
 }
 
-static const struct spdk_json_object_decoder rpc_target_lun_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_target_node_add_lun_decoders[] = {
 	{"name", offsetof(struct rpc_target_lun, name), spdk_json_decode_string},
 	{"bdev_name", offsetof(struct rpc_target_lun, bdev_name), spdk_json_decode_string},
 	{"lun_id", offsetof(struct rpc_target_lun, lun_id), spdk_json_decode_int32, true},
@@ -1112,8 +1112,8 @@ rpc_iscsi_target_node_add_lun(struct spdk_jsonrpc_request *request,
 
 	req.lun_id = -1;
 
-	if (spdk_json_decode_object(params, rpc_target_lun_decoders,
-				    SPDK_COUNTOF(rpc_target_lun_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_add_lun_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_add_lun_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
 	}
@@ -1156,7 +1156,7 @@ free_rpc_target_auth(struct rpc_target_auth *req)
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_target_auth_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_target_node_set_auth_decoders[] = {
 	{"name", offsetof(struct rpc_target_auth, name), spdk_json_decode_string},
 	{"disable_chap", offsetof(struct rpc_target_auth, disable_chap), spdk_json_decode_bool, true},
 	{"require_chap", offsetof(struct rpc_target_auth, require_chap), spdk_json_decode_bool, true},
@@ -1172,8 +1172,8 @@ rpc_iscsi_target_node_set_auth(struct spdk_jsonrpc_request *request,
 	struct spdk_iscsi_tgt_node *target;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_target_auth_decoders,
-				    SPDK_COUNTOF(rpc_target_auth_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_set_auth_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_set_auth_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1221,7 +1221,7 @@ free_rpc_target_redirect(struct rpc_target_redirect *req)
 	free(req->redirect_port);
 }
 
-static const struct spdk_json_object_decoder rpc_target_redirect_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_target_node_set_redirect_decoders[] = {
 	{"name", offsetof(struct rpc_target_redirect, name), spdk_json_decode_string},
 	{"pg_tag", offsetof(struct rpc_target_redirect, pg_tag), spdk_json_decode_int32},
 	{"redirect_host", offsetof(struct rpc_target_redirect, redirect_host), spdk_json_decode_string, true},
@@ -1236,8 +1236,8 @@ rpc_iscsi_target_node_set_redirect(struct spdk_jsonrpc_request *request,
 	struct spdk_iscsi_tgt_node *target;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_target_redirect_decoders,
-				    SPDK_COUNTOF(rpc_target_redirect_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_set_redirect_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_set_redirect_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -1283,7 +1283,7 @@ free_rpc_target_logout(struct rpc_target_logout *req)
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_target_logout_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_target_node_request_logout_decoders[] = {
 	{"name", offsetof(struct rpc_target_logout, name), spdk_json_decode_string},
 	{"pg_tag", offsetof(struct rpc_target_logout, pg_tag), spdk_json_decode_int32, true},
 };
@@ -1300,8 +1300,8 @@ rpc_iscsi_target_node_request_logout(struct spdk_jsonrpc_request *request,
 	 */
 	req.pg_tag = -1;
 
-	if (spdk_json_decode_object(params, rpc_target_logout_decoders,
-				    SPDK_COUNTOF(rpc_target_logout_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_target_node_request_logout_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_target_node_request_logout_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -1354,7 +1354,7 @@ struct rpc_discovery_auth {
 	int32_t chap_group;
 };
 
-static const struct spdk_json_object_decoder rpc_discovery_auth_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_set_discovery_auth_decoders[] = {
 	{"disable_chap", offsetof(struct rpc_discovery_auth, disable_chap), spdk_json_decode_bool, true},
 	{"require_chap", offsetof(struct rpc_discovery_auth, require_chap), spdk_json_decode_bool, true},
 	{"mutual_chap", offsetof(struct rpc_discovery_auth, mutual_chap), spdk_json_decode_bool, true},
@@ -1368,8 +1368,8 @@ rpc_iscsi_set_discovery_auth(struct spdk_jsonrpc_request *request,
 	struct rpc_discovery_auth req = {};
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_discovery_auth_decoders,
-				    SPDK_COUNTOF(rpc_discovery_auth_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_set_discovery_auth_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_set_discovery_auth_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1406,7 +1406,7 @@ free_rpc_auth_secret(struct rpc_auth_secret *_secret)
 	free(_secret->msecret);
 }
 
-static const struct spdk_json_object_decoder rpc_auth_secret_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_auth_secret_decoders[] = {
 	{"user", offsetof(struct rpc_auth_secret, user), spdk_json_decode_string},
 	{"secret", offsetof(struct rpc_auth_secret, secret), spdk_json_decode_string},
 	{"muser", offsetof(struct rpc_auth_secret, muser), spdk_json_decode_string, true},
@@ -1418,8 +1418,8 @@ decode_rpc_auth_secret(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_auth_secret *_secret = out;
 
-	return spdk_json_decode_object(val, rpc_auth_secret_decoders,
-				       SPDK_COUNTOF(rpc_auth_secret_decoders), _secret);
+	return spdk_json_decode_object(val, rpc_iscsi_auth_secret_decoders,
+				       SPDK_COUNTOF(rpc_iscsi_auth_secret_decoders), _secret);
 }
 
 struct rpc_auth_secrets {
@@ -1458,7 +1458,7 @@ free_rpc_auth_group(struct rpc_auth_group *group)
 	free_rpc_auth_secrets(&group->secrets);
 }
 
-static const struct spdk_json_object_decoder rpc_auth_group_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_create_auth_group_decoders[] = {
 	{"tag", offsetof(struct rpc_auth_group, tag), spdk_json_decode_int32},
 	{"secrets", offsetof(struct rpc_auth_group, secrets), decode_rpc_auth_secrets, true},
 };
@@ -1473,8 +1473,8 @@ rpc_iscsi_create_auth_group(struct spdk_jsonrpc_request *request,
 	int rc;
 	size_t i;
 
-	if (spdk_json_decode_object(params, rpc_auth_group_decoders,
-				    SPDK_COUNTOF(rpc_auth_group_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_create_auth_group_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_create_auth_group_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1523,7 +1523,7 @@ struct rpc_delete_auth_group {
 	int32_t tag;
 };
 
-static const struct spdk_json_object_decoder rpc_delete_auth_group_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_delete_auth_group_decoders[] = {
 	{"tag", offsetof(struct rpc_delete_auth_group, tag), spdk_json_decode_int32},
 };
 
@@ -1534,8 +1534,8 @@ rpc_iscsi_delete_auth_group(struct spdk_jsonrpc_request *request,
 	struct rpc_delete_auth_group req = {};
 	struct spdk_iscsi_auth_group *group;
 
-	if (spdk_json_decode_object(params, rpc_delete_auth_group_decoders,
-				    SPDK_COUNTOF(rpc_delete_auth_group_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_delete_auth_group_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_delete_auth_group_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1578,7 +1578,7 @@ free_rpc_add_auth_secret(struct rpc_add_auth_secret *_secret)
 	free(_secret->msecret);
 }
 
-static const struct spdk_json_object_decoder rpc_add_auth_secret_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_auth_group_add_secret_decoders[] = {
 	{"tag", offsetof(struct rpc_add_auth_secret, tag), spdk_json_decode_int32},
 	{"user", offsetof(struct rpc_add_auth_secret, user), spdk_json_decode_string},
 	{"secret", offsetof(struct rpc_add_auth_secret, secret), spdk_json_decode_string},
@@ -1594,8 +1594,8 @@ rpc_iscsi_auth_group_add_secret(struct spdk_jsonrpc_request *request,
 	struct spdk_iscsi_auth_group *group;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_add_auth_secret_decoders,
-				    SPDK_COUNTOF(rpc_add_auth_secret_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_auth_group_add_secret_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_auth_group_add_secret_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1647,7 +1647,7 @@ free_rpc_remove_auth_secret(struct rpc_remove_auth_secret *_secret)
 	free(_secret->user);
 }
 
-static const struct spdk_json_object_decoder rpc_remove_auth_secret_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_auth_group_remove_secret_decoders[] = {
 	{"tag", offsetof(struct rpc_remove_auth_secret, tag), spdk_json_decode_int32},
 	{"user", offsetof(struct rpc_remove_auth_secret, user), spdk_json_decode_string},
 };
@@ -1660,8 +1660,8 @@ rpc_iscsi_auth_group_remove_secret(struct spdk_jsonrpc_request *request,
 	struct spdk_iscsi_auth_group *group;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_remove_auth_secret_decoders,
-				    SPDK_COUNTOF(rpc_remove_auth_secret_decoders), &req)) {
+	if (spdk_json_decode_object(params, rpc_iscsi_auth_group_remove_secret_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_auth_group_remove_secret_decoders), &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -1722,15 +1722,11 @@ rpc_iscsi_get_auth_groups(struct spdk_jsonrpc_request *request,
 }
 SPDK_RPC_REGISTER("iscsi_get_auth_groups", rpc_iscsi_get_auth_groups, SPDK_RPC_RUNTIME)
 
-static const struct spdk_json_object_decoder rpc_set_iscsi_opts_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_set_options_decoders[] = {
 	{"auth_file", offsetof(struct spdk_iscsi_opts, authfile), spdk_json_decode_string, true},
 	{"node_base", offsetof(struct spdk_iscsi_opts, nodebase), spdk_json_decode_string, true},
 	{"nop_timeout", offsetof(struct spdk_iscsi_opts, timeout), spdk_json_decode_int32, true},
 	{"nop_in_interval", offsetof(struct spdk_iscsi_opts, nopininterval), spdk_json_decode_int32, true},
-	{"no_discovery_auth", offsetof(struct spdk_iscsi_opts, disable_chap), spdk_json_decode_bool, true},
-	{"req_discovery_auth", offsetof(struct spdk_iscsi_opts, require_chap), spdk_json_decode_bool, true},
-	{"req_discovery_auth_mutual", offsetof(struct spdk_iscsi_opts, mutual_chap), spdk_json_decode_bool, true},
-	{"discovery_auth_group", offsetof(struct spdk_iscsi_opts, chap_group), spdk_json_decode_int32, true},
 	{"disable_chap", offsetof(struct spdk_iscsi_opts, disable_chap), spdk_json_decode_bool, true},
 	{"require_chap", offsetof(struct spdk_iscsi_opts, require_chap), spdk_json_decode_bool, true},
 	{"mutual_chap", offsetof(struct spdk_iscsi_opts, mutual_chap), spdk_json_decode_bool, true},
@@ -1773,8 +1769,8 @@ rpc_iscsi_set_options(struct spdk_jsonrpc_request *request,
 	}
 
 	if (params != NULL) {
-		if (spdk_json_decode_object(params, rpc_set_iscsi_opts_decoders,
-					    SPDK_COUNTOF(rpc_set_iscsi_opts_decoders), opts)) {
+		if (spdk_json_decode_object(params, rpc_iscsi_set_options_decoders,
+					    SPDK_COUNTOF(rpc_iscsi_set_options_decoders), opts)) {
 			SPDK_ERRLOG("spdk_json_decode_object() failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 							 "Invalid parameters");
@@ -1802,7 +1798,7 @@ struct rpc_iscsi_enable_histogram_request {
 	bool enable;
 };
 
-static const struct spdk_json_object_decoder rpc_iscsi_enable_histogram_request_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_enable_histogram_decoders[] = {
 	{"name", offsetof(struct rpc_iscsi_enable_histogram_request, name), spdk_json_decode_string},
 	{"enable", offsetof(struct rpc_iscsi_enable_histogram_request, enable), spdk_json_decode_bool},
 };
@@ -1861,8 +1857,8 @@ rpc_iscsi_enable_histogram(struct spdk_jsonrpc_request *request,
 	struct spdk_thread *thread;
 	spdk_msg_fn fn;
 
-	if (spdk_json_decode_object(params, rpc_iscsi_enable_histogram_request_decoders,
-				    SPDK_COUNTOF(rpc_iscsi_enable_histogram_request_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_enable_histogram_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_enable_histogram_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -1922,7 +1918,7 @@ struct rpc_iscsi_get_histogram_request {
 	char *name;
 };
 
-static const struct spdk_json_object_decoder rpc_iscsi_get_histogram_request_decoders[] = {
+static const struct spdk_json_object_decoder rpc_iscsi_get_histogram_decoders[] = {
 	{"name", offsetof(struct rpc_iscsi_get_histogram_request, name), spdk_json_decode_string}
 };
 
@@ -1943,8 +1939,8 @@ rpc_iscsi_get_histogram(struct spdk_jsonrpc_request *request,
 	size_t src_len, dst_len;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_iscsi_get_histogram_request_decoders,
-				    SPDK_COUNTOF(rpc_iscsi_get_histogram_request_decoders),
+	if (spdk_json_decode_object(params, rpc_iscsi_get_histogram_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_get_histogram_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,

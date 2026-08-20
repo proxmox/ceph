@@ -400,7 +400,10 @@ void spdk_bs_destroy(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn,
 /**
  * Unload the blobstore.
  *
- * It will flush all volatile data to disk.
+ * It will flush all volatile data to disk and clean up the blobstore from memory.
+ * When disk is no longer present the volatile data will not be persisted.
+ *
+ * On success or -EIO the blobstore pointer is no longer valid.
  *
  * \param bs blobstore to unload.
  * \param cb_fn Called when the unloading is complete.
@@ -448,6 +451,16 @@ uint64_t spdk_bs_get_cluster_size(struct spdk_blob_store *bs);
  * \return page size.
  */
 uint64_t spdk_bs_get_page_size(struct spdk_blob_store *bs);
+
+/**
+ * Get the maximum growable size of blobstore, in bytes.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return the maximum growable size in bytes
+ */
+uint64_t
+spdk_bs_get_max_growable_size(struct spdk_blob_store *bs);
 
 /**
  * Get the io unit size in bytes.

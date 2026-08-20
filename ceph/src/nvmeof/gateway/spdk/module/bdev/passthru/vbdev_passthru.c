@@ -668,6 +668,8 @@ vbdev_passthru_register(const char *bdev_name)
 		pt_node->pt_bdev.dif_check_flags = bdev->dif_check_flags;
 		pt_node->pt_bdev.dif_pi_format = bdev->dif_pi_format;
 
+		pt_node->pt_bdev.numa = bdev->numa;
+
 		/* This is the context that is passed to us when the bdev
 		 * layer calls in so we'll save our pt_bdev node here.
 		 */
@@ -679,7 +681,7 @@ vbdev_passthru_register(const char *bdev_name)
 		spdk_io_device_register(pt_node, pt_bdev_ch_create_cb, pt_bdev_ch_destroy_cb,
 					sizeof(struct pt_io_channel),
 					name->vbdev_name);
-		SPDK_NOTICELOG("io_device created at: 0x%p\n", pt_node);
+		SPDK_NOTICELOG("io_device created at: %p\n", pt_node);
 
 		/* Save the thread where the base device is opened */
 		pt_node->thread = spdk_get_thread();

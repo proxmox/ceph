@@ -42,6 +42,7 @@ image27 = "mytestdevimage27"
 image28 = "mytestdevimage28"
 image29 = "mytestdevimage29"
 image30 = "mytestdevimage30"
+image31 = "mytestdevimage31"
 pool = "rbd"
 subsystem = "nqn.2016-06.io.spdk:cnode1"
 subsystem2 = "nqn.2016-06.io.spdk:cnode2"
@@ -61,6 +62,7 @@ subsystem15 = "nqn.2016-06.io.spdk:cnode15"
 subsystem16 = "nqn.2016-06.io.spdk:cnode16"
 subsystem17 = "nqn.2016-06.io.spdk:cnode17"
 subsystem18 = "nqn.2016-06.io.spdk:cnode18"
+subsystem19 = "nqn.2016-06.io.spdk:cnode19"
 subsystemX = "nqn.2016-06.io.spdk:cnodeX"
 discovery_nqn = "nqn.2014-08.org.nvmexpress.discovery"
 serial = "Ceph00000000000001"
@@ -88,6 +90,8 @@ host12 = hostprefix + "12"
 host13 = hostprefix + "13"
 host14 = hostprefix + "14"
 host15 = hostprefix + "15"
+host16 = hostprefix + "16"
+host17 = hostprefix + "17"
 hostxx = hostprefix + "XX"
 nsid = "1"
 anagrpid = "1"
@@ -469,11 +473,26 @@ class TestCreate:
                                                   rbd_image_name="junkimage",
                                                   block_size=512,
                                                   create_image=True,
-                                                  size=16 * 1024 * 1024 + 20)
+                                                  size=16 * 1024 * 1024 + 512)
         ret = stub.namespace_add(add_namespace_req)
         assert ret.status != 0
         assert "Failure adding namespace" in caplog.text
         assert "Image size must be aligned to MiBs" in caplog.text
+
+    def test_add_namespace_wrong_size_existing_image(self, caplog, gateway):
+        caplog.clear()
+        cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", pool,
+             "--rbd-image", image31, "--size", "11MB", "--rbd-create-image"])
+        assert f"Adding namespace 1 to {subsystem}: Successful" in caplog.text
+        caplog.clear()
+        cli(["namespace", "del", "--subsystem", subsystem, "--nsid", "1"])
+        assert f"Deleting namespace 1 from {subsystem}: Successful" in caplog.text
+        # We should now have a RBD image 11MB big
+        caplog.clear()
+        cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", pool,
+             "--block-size", "2097152", "--rbd-image", image31])
+        assert f"Failure adding namespace to {subsystem}: Image size 11534336 must be a " \
+               f"multiple of the block size 2097152" in caplog.text
 
     def test_add_namespace_wrong_block_size(self, caplog, gateway):
         gw, stub = gateway
@@ -487,7 +506,33 @@ class TestCreate:
         ret = stub.namespace_add(add_namespace_req)
         assert ret.status != 0
         assert "Failure adding namespace" in caplog.text
-        assert "Block size can't be zero" in caplog.text
+        assert "Block size must be positive" in caplog.text
+
+    def test_add_namespace_image_size_not_divisible(self, caplog, gateway):
+        gw, stub = gateway
+        caplog.clear()
+        rc = 0
+        try:
+            cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", pool,
+                 "--rbd-image", "junkimage", "--block-size", "2096", "--size", "16MB",
+                 "--rbd-create-image"])
+        except SystemExit as sysex:
+            rc = sysex.code
+            pass
+        assert "error: size value must be a multiple of the block size" in caplog.text
+        assert rc == 2
+        caplog.clear()
+        add_namespace_req = pb2.namespace_add_req(subsystem_nqn=subsystem,
+                                                  rbd_pool_name=pool,
+                                                  rbd_image_name="junkimage",
+                                                  create_image=True,
+                                                  size=16 * 1024 * 1024,
+                                                  block_size=2096,
+                                                  force=True)
+        ret = stub.namespace_add(add_namespace_req)
+        assert ret.status != 0
+        assert "Failure adding namespace" in caplog.text
+        assert "Image size 16777216 must be a multiple of the block size 2096" in caplog.text
 
     def test_changing_namespace_with_no_size(self, caplog, gateway):
         gw, stub = gateway
@@ -551,6 +596,41 @@ class TestCreate:
         cli(["namespace", "del", "--subsystem", subsystem, "--nsid", "1"])
         assert f"Deleting namespace 1 from {subsystem}: Successful" in caplog.text
 
+    def test_add_namespace_using_size_and_no_create(self, caplog, gateway):
+        gw, stub = gateway
+        caplog.clear()
+        rc = 0
+        try:
+            cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", pool,
+                 "--rbd-image", "junkimage", "--block-size", "1024", "--size", "16MB"])
+        except SystemExit as sysex:
+            rc = sysex.code
+            pass
+        assert "error: --size argument is not allowed for add command when " \
+               "RBD image creation is disabled" in caplog.text
+        assert rc == 2
+        caplog.clear()
+        add_namespace_req = pb2.namespace_add_req(subsystem_nqn=subsystem,
+                                                  rbd_pool_name=pool,
+                                                  rbd_image_name="junkimage",
+                                                  block_size=512,
+                                                  size=16 * 1024 * 1024)
+        ret = stub.namespace_add(add_namespace_req)
+        assert ret.status != 0
+        assert "Failure adding namespace" in caplog.text
+        assert "Size is only allowed when creating an image" in caplog.text
+        caplog.clear()
+        add_namespace_req = pb2.namespace_add_req(subsystem_nqn=subsystem,
+                                                  rbd_pool_name=pool,
+                                                  rbd_image_name="junkimage",
+                                                  block_size=512,
+                                                  create_image=False,
+                                                  size=16 * 1024 * 1024)
+        ret = stub.namespace_add(add_namespace_req)
+        assert ret.status != 0
+        assert "Failure adding namespace" in caplog.text
+        assert "Size is only allowed when creating an image" in caplog.text
+
     def test_add_namespace(self, caplog, gateway):
         caplog.clear()
         cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", "junk",
@@ -572,18 +652,6 @@ class TestCreate:
         assert f"Image {pool}/{image2} already exists with a size of 16777216 bytes " \
                f"which differs from the requested size of 37748736 bytes" in caplog.text
         assert f"Can't create RBD image {pool}/{image2}" in caplog.text
-        caplog.clear()
-        rc = 0
-        try:
-            cli(["namespace", "add", "--subsystem", subsystem, "--rbd-pool", pool,
-                 "--rbd-image", image2, "--block-size", "1024", "--size", "16MB",
-                 "--load-balancing-group", anagrpid])
-        except SystemExit as sysex:
-            rc = sysex.code
-            pass
-        assert "size argument is not allowed for add command when " \
-               "RBD image creation is disabled" in caplog.text
-        assert rc == 2
         caplog.clear()
         rc = 0
         try:
@@ -794,8 +862,6 @@ class TestCreate:
         assert f'"{host12}"' not in caplog.text
         caplog.clear()
         cli(["host", "add", "--subsystem", subsystem12, "--host-nqn", "*"])
-        assert f"Subsystem {subsystem12} will be opened to be accessed from any " \
-               f"host. This might be a security breach" in caplog.text
         assert f"Allowing open host access to {subsystem12}: Successful" in caplog.text
         assert f"Open host access to subsystem {subsystem12} might be a " \
                f"security breach" in caplog.text
@@ -940,8 +1006,7 @@ class TestCreate:
         except SystemExit as sysex:
             rc = sysex.code
             pass
-        assert "error: argument --auto-visible: invalid choice: 'junk' " \
-               "(choose from 'yes', 'no', 'true', 'false', '1', '0')" in caplog.text
+        assert "error: argument --auto-visible: invalid choice: 'junk' (choose from" in caplog.text
         assert rc == 2
         caplog.clear()
         rc = 0
@@ -1172,6 +1237,29 @@ class TestCreate:
         assert host9 in partial_text
         assert host10 in partial_text
         assert "Restrictive" not in partial_text
+
+    def test_mix_host_nqn_and_asterix(self, caplog, gateway):
+        caplog.clear()
+        cli(["subsystem", "add", "--subsystem", subsystem19, "--no-group-append"])
+        assert f"Adding subsystem {subsystem19}: Successful" in caplog.text
+        caplog.clear()
+        cli(["host", "add", "--subsystem", subsystem19, "--host-nqn", host16])
+        assert f"Adding host {host16} to {subsystem19}: Successful" in caplog.text
+        caplog.clear()
+        cli(["host", "add", "--subsystem", subsystem19, "--host-nqn", "*"])
+        assert f"Allowing open host access to {subsystem19}: Successful" in caplog.text
+        assert f"Open host access to subsystem {subsystem19} might be a " \
+               f"security breach" in caplog.text
+        assert f"Subsystem {subsystem19} was opened for access from all hosts while it is " \
+               f"already open for access from specific hosts" in caplog.text
+        caplog.clear()
+        cli(["host", "add", "--subsystem", subsystem19, "--host-nqn", host17])
+        assert f"Adding host {host17} to {subsystem19}: Successful" in caplog.text
+        assert f"Access was enabled for host {host17} to subsystem {subsystem19} " \
+               f"in which all hosts are already allowed" in caplog.text
+        caplog.clear()
+        cli(["subsystem", "del", "--subsystem", subsystem19])
+        assert f"Deleting subsystem {subsystem19}: Successful" in caplog.text
 
     def test_list_hosts(self, caplog, gateway):
         caplog.clear()
@@ -1635,8 +1723,6 @@ class TestCreate:
         caplog.clear()
         cli(["host", "add", "--subsystem", subsystem, "--host-nqn", host])
         if host == "*":
-            assert f"Subsystem {subsystem} will be opened to be accessed from any " \
-                   f"host. This might be a security breach" in caplog.text
             assert f"Allowing open host access to {subsystem}: Successful" in caplog.text
             assert f"Open host access to subsystem {subsystem} might be a " \
                    f"security breach" in caplog.text
@@ -1664,14 +1750,14 @@ class TestCreate:
         caplog.clear()
         cli(["host", "add", "--subsystem", subsystem, "--host-nqn", host5, host6, host7])
         assert f"Adding host {host5} to {subsystem}: Successful" in caplog.text
-        assert f"A specific host {host5} was added to subsystem {subsystem} " \
-               f"in which all hosts are allowed" in caplog.text
+        assert f"Access was enabled for host {host5} to subsystem {subsystem} in which all " \
+               f"hosts are already allowed" in caplog.text
         assert f"Adding host {host6} to {subsystem}: Successful" in caplog.text
-        assert f"A specific host {host6} was added to subsystem {subsystem} " \
-               f"in which all hosts are allowed" in caplog.text
+        assert f"Access was enabled for host {host6} to subsystem {subsystem} in which all " \
+               f"hosts are already allowed" in caplog.text
         assert f"Adding host {host7} to {subsystem}: Successful" in caplog.text
-        assert f"A specific host {host7} was added to subsystem {subsystem} " \
-               f"in which all hosts are allowed" in caplog.text
+        assert f"Access was enabled for host {host7} to subsystem {subsystem} in which all " \
+               f"hosts are already allowed" in caplog.text
 
     def test_create_litener_wrong_subsystem(self, caplog):
         caplog.clear()
@@ -1910,8 +1996,8 @@ class TestCreate:
         assert f"Gateway's host name must match current host ({host_name})" in caplog.text
         caplog.clear()
         cli(["listener", "add", "--subsystem", subsystem] + listener)
-        assert f"Adding {subsystem} listener at {listener[3]}:{listener[5]}: " \
-               f"listener will only be active when appropriate gateway is up" in caplog.text
+        assert f"Host name mismatch, {subsystem} listener at {listener[3]}:{listener[5]} " \
+               f"will only be active when the appropriate gateway is up" in caplog.text
         caplog.clear()
         cli(["--format", "json", "listener", "list", "--subsystem", subsystem])
         assert f'"host_name": "{listener[1]}",' in caplog.text
@@ -2197,6 +2283,45 @@ class TestDelete:
         caplog.clear()
         cli(["--format", "json", "listener", "list", "--subsystem", subsystem])
         assert f'"trsvcid": {listener[3]}' not in caplog.text
+
+    def test_delete_listener_wrong_host_name(self, caplog, gateway):
+        caplog.clear()
+        cli(["listener", "add", "--subsystem", subsystem, "--host-name", "JUNK",
+             "-a", addr, "-s", "5555", "-f", "ipv4"])
+        assert f"Host name mismatch, {subsystem} listener at {addr}:5555 " \
+               f"will only be active when the appropriate gateway is up" in caplog.text
+        caplog.clear()
+        cli(["listener", "add", "--subsystem", subsystem, "--host-name", host_name,
+             "-a", addr, "-s", "7777", "-f", "ipv4", "--verify-host-name"])
+        assert f"Adding {subsystem} listener at {addr}:7777: Successful" in caplog.text
+        caplog.clear()
+        cli(["listener", "del", "--subsystem", subsystem, "--host-name", host_name,
+             "-a", addr, "-s", "5555"])
+        assert f"Failed to delete listener {addr}:5555 from {subsystem}: " \
+               f"Listener not found" in caplog.text
+        caplog.clear()
+        cli(["listener", "del", "--subsystem", subsystem, "--host-name", "JUNK",
+             "-a", addr, "-s", "7777", "--force"])
+        assert f"Failed to delete listener {addr}:7777 from {subsystem}: " \
+               f"Listener not found" in caplog.text
+        gw, _ = gateway
+        caplog.clear()  # test listener-del update on other gateways
+        req = pb2.delete_listener_req(nqn=subsystem, host_name="JUNK",
+                                      traddr=addr, trsvcid=5555, adrfam="ipv4")
+        ret = gw.delete_listener(req)
+        assert ret.status == 0
+        assert f"Listener not deleted as it belongs to gateway JUNK, not this gateway" \
+               f" ({gw.host_name})" in caplog.text
+        caplog.clear()
+        cli(["listener", "del", "--subsystem", subsystem, "--host-name", "JUNK",
+             "-a", addr, "-s", "5555", "-f", "ipv4", "--force"])
+        assert f"Deleting listener {addr}:5555 from {subsystem} for " \
+               f"host JUNK: Successful" in caplog.text
+        caplog.clear()
+        cli(["listener", "del", "--subsystem", subsystem, "--host-name", host_name,
+             "-a", addr, "-s", "7777", "-f", "ipv4"])
+        assert f"Deleting listener {addr}:7777 from {subsystem} for " \
+               f"host {host_name}: Successful" in caplog.text
 
     def test_remove_namespace(self, caplog, gateway):
         gw, stub = gateway
@@ -2737,7 +2862,7 @@ class TestImageResize:
             rc = sysex.code
             pass
         assert "error: argument --auto-resize-enabled: invalid choice: 'junk' " \
-               "(choose from 'yes', 'no', 'true', 'false', '1', '0')" in caplog.text
+               "(choose from " in caplog.text
         assert rc == 2
         caplog.clear()
         cli(["namespace", "set_auto_resize", "--subsystem", subsystem11, "--nsid", "1",

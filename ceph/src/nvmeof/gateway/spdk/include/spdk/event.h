@@ -151,8 +151,11 @@ struct spdk_app_opts {
 
 	bool enforce_numa;
 
-	/* Hole at bytes 187-191. */
-	uint8_t reserved187[5];
+	/* Hole at byte 187. */
+	uint8_t reserved187[1];
+
+	/* Number of threads for SPDK tracing */
+	uint32_t num_trace_threads;
 
 	/**
 	 * The allocated size for the message pool used by the threading library.
@@ -362,6 +365,17 @@ void spdk_framework_enable_context_switch_monitor(bool enabled);
  * \return true if enabled or false otherwise.
  */
 bool spdk_framework_context_switch_monitor_enabled(void);
+
+/**
+ * Set up SPDK tracing for the application.
+ *
+ * Initializes the trace shared memory region and enables tracepoint groups or
+ * individual tracepoints as specified in the spdk_app_opts structure.
+ *
+ * \param opts Application options structure, must be initialized.
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_app_setup_trace(struct spdk_app_opts *opts);
 
 #ifdef __cplusplus
 }

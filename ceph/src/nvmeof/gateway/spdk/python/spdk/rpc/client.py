@@ -2,44 +2,27 @@
 #  Copyright (C) 2017 Intel Corporation.
 #  All rights reserved.
 
-import json
-import socket
-import time
-import os
-import logging
 import copy
 import ctypes
-
-try:
-    from shlex import quote
-except ImportError:
-    from pipes import quote
+import json
+import logging
+import os
+import socket
+import time
 
 from .cmd_parser import remove_null
-
-
-def print_array(a):
-    print(" ".join((quote(v) for v in a)))
-
-
-def print_dict(d):
-    print(json.dumps(d, indent=2))
-
-
-def print_json(s):
-    print(json.dumps(s, indent=2).strip('"'))
 
 
 def get_addr_type(addr):
     try:
         socket.inet_pton(socket.AF_INET, addr)
         return socket.AF_INET
-    except Exception as e:
+    except Exception:
         pass
     try:
         socket.inet_pton(socket.AF_INET6, addr)
         return socket.AF_INET6
-    except Exception as e:
+    except Exception:
         pass
     if os.path.exists(addr):
         return socket.AF_UNIX
@@ -49,6 +32,14 @@ def get_addr_type(addr):
 class JSONRPCException(Exception):
     def __init__(self, message):
         self.message = message
+
+
+class JSONRPCDryRunClient:
+    def __getattr__(self, name):
+        return lambda **kwargs: self.call(name, remove_null(kwargs))
+
+    def call(self, method, params=None):
+        print("Request:\n" + json.dumps({"method": method, "params": params}, indent=2))
 
 
 class JSONRPCClient(object):
@@ -71,7 +62,7 @@ class JSONRPCClient(object):
             try:
                 self._connect(addr, port)
                 return
-            except Exception as e:
+            except Exception:
                 # ignore and retry in 200ms
                 time.sleep(0.2)
 
@@ -133,7 +124,7 @@ class JSONRPCClient(object):
         req = {
             'jsonrpc': '2.0',
             'method': method,
-            'id': self._request_id
+            'id': self._request_id,
         }
 
         if params:
@@ -261,7 +252,7 @@ class JSONRPCGoClient(object):
 
         command_info = {
             "method": method,
-            "params": params
+            "params": params,
         }
         resp = lib.spdk_gorpc_call(json.dumps(command_info).encode('utf-8'),
                                    self.addr.encode('utf-8'))

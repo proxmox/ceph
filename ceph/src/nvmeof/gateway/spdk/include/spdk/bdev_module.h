@@ -459,22 +459,70 @@ struct spdk_bdev {
 	/** Size in bytes of a physical block for the backend */
 	uint32_t phys_blocklen;
 
+	/** Bitmap of supported io types */
+	uint32_t io_type_supported;
+
 	/** Number of blocks */
 	uint64_t blockcnt;
 
-	/**
-	 * Specifies whether the write_unit_size is mandatory or
-	 * only advisory. If set to true, the bdev layer will split
-	 * WRITE I/O that span the write_unit_size before
-	 * submitting them to the bdev module.
-	 *
-	 * This field takes precedence over split_on_optimal_io_boundary
-	 * for WRITE I/O if both are set to true.
-	 *
-	 * Note that this field cannot be used to force splitting of
-	 * UNMAP, WRITE_ZEROES or FLUSH I/O.
-	 */
-	bool split_on_write_unit;
+	struct {
+		/**
+		 * Specifies whether the write_unit_size is mandatory or
+		 * only advisory. If set to true, the bdev layer will split
+		 * WRITE I/O that span the write_unit_size before
+		 * submitting them to the bdev module.
+		 *
+		 * This field takes precedence over split_on_optimal_io_boundary
+		 * for WRITE I/O if both are set to true.
+		 *
+		 * Note that this field cannot be used to force splitting of
+		 * UNMAP, WRITE_ZEROES or FLUSH I/O.
+		 */
+		uint32_t split_on_write_unit : 1;
+
+		/**
+		 * Specifies whether the optimal_io_boundary is mandatory or
+		 * only advisory.  If set to true, the bdev layer will split
+		 * READ and WRITE I/O that span the optimal_io_boundary before
+		 * submitting them to the bdev module.
+		 *
+		 * Note that this field cannot be used to force splitting of
+		 * UNMAP, WRITE_ZEROES or FLUSH I/O.
+		 */
+		uint32_t split_on_optimal_io_boundary : 1;
+
+		/**
+		 * Specify metadata location and set to true if metadata is interleaved
+		 * with block data or false if metadata is separated with block data.
+		 *
+		 * Note that this field is valid only if there is metadata.
+		 */
+		uint32_t md_interleave : 1;
+
+		/*
+		 * DIF location.
+		 *
+		 * Set to true if DIF is set in the first 8/16 bytes of metadata or false
+		 * if DIF is set in the last 8/16 bytes of metadata.
+		 *
+		 * Note that this field is valid only if DIF is enabled.
+		 */
+		uint32_t dif_is_head_of_md : 1;
+
+		/**
+		 * Specify whether bdev is zoned device.
+		 */
+		uint32_t zoned : 1;
+
+		/**
+		 * Specifies whether bdev supports media management events.
+		 */
+		uint32_t media_events : 1;
+
+		uint32_t memory_domains_supported : 1;
+
+		uint32_t reserved : 25;
+	};
 
 	/** Number of blocks required for write */
 	uint32_t write_unit_size;
@@ -491,16 +539,7 @@ struct spdk_bdev {
 	 */
 	uint8_t required_alignment;
 
-	/**
-	 * Specifies whether the optimal_io_boundary is mandatory or
-	 * only advisory.  If set to true, the bdev layer will split
-	 * READ and WRITE I/O that span the optimal_io_boundary before
-	 * submitting them to the bdev module.
-	 *
-	 * Note that this field cannot be used to force splitting of
-	 * UNMAP, WRITE_ZEROES or FLUSH I/O.
-	 */
-	bool split_on_optimal_io_boundary;
+	uint8_t reserved1;
 
 	/**
 	 * Optimal I/O boundary in blocks, or 0 for no value reported.
@@ -564,13 +603,7 @@ struct spdk_bdev {
 	/** Size in bytes of a metadata for the backend */
 	uint32_t md_len;
 
-	/**
-	 * Specify metadata location and set to true if metadata is interleaved
-	 * with block data or false if metadata is separated with block data.
-	 *
-	 * Note that this field is valid only if there is metadata.
-	 */
-	bool md_interleave;
+	uint8_t reserved2[4];
 
 	/**
 	 * DIF type for this bdev.
@@ -587,25 +620,14 @@ struct spdk_bdev {
 	 */
 	enum spdk_dif_pi_format dif_pi_format;
 
-	/*
-	 * DIF location.
-	 *
-	 * Set to true if DIF is set in the first 8/16 bytes of metadata or false
-	 * if DIF is set in the last 8/16 bytes of metadata.
-	 *
-	 * Note that this field is valid only if DIF is enabled.
-	 */
-	bool dif_is_head_of_md;
+	uint8_t reserved3[4];
 
 	/**
 	 * Specify whether each DIF check type is enabled.
 	 */
 	uint32_t dif_check_flags;
 
-	/**
-	 * Specify whether bdev is zoned device.
-	 */
-	bool zoned;
+	uint8_t reserved4[8];
 
 	/**
 	 * Default size of each zone (in blocks).
@@ -632,10 +654,7 @@ struct spdk_bdev {
 	 */
 	uint32_t optimal_open_zones;
 
-	/**
-	 * Specifies whether bdev supports media management events.
-	 */
-	bool media_events;
+	uint8_t reserved6[4];
 
 	/**
 	 * Specifies the bdev nvme controller attributes.
@@ -666,6 +685,8 @@ struct spdk_bdev {
 	 * sent down to the device, without any delays and waiting for outstanding IO. */
 	uint16_t reset_io_drain_timeout;
 
+	uint8_t reserved7[2];
+
 	struct {
 		/** Is numa.id valid? Needed to know whether numa.id == 0 was
 		 *  explicitly set by bdev module or implicitly set when
@@ -675,6 +696,9 @@ struct spdk_bdev {
 		/** NUMA node ID for the bdev */
 		int32_t id : 31;
 	} numa;
+
+	/** Bitmap of supported io types */
+	uint32_t accel_sequence_supported;
 
 	/**
 	 * Pointer to the bdev module that registered this bdev.
@@ -1094,9 +1118,6 @@ struct spdk_bdev_io_internal_fields {
 		int           orig_iovcnt;
 	} bounce_buf;
 
-	/** Callback for when the aux buf is allocated */
-	spdk_bdev_io_get_aux_buf_cb get_aux_buf_cb;
-
 	/** Callback for when buf is allocated */
 	spdk_bdev_io_get_buf_cb get_buf_cb;
 
@@ -1165,7 +1186,7 @@ struct spdk_bdev_io {
 	 *  must not read or write to these fields.
 	 */
 	struct spdk_bdev_io_internal_fields internal;
-	uint8_t reserved4[56];
+	uint8_t reserved4[64];
 
 	/**
 	 * Per I/O context for use by the bdev module.
@@ -1196,6 +1217,9 @@ int spdk_bdev_register(struct spdk_bdev *bdev);
  * and manually close all the descriptors with spdk_bdev_close().
  * The actual bdev unregistration may be deferred until all descriptors are closed.
  *
+ * Calling this function from any thread is deprecated and will be disallowed in the 26.05 release.
+ * This function should be called from the SPDK app thread.
+ *
  * The cb_fn will be called from the context of the same spdk_thread that called
  * spdk_bdev_unregister.
  *
@@ -1213,6 +1237,9 @@ void spdk_bdev_unregister(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
  * on this bdev of the hotremoval to request the upper layer to stop using this bdev
  * and manually close all the descriptors with spdk_bdev_close().
  * The actual bdev unregistration may be deferred until all descriptors are closed.
+ *
+ * Calling this function from any thread is deprecated and will be disallowed in the 26.05 release.
+ * This function should be called from the SPDK app thread.
  *
  * The cb_fn will be called from the context of the same spdk_thread that called
  * spdk_bdev_unregister.
@@ -1280,6 +1307,7 @@ void spdk_bdev_module_fini_start_done(void);
 /**
  * Add alias to block device names list.
  * Aliases can be add only to registered bdev.
+ * All aliases are removed when bdev is unregistered.
  *
  * \param bdev Block device to query.
  * \param alias Alias to be added to list.
@@ -1336,26 +1364,6 @@ const struct spdk_bdev_aliases_list *spdk_bdev_get_aliases(const struct spdk_bde
  * \c SPDK_BDEV_LARGE_BUF_MAX_SIZE.
  */
 void spdk_bdev_io_get_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_buf_cb cb, uint64_t len);
-
-/**
- * Allocate an auxiliary buffer for given bdev_io. The length of the
- * buffer will be the same size as the bdev_io primary buffer. The buffer
- * must be freed using \c spdk_bdev_io_put_aux_buf() before completing
- * the associated bdev_io.  This call will never fail. In case of lack of
- * memory given callback \c cb will be deferred until enough memory is freed.
- *
- * \param bdev_io I/O to allocate buffer for.
- * \param cb callback to be called when the buffer is allocated
- */
-void spdk_bdev_io_get_aux_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_aux_buf_cb cb);
-
-/**
- * Free an auxiliary buffer previously allocated by \c spdk_bdev_io_get_aux_buf().
- *
- * \param bdev_io bdev_io specified when the aux_buf was allocated.
- * \param aux_buf auxiliary buffer to free
- */
-void spdk_bdev_io_put_aux_buf(struct spdk_bdev_io *bdev_io, void *aux_buf);
 
 /**
  * Set the given buffer as the data buffer described by this bdev_io.

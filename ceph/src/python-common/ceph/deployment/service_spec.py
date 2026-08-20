@@ -52,6 +52,19 @@ def handle_type_error(method: FuncT) -> FuncT:
     return cast(FuncT, inner)
 
 
+class YamlLiteralString(str):
+    """
+    Class used as marker for yaml representer to properly format
+    multi-line strings for yaml export
+    """
+    @staticmethod
+    def represent_as_literal(dumper: 'yaml.SafeDumper', data: str) -> Any:
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+
+
+yaml.add_representer(YamlLiteralString, YamlLiteralString.represent_as_literal)
+
+
 class HostPlacementSpec(NamedTuple):
     hostname: str
     network: str
@@ -1140,7 +1153,15 @@ class ServiceSpec(object):
 
     @staticmethod
     def yaml_representer(dumper: 'yaml.SafeDumper', data: 'ServiceSpec') -> Any:
-        return dumper.represent_dict(cast(Mapping, data.to_json().items()))
+        json_data = data.to_json()
+        spec = json_data.get('spec', {})
+
+        # Marking multi-line strings with the YamlLiteralString class
+        for key, value in spec.items():
+            if isinstance(value, str) and '\n' in value:
+                spec[key] = YamlLiteralString(value)
+
+        return dumper.represent_dict(cast(Mapping, json_data.items()))
 
 
 yaml.add_representer(ServiceSpec, ServiceSpec.yaml_representer)
@@ -1164,6 +1185,7 @@ class NFSServiceSpec(ServiceSpec):
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  idmap_conf: Optional[Dict[str, Dict[str, str]]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
+                 enable_nfsv3: bool = False,
                  ):
         assert service_type == 'nfs'
         super(NFSServiceSpec, self).__init__(
@@ -1178,6 +1200,7 @@ class NFSServiceSpec(ServiceSpec):
         self.enable_haproxy_protocol = enable_haproxy_protocol
         self.idmap_conf = idmap_conf
         self.enable_nlm = enable_nlm
+        self.enable_nfsv3 = enable_nfsv3
 
     def get_port_start(self) -> List[int]:
         if self.port:
@@ -1431,6 +1454,8 @@ class NvmeofServiceSpec(ServiceSpec):
                  subsystem_cache_expiration: Optional[int] = 5,
                  force_tls: Optional[bool] = False,
                  max_message_length_in_mb: Optional[int] = 4,
+                 io_stats_enabled: Optional[bool] = True,
+                 degrade_namespace_on_kmip_error: Optional[bool] = True,
                  server_key: Optional[str] = None,
                  server_cert: Optional[str] = None,
                  client_key: Optional[str] = None,
@@ -1452,7 +1477,7 @@ class NvmeofServiceSpec(ServiceSpec):
                  transport_tcp_options: Optional[Dict[str, int]] =
                  {"in_capsule_data_size": 8192, "max_io_qpairs_per_ctrlr": 7},
                  enable_dsa_acceleration: bool = False,
-                 rbd_with_crc32c: bool = False,
+                 rbd_with_crc32c: bool = True,
                  tgt_cmd_extra_args: Optional[str] = None,
                  iobuf_options: Optional[Dict[str, int]] = None,
                  qos_timeslice_in_usecs: Optional[int] = 0,
@@ -1576,6 +1601,10 @@ class NvmeofServiceSpec(ServiceSpec):
         self.force_tls = force_tls
         #: ``max_message_length_in_mb`` max protobuf message length, in mb
         self.max_message_length_in_mb = max_message_length_in_mb
+        #: ``io_stats_enabled`` enables controller IO statistics
+        self.io_stats_enabled = io_stats_enabled
+        #: ``degrade_namespace_on_kmip_error`` on a KMIP key error in update, create a degraded ns
+        self.degrade_namespace_on_kmip_error = degrade_namespace_on_kmip_error
         #: ``allowed_consecutive_spdk_ping_failures`` # of ping failures before aborting gateway
         self.allowed_consecutive_spdk_ping_failures = allowed_consecutive_spdk_ping_failures
         #: ``spdk_ping_interval_in_seconds`` sleep interval in seconds between SPDK pings
@@ -1793,6 +1822,8 @@ class NvmeofServiceSpec(ServiceSpec):
                                    "Subsystem cache expiration period")
         verify_boolean(self.force_tls, "Force TLS")
         verify_positive_int(self.max_message_length_in_mb, "Max protocol message length")
+        verify_boolean(self.io_stats_enabled, "Enable IO statistics")
+        verify_boolean(self.degrade_namespace_on_kmip_error, "Degrade namespace on KMIP error")
         verify_non_negative_number(self.monitor_timeout, "Monitor timeout")
         verify_non_negative_int(self.port, "Port")
         verify_non_negative_int(self.discovery_port, "Discovery port")

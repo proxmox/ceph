@@ -430,11 +430,6 @@ enum nvme_qpair_auth_state {
 	NVME_QPAIR_AUTH_STATE_DONE,
 };
 
-/* Authentication transaction required (authreq.atr) */
-#define NVME_QPAIR_AUTH_FLAG_ATR	(1 << 0)
-/* Authentication and secure channel required (authreq.ascr) */
-#define NVME_QPAIR_AUTH_FLAG_ASCR	(1 << 1)
-
 /* Maximum size of a digest */
 #define NVME_AUTH_DIGEST_MAX_SIZE	64
 
@@ -445,8 +440,18 @@ struct nvme_auth {
 	int				status;
 	/* Transaction ID */
 	uint16_t			tid;
-	/* Flags */
-	uint32_t			flags;
+	union {
+		struct {
+			/* Authentication transaction required (authreq.atr) */
+			uint32_t        atr : 1;
+			/* Authentication and secure channel required (authreq.ascr) */
+			uint32_t        ascr : 1;
+			/* In authenticate poll context flag */
+			uint8_t		in_auth_poll : 1;
+			uint32_t        reserved : 29;
+		};
+		uint32_t                raw;
+	} flags;
 	/* Selected hash function */
 	uint8_t				hash;
 	/* Buffer used for controller challenge */
@@ -489,8 +494,7 @@ struct spdk_nvme_qpair {
 	uint8_t					transport_failure_reason: 3;
 	uint8_t					last_transport_failure_reason: 3;
 
-	/* The user is destroying qpair */
-	uint8_t					destroy_in_progress: 1;
+	uint8_t					in_connect_poll : 1;
 
 	/* Number of IO outstanding at transport level */
 	uint16_t				queue_depth;
@@ -604,7 +608,7 @@ struct spdk_nvme_ns {
 	RB_ENTRY(spdk_nvme_ns)		node;
 };
 
-#define NVME_CTRLR_LOG_FMT "%s%s%s%s%s,%u"
+#define NVME_CTRLR_LOG_FMT "%s%s%s%s%s,cntlid:%u"
 #define NVME_CTRLR_LOG_ARGS(ctrlr) \
   spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? (ctrlr)->opts.hostnqn : "", \
   spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? "," : "", \
@@ -613,7 +617,7 @@ struct spdk_nvme_ns {
   (ctrlr)->trid.traddr, \
   (ctrlr)->cntlid
 
-#define NVME_QPAIR_LOG_FMT "%u,%p"
+#define NVME_QPAIR_LOG_FMT "qid:%u,qpair:%p"
 #define NVME_QPAIR_LOG_ARGS(qpair) \
   (qpair)->id, \
   (qpair)
@@ -1453,6 +1457,8 @@ int	nvme_fabric_qpair_connect_poll(struct spdk_nvme_qpair *qpair);
 bool	nvme_fabric_qpair_auth_required(struct spdk_nvme_qpair *qpair);
 int	nvme_fabric_qpair_authenticate_async(struct spdk_nvme_qpair *qpair);
 int	nvme_fabric_qpair_authenticate_poll(struct spdk_nvme_qpair *qpair);
+void	nvme_fabric_qpair_poll_cleanup(struct spdk_nvme_qpair *qpair);
+void	nvme_fabric_qpair_auth_cleanup(struct spdk_nvme_qpair *qpair, int status);
 
 typedef int (*spdk_nvme_parse_ana_log_page_cb)(
 	const struct spdk_nvme_ana_group_descriptor *desc, void *cb_arg);
@@ -1791,9 +1797,6 @@ int nvme_transport_qpair_authenticate(struct spdk_nvme_qpair *qpair);
 
 struct spdk_nvme_transport_poll_group *nvme_transport_poll_group_create(
 	const struct spdk_nvme_transport *transport);
-struct spdk_nvme_transport_poll_group *nvme_transport_qpair_get_optimal_poll_group(
-	const struct spdk_nvme_transport *transport,
-	struct spdk_nvme_qpair *qpair);
 int nvme_transport_poll_group_add(struct spdk_nvme_transport_poll_group *tgroup,
 				  struct spdk_nvme_qpair *qpair);
 int nvme_transport_poll_group_remove(struct spdk_nvme_transport_poll_group *tgroup,

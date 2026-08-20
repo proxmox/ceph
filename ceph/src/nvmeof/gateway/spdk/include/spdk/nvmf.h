@@ -2,6 +2,7 @@
  *   Copyright (C) 2016 Intel Corporation. All rights reserved.
  *   Copyright (c) 2018-2021 Mellanox Technologies LTD. All rights reserved.
  *   Copyright (c) 2021, 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 /** \file
@@ -36,6 +37,7 @@ struct spdk_bdev;
 struct spdk_nvmf_request;
 struct spdk_nvmf_host;
 struct spdk_nvmf_subsystem_listener;
+struct spdk_nvmf_referral;
 struct spdk_nvmf_poll_group;
 struct spdk_json_write_ctx;
 struct spdk_json_val;
@@ -53,8 +55,14 @@ enum spdk_nvmf_tgt_discovery_filter {
 	/** Only log listeners with the same transport address on which the DISCOVERY command was received */
 	SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_ADDRESS = 1u << 1u,
 	/** Only log listeners with the same transport svcid on which the DISCOVERY command was received */
-	SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_SVCID = 1u << 2u
+	SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_SVCID = 1u << 2u,
+	/** Check with custom discovery filter */
+	SPDK_NVMF_TGT_DISCOVERY_MATCH_CUSTOM = 1u << 3u
 };
+
+typedef bool (*spdk_nvmf_custom_discovery_filter)(
+	const struct spdk_nvme_transport_id *listener_trid,
+	const struct spdk_nvme_transport_id *discovery_cmd_source_trid);
 
 struct spdk_nvmf_target_opts {
 	size_t		size;
@@ -115,8 +123,12 @@ struct spdk_nvmf_transport_opts {
 	uint32_t min_kato;
 	/* kas indicates the granularity of the Keep Alive Timer in 100ms units. */
 	uint16_t kas;
+	/* Enable or disable ONCS features. By default, all supported features are enabled. */
+	struct spdk_nvme_cdata_oncs oncs;
+	/* Enable or disable FUSES features. By default, all supported features are enabled. */
+	struct spdk_nvme_cdata_fuses fuses;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 78, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 82, "Incorrect size");
 
 struct spdk_nvmf_listen_opts {
 	/**
@@ -196,10 +208,14 @@ struct spdk_nvmf_referral_opts {
 	struct spdk_nvme_transport_id trid;
 	/** The referral describes a referral to a subsystem which requires a secure channel */
 	bool secure_channel;
+	/** Whether this will be visible to all hosts */
+	bool allow_any_host;
 };
 
 /**
  * Add a discovery service referral to an NVMe-oF target
+ *
+ * This function must be called from the app thread.
  *
  * \param tgt The target to which the referral will be added
  * \param opts Options describing the referral referral.
@@ -212,6 +228,8 @@ int spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
 /**
  * Remove a discovery service referral from an NVMeoF target
  *
+ * This function must be called from the app thread.
+ *
  * \param tgt The target from which the referral will be removed
  * \param opts Options describing the referral referral.
  *
@@ -220,6 +238,119 @@ int spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
 int spdk_nvmf_tgt_remove_referral(struct spdk_nvmf_tgt *tgt,
 				  const struct spdk_nvmf_referral_opts *opts);
 
+/**
+ * Get the first referral in a target.
+ *
+ * \param tgt Target to query
+ *
+ * \return First referral in this target, or NULL if none exist
+ */
+struct spdk_nvmf_referral *spdk_nvmf_tgt_get_first_referral(struct spdk_nvmf_tgt *tgt);
+
+/**
+ * Get the next referral in a target.
+ *
+ * \param tgt Target to query
+ * \param prev_referral Previous referral returned from this function
+ *
+ * \return next referral in this target, or NULL if prev_referral was the last referral
+ */
+struct spdk_nvmf_referral *spdk_nvmf_tgt_referral_get_next(struct spdk_nvmf_tgt *tgt,
+		struct spdk_nvmf_referral *prev_referral);
+
+/*
+ * Add a host to a discovery service referral. This makes the
+ * referral visible to the host.
+ *
+ * \param referral The referral to which host is to be added
+ * \param hostnqn NQN of the host which is to be added
+ *
+ * \return 0 on success or a negated errno on failure
+ */
+int spdk_nvmf_referral_add_host(struct spdk_nvmf_referral *referral,
+				const char *hostnqn);
+
+/**
+ * Remove a host from a discovery service referral.
+ *
+ * \param referral The referral from which host is to be removed
+ * \param hostnqn NQN of the host which is to be removed
+ *
+ * \return 0 on success or a negated errno on failure
+ */
+int spdk_nvmf_referral_remove_host(struct spdk_nvmf_referral *referral,
+				   const char *hostnqn);
+
+/**
+ * Set whether a referral should allow any host or only hosts in the allowed list.
+ *
+ * \param referral Referral to modify.
+ * \param allow_any_host true to allow any host to see this referral in discovery
+ * log, or false to enforce the list configured with spdk_nvmf_referral_add_host().
+ *
+ * \return 0 on success, or negated errno value on failure.
+ */
+int spdk_nvmf_referral_set_allow_any_host(struct spdk_nvmf_referral *referral,
+		bool allow_any_host);
+
+/**
+ * Get whether a referral allows any host or only hosts in the allowed list.
+ *
+ * \param referral Referral to query.
+ *
+ * \return true if any host is allowed, false if only hosts in the allowed list are allowed.
+ */
+bool spdk_nvmf_referral_get_allow_any_host(struct spdk_nvmf_referral *referral);
+
+/**
+ * Check whether a host is allowed to see a referral.
+ *
+ * \param referral Referral to query.
+ * \param hostnqn NQN of the host to check.
+ *
+ * \return true if the host is allowed, false if not.
+ */
+bool spdk_nvmf_referral_host_allowed(struct spdk_nvmf_referral *referral, const char *hostnqn);
+
+/**
+ * Get the first allowed host in a referral.
+ *
+ * \param referral Referral to query
+ *
+ * \return First allowed host in this referral, or NULL if none allowed
+ */
+struct spdk_nvmf_host *spdk_nvmf_referral_get_first_host(struct spdk_nvmf_referral *referral);
+
+/**
+ * Get the next allowed host in a referral.
+ *
+ * \param referral Referral to query
+ * \param prev_host Previous host returned from this function
+ *
+ * \return next allowed host in this referral, or NULL if prev_host was the last host
+ */
+struct spdk_nvmf_host *spdk_nvmf_referral_get_next_host(struct spdk_nvmf_referral *referral,
+		struct spdk_nvmf_host *prev_host);
+
+/**
+ * Get the transport ID of a referral.
+ *
+ * \param referral Referral to query
+ *
+ * \return Transport ID of the referral
+ */
+const struct spdk_nvme_transport_id *spdk_nvmf_referral_get_trid(struct spdk_nvmf_referral
+		*referral);
+
+/**
+ * Set a custom discovery filter.
+ *
+ * For this to take effect, the target must be created with the
+ * SPDK_NVMF_TGT_DISCOVERY_MATCH_CUSTOM flag set in the discovery_filter field.
+ *
+ * \param filter The custom discovery filter to set.
+ */
+void spdk_nvmf_set_custom_discovery_filter(spdk_nvmf_custom_discovery_filter filter);
 
 /**
  * Construct an NVMe-oF target.
@@ -1348,7 +1479,7 @@ typedef void (*spdk_nvmf_transport_destroy_done_cb)(void *cb_arg);
  * \param cb_fn A callback that will be called once the transport is destroyed
  * \param cb_arg A context argument passed to cb_fn.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 always (left in for API compatibility)
  */
 int spdk_nvmf_transport_destroy(struct spdk_nvmf_transport *transport,
 				spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg);

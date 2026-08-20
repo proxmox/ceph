@@ -353,6 +353,7 @@ struct spdk_nvmf_tcp_control_msg_list {
 struct spdk_nvmf_tcp_poll_group {
 	struct spdk_nvmf_transport_poll_group	group;
 	struct spdk_sock_group			*sock_group;
+	struct spdk_interrupt			*intr;
 
 	TAILQ_HEAD(, spdk_nvmf_tcp_qpair)	qpairs;
 
@@ -395,6 +396,7 @@ struct spdk_nvmf_tcp_transport {
 
 	struct spdk_poller			*accept_poller;
 	struct spdk_sock_group			*listen_sock_group;
+	struct spdk_interrupt			*intr;
 
 	TAILQ_HEAD(, spdk_nvmf_tcp_port)	ports;
 	TAILQ_HEAD(, spdk_nvmf_tcp_poll_group)	poll_groups;
@@ -583,14 +585,12 @@ nvmf_tcp_request_free(void *cb_arg)
 	nvmf_tcp_req_process(ttransport, tcp_req);
 }
 
-static int
+static void
 nvmf_tcp_req_free(struct spdk_nvmf_request *req)
 {
 	struct spdk_nvmf_tcp_req *tcp_req = SPDK_CONTAINEROF(req, struct spdk_nvmf_tcp_req, req);
 
 	nvmf_tcp_request_free(tcp_req);
-
-	return 0;
 }
 
 static void
@@ -684,13 +684,19 @@ _nvmf_tcp_qpair_destroy(void *_tqpair)
 	struct spdk_nvmf_tcp_qpair *tqpair = _tqpair;
 	spdk_nvmf_transport_qpair_fini_cb cb_fn = tqpair->fini_cb_fn;
 	void *cb_arg = tqpair->fini_cb_arg;
-	int err = 0;
+	int rc, err = 0;
 
 	spdk_trace_record(TRACE_TCP_QP_DESTROY, tqpair->qpair.trace_id, 0, 0);
 
 	SPDK_DEBUGLOG(nvmf_tcp, "enter\n");
 
-	err = spdk_sock_close(&tqpair->sock);
+	rc = spdk_sock_close(&tqpair->sock);
+	if (rc < 0 || tqpair->sock) {
+		SPDK_ERRLOG("spdk_sock_close() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
+		/* Set it to NULL manually */
+		tqpair->sock = NULL;
+	}
+
 	assert(err == 0);
 	nvmf_tcp_cleanup_all_states(tqpair);
 
@@ -757,12 +763,13 @@ nvmf_tcp_free_psk_entry(struct tcp_psk_entry *entry)
 	free(entry);
 }
 
-static int
+static void
 nvmf_tcp_destroy(struct spdk_nvmf_transport *transport,
 		 spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_tcp_transport	*ttransport;
 	struct tcp_psk_entry *entry, *tmp;
+	int rc;
 
 	assert(transport != NULL);
 	ttransport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_tcp_transport, transport);
@@ -773,14 +780,18 @@ nvmf_tcp_destroy(struct spdk_nvmf_transport *transport,
 	}
 
 	spdk_poller_unregister(&ttransport->accept_poller);
-	spdk_sock_group_unregister_interrupt(ttransport->listen_sock_group);
-	spdk_sock_group_close(&ttransport->listen_sock_group);
+	spdk_interrupt_unregister(&ttransport->intr);
+	rc = spdk_sock_group_close(&ttransport->listen_sock_group);
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_sock_group_close() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
+		assert(false);
+	}
+
 	free(ttransport);
 
 	if (cb_fn) {
 		cb_fn(cb_arg);
 	}
-	return 0;
 }
 
 static int nvmf_tcp_accept(void *ctx);
@@ -793,7 +804,6 @@ nvmf_tcp_create(struct spdk_nvmf_transport_opts *opts)
 	struct spdk_nvmf_tcp_transport *ttransport;
 	uint32_t sge_count;
 	uint32_t min_shared_buffers;
-	int rc;
 	uint64_t period;
 
 	ttransport = calloc(1, sizeof(*ttransport));
@@ -928,9 +938,11 @@ nvmf_tcp_create(struct spdk_nvmf_transport_opts *opts)
 	}
 
 	if (spdk_interrupt_mode_is_enabled()) {
-		rc = SPDK_SOCK_GROUP_REGISTER_INTERRUPT(ttransport->listen_sock_group,
-							SPDK_INTERRUPT_EVENT_IN | SPDK_INTERRUPT_EVENT_OUT, nvmf_tcp_accept, &ttransport->transport);
-		if (rc != 0) {
+		ttransport->intr = SPDK_INTERRUPT_REGISTER_FOR_EVENTS(spdk_sock_group_get_interruptfd(
+					   ttransport->listen_sock_group),
+				   SPDK_INTERRUPT_EVENT_IN | SPDK_INTERRUPT_EVENT_OUT, nvmf_tcp_accept,
+				   &ttransport->transport);
+		if (ttransport->intr == NULL) {
 			SPDK_ERRLOG("Failed to register interrupt for listen socker sock group\n");
 			spdk_sock_group_close(&ttransport->listen_sock_group);
 			spdk_poller_unregister(&ttransport->accept_poller);
@@ -1154,10 +1166,10 @@ nvmf_tcp_listen(struct spdk_nvmf_transport *transport, const struct spdk_nvme_tr
 	rc = spdk_sock_group_add_sock(ttransport->listen_sock_group, port->listen_sock, nvmf_tcp_accept_cb,
 				      port);
 	if (rc < 0) {
-		SPDK_ERRLOG("Failed to add socket to the listen socket group\n");
+		SPDK_ERRLOG("spdk_sock_group_add_sock() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 		spdk_sock_close(&port->listen_sock);
 		free(port);
-		return -errno;
+		return rc;
 	}
 
 	port->transport = transport;
@@ -1175,6 +1187,7 @@ nvmf_tcp_stop_listen(struct spdk_nvmf_transport *transport,
 {
 	struct spdk_nvmf_tcp_transport *ttransport;
 	struct spdk_nvmf_tcp_port *port;
+	int rc;
 
 	ttransport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_tcp_transport, transport);
 
@@ -1183,7 +1196,11 @@ nvmf_tcp_stop_listen(struct spdk_nvmf_transport *transport,
 
 	port = nvmf_tcp_find_port(ttransport, trid);
 	if (port) {
-		spdk_sock_group_remove_sock(ttransport->listen_sock_group, port->listen_sock);
+		rc = spdk_sock_group_remove_sock(ttransport->listen_sock_group, port->listen_sock);
+		if (rc < 0) {
+			SPDK_ERRLOG("spdk_sock_group_remove_sock() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
+		}
+
 		TAILQ_REMOVE(&ttransport->ports, port, link);
 		spdk_sock_close(&port->listen_sock);
 		free(port);
@@ -1272,13 +1289,19 @@ tcp_sock_flush_cb(void *arg)
 
 	tqpair->pending_flush = false;
 	rc = spdk_sock_flush(tqpair->sock);
-	if (rc < 0 && errno == EAGAIN) {
-		spdk_thread_send_msg(spdk_get_thread(), tcp_sock_flush_cb, tqpair);
-		return;
+	if (rc < 0 && rc == -EAGAIN) {
+		if (spdk_interrupt_mode_is_enabled()) {
+			/* In interrupt mode we need to force a retry. In polling mode it will naturally
+			 * try again. */
+			spdk_thread_send_msg(spdk_get_thread(), tcp_sock_flush_cb, tqpair);
+			return;
+		}
+
+		rc = 0;
 	}
 
 	if (rc < 0) {
-		SPDK_ERRLOG("Could not write to socket: rc=%d, errno=%d\n", rc, errno);
+		SPDK_ERRLOG("spdk_sock_flush() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 	}
 }
 
@@ -1521,8 +1544,8 @@ nvmf_tcp_qpair_sock_init(struct spdk_nvmf_tcp_qpair *tqpair)
 
 	rc = spdk_sock_getaddr(tqpair->sock, saddr, sizeof(saddr), &sport,
 			       caddr, sizeof(caddr), &cport);
-	if (rc != 0) {
-		SPDK_ERRLOG("spdk_sock_getaddr() failed\n");
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_sock_getaddr() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 		return rc;
 	}
 	/* update buffer size for owner when changing format or arguments here */
@@ -1532,8 +1555,8 @@ nvmf_tcp_qpair_sock_init(struct spdk_nvmf_tcp_qpair *tqpair)
 
 	/* set low water mark */
 	rc = spdk_sock_set_recvlowat(tqpair->sock, 1);
-	if (rc != 0) {
-		SPDK_ERRLOG("spdk_sock_set_recvlowat() failed\n");
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_sock_set_recvlowat() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 		return rc;
 	}
 
@@ -1568,7 +1591,7 @@ nvmf_tcp_handle_connect(struct spdk_nvmf_tcp_port *port, struct spdk_sock *sock)
 			       tqpair->initiator_addr, sizeof(tqpair->initiator_addr),
 			       &tqpair->initiator_port);
 	if (rc < 0) {
-		SPDK_ERRLOG("spdk_sock_getaddr() failed of tqpair=%p\n", tqpair);
+		SPDK_ERRLOG("spdk_sock_getaddr() failed, tqpair=%p, rc %d: %s\n", tqpair, rc, spdk_strerror(-rc));
 		nvmf_tcp_qpair_destroy(tqpair);
 		return;
 	}
@@ -1605,16 +1628,17 @@ nvmf_tcp_accept(void *ctx)
 {
 	struct spdk_nvmf_transport *transport = ctx;
 	struct spdk_nvmf_tcp_transport *ttransport;
-	int count;
+	int rc;
 
 	ttransport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_tcp_transport, transport);
 
-	count = spdk_sock_group_poll(ttransport->listen_sock_group);
-	if (count < 0) {
-		SPDK_ERRLOG("Fail in TCP listen socket group poll\n");
+	rc = spdk_sock_group_poll(ttransport->listen_sock_group);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to poll sock_group=%p (%d): %s\n", ttransport->listen_sock_group, rc,
+			    spdk_strerror(-rc));
 	}
 
-	return count != 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
+	return rc != 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
 }
 
 static void
@@ -1716,7 +1740,6 @@ nvmf_tcp_poll_group_create(struct spdk_nvmf_transport *transport,
 {
 	struct spdk_nvmf_tcp_transport	*ttransport;
 	struct spdk_nvmf_tcp_poll_group *tgroup;
-	int rc;
 
 	tgroup = calloc(1, sizeof(*tgroup));
 	if (!tgroup) {
@@ -1754,9 +1777,11 @@ nvmf_tcp_poll_group_create(struct spdk_nvmf_transport *transport,
 	}
 
 	if (spdk_interrupt_mode_is_enabled()) {
-		rc = SPDK_SOCK_GROUP_REGISTER_INTERRUPT(tgroup->sock_group,
-							SPDK_INTERRUPT_EVENT_IN | SPDK_INTERRUPT_EVENT_OUT, nvmf_tcp_poll_group_intr, &tgroup->group);
-		if (rc != 0) {
+		tgroup->intr = SPDK_INTERRUPT_REGISTER_FOR_EVENTS(spdk_sock_group_get_interruptfd(
+					tgroup->sock_group),
+				SPDK_INTERRUPT_EVENT_IN | SPDK_INTERRUPT_EVENT_OUT,
+				nvmf_tcp_poll_group_intr, &tgroup->group);
+		if (tgroup->intr == NULL) {
 			SPDK_ERRLOG("Failed to register interrupt for sock group\n");
 			goto cleanup;
 		}
@@ -1811,10 +1836,16 @@ nvmf_tcp_poll_group_destroy(struct spdk_nvmf_transport_poll_group *group)
 {
 	struct spdk_nvmf_tcp_poll_group *tgroup, *next_tgroup;
 	struct spdk_nvmf_tcp_transport *ttransport;
+	int rc;
 
 	tgroup = SPDK_CONTAINEROF(group, struct spdk_nvmf_tcp_poll_group, group);
-	spdk_sock_group_unregister_interrupt(tgroup->sock_group);
-	spdk_sock_group_close(&tgroup->sock_group);
+	spdk_interrupt_unregister(&tgroup->intr);
+	rc = spdk_sock_group_close(&tgroup->sock_group);
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_sock_group_close() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
+		assert(false);
+	}
+
 	if (tgroup->control_msg_list) {
 		nvmf_tcp_control_msg_list_free(tgroup->control_msg_list);
 	}
@@ -2365,6 +2396,7 @@ nvmf_tcp_icreq_handle(struct spdk_nvmf_tcp_transport *ttransport,
 	struct spdk_nvme_tcp_ic_resp *ic_resp;
 	uint32_t error_offset = 0;
 	enum spdk_nvme_tcp_term_req_fes fes;
+	int rc;
 
 	/* Only PFV 0 is defined currently */
 	if (ic_req->pfv != 0) {
@@ -2397,10 +2429,10 @@ nvmf_tcp_icreq_handle(struct spdk_nvmf_tcp_transport *ttransport,
 
 	tqpair->recv_buf_size = spdk_max(tqpair->recv_buf_size, MIN_SOCK_PIPE_SIZE);
 	/* Now that we know whether digests are enabled, properly size the receive buffer */
-	if (spdk_sock_set_recvbuf(tqpair->sock, tqpair->recv_buf_size) < 0) {
-		SPDK_WARNLOG("Unable to allocate enough memory for receive buffer on tqpair=%p with size=%d\n",
-			     tqpair,
-			     tqpair->recv_buf_size);
+	rc = spdk_sock_set_recvbuf(tqpair->sock, tqpair->recv_buf_size);
+	if (rc < 0) {
+		SPDK_WARNLOG("spdk_sock_set_recvbuf() failed, rc %d: %s. Unable to allocate enough memory for receive buffer on tqpair=%p with size=%d\n",
+			     rc, spdk_strerror(-rc), tqpair, tqpair->recv_buf_size);
 		/* Not fatal. */
 	}
 
@@ -3531,8 +3563,7 @@ nvmf_tcp_poll_group_add(struct spdk_nvmf_transport_poll_group *group,
 	rc = spdk_sock_group_add_sock(tgroup->sock_group, tqpair->sock,
 				      nvmf_tcp_sock_cb, tqpair);
 	if (rc != 0) {
-		SPDK_ERRLOG("Could not add sock to sock_group: %s (%d)\n",
-			    spdk_strerror(errno), errno);
+		SPDK_ERRLOG("spdk_sock_group_add_sock() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 		return -1;
 	}
 
@@ -3568,17 +3599,15 @@ nvmf_tcp_poll_group_remove(struct spdk_nvmf_transport_poll_group *group,
 	spdk_sock_flush(tqpair->sock);
 
 	rc = spdk_sock_group_remove_sock(tgroup->sock_group, tqpair->sock);
-	if (rc != 0) {
-		SPDK_ERRLOG("Could not remove sock from sock_group: %s (%d)\n",
-			    spdk_strerror(errno), errno);
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_sock_group_remove_sock() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
 	}
 
 	nvmf_tcp_abort_await_buffer_reqs(tqpair);
-
 	return rc;
 }
 
-static int
+static void
 nvmf_tcp_req_complete(struct spdk_nvmf_request *req)
 {
 	struct spdk_nvmf_tcp_transport *ttransport;
@@ -3606,8 +3635,6 @@ nvmf_tcp_req_complete(struct spdk_nvmf_request *req)
 	}
 	nvmf_tcp_stats_read_io_bdev_complete(tcp_req->stats);
 	nvmf_tcp_req_process(ttransport, tcp_req);
-
-	return 0;
 }
 
 static void
@@ -3632,7 +3659,7 @@ static int
 nvmf_tcp_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 {
 	struct spdk_nvmf_tcp_poll_group *tgroup;
-	int num_events;
+	int rc;
 
 	tgroup = SPDK_CONTAINEROF(group, struct spdk_nvmf_tcp_poll_group, group);
 
@@ -3640,12 +3667,13 @@ nvmf_tcp_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 		return 0;
 	}
 
-	num_events = spdk_sock_group_poll(tgroup->sock_group);
-	if (spdk_unlikely(num_events < 0)) {
-		SPDK_ERRLOG("Failed to poll sock_group=%p\n", tgroup->sock_group);
+	rc = spdk_sock_group_poll(tgroup->sock_group);
+	if (spdk_unlikely(rc < 0)) {
+		SPDK_ERRLOG("spdk_sock_group_poll() failed, sock_group=%p, rc %d: %s\n", tgroup->sock_group, rc,
+			    spdk_strerror(-rc));
 	}
 
-	return num_events;
+	return rc;
 }
 
 static void

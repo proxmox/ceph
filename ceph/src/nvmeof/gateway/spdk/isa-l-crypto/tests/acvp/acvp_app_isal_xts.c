@@ -30,7 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <acvp/acvp.h>
-#include <isa-l_crypto.h>
+
+#include "include/isa-l_crypto/aes_xts.h"
 
 extern uint8_t verbose;
 

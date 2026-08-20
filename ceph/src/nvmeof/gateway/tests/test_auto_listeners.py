@@ -25,6 +25,18 @@ config = "ceph-nvmeof.conf"
 group_name = "GROUPNAME"
 
 
+def wait_for_listener_count(subsystem_nqn, expected_count, timeout=30):
+    for i in range(timeout):
+        try:
+            listeners = cli_test(["listener", "list", "--subsystem", subsystem_nqn])
+            if len(listeners.listeners) == expected_count:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+
 @pytest.fixture(scope="module")
 def gateway(config):
     """Sets up and tears down Gateway"""
@@ -59,9 +71,10 @@ class TestAutoListener:
     def test_subsystem_with_networks(self, caplog, gateway):
         cli(["subsystem", "list"])
         caplog.clear()
-        cli(["subsystem", "add", "--subsystem", subsystem, "--no-group-append",
-             '--network-mask', addr_subnet, addr_ipv6_subnet])
-        assert f"Adding subsystem {subsystem}: Successful" in caplog.text
+        ret = cli_test(["subsystem", "add", "--subsystem", subsystem, "--no-group-append",
+                        '--network-mask', addr_subnet, addr_ipv6_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert "ipv4" in caplog.text.lower()
         assert f"Automatically created listener at {addr}:4420 for {subsystem}" in caplog.text
         assert "ipv6" in caplog.text.lower()
@@ -70,9 +83,10 @@ class TestAutoListener:
 
     def test_listener_list(self, caplog, gateway):
         cli(["subsystem", "list"])
-        time.sleep(30)
+        assert wait_for_listener_count(subsystem, 2)
         caplog.clear()
         listeners = cli_test(["listener", "list", "--subsystem", subsystem])
+        assert listeners.status == 0
         assert len(listeners.listeners) == 2
         assert listeners.listeners[0].trtype == "TCP"
         assert listeners.listeners[0].trsvcid == 4420
@@ -95,9 +109,10 @@ class TestAutoListener:
 
     def test_auto_listener_secure(self, caplog, gateway):
         caplog.clear()
-        cli(["subsystem", "add", "--subsystem", subsystem2, "--no-group-append",
-             '--network-mask', addr_subnet, '--secure-listeners'])
-        assert f"Adding subsystem {subsystem2}: Successful" in caplog.text
+        ret = cli_test(["subsystem", "add", "--subsystem", subsystem2, "--no-group-append",
+                        '--network-mask', addr_subnet, '--secure-listeners'])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert "ipv4" in caplog.text.lower()
         assert f"Automatically created listener at {addr}:4421 for {subsystem2}" in caplog.text
 
@@ -106,6 +121,7 @@ class TestAutoListener:
         time.sleep(30)
         caplog.clear()
         listeners = cli_test(["listener", "list", "--subsystem", subsystem2])
+        assert listeners.status == 0
         assert listeners.listeners[0].trtype == "TCP"
         assert listeners.listeners[0].traddr == addr
         assert listeners.listeners[0].trsvcid == 4421
@@ -124,7 +140,7 @@ class TestAutoListener:
         ret = stub.create_subsystem(req)
         assert ret.status != 0
         assert f"Failure creating subsystem {subsystem}: Invalid subnet for " \
-               f"network_mask \"{invalid_subnet}\"" in caplog.text
+               f"network mask \"{invalid_subnet}\"" in caplog.text
 
         caplog.clear()
         req = pb2.create_subsystem_req(subsystem_nqn=subsystem, max_namespaces=256,
@@ -133,7 +149,7 @@ class TestAutoListener:
         ret = stub.create_subsystem(req)
         assert ret.status != 0
         assert f"Failure creating subsystem {subsystem}: Invalid subnet for " \
-               f"network_mask \"{invalid_subnet}\"" in caplog.text
+               f"network mask \"{invalid_subnet}\"" in caplog.text
         caplog.clear()
 
     def test_del_network_mask_param_fail(self, caplog, gateway):
@@ -142,14 +158,14 @@ class TestAutoListener:
         no_subsystem_param = pb2.del_subsystem_network_req(network_mask=addr_subnet)
         ret = stub.del_subsystem_network(no_subsystem_param)
         assert ret.status != 0
-        assert "Failure deleting network_mask, missing subsystem NQN" in caplog.text
+        assert "Failure deleting network mask, missing subsystem NQN" in caplog.text
 
         caplog.clear()
         no_netmask_param = pb2.del_subsystem_network_req(subsystem_nqn=subsystem)
         ret = stub.del_subsystem_network(no_netmask_param)
         assert ret.status != 0
-        assert f"Failure deleting network_mask for subsystem {subsystem}: " \
-               "Missing network_mask" in caplog.text
+        assert f"Failure deleting network mask for subsystem {subsystem}: " \
+               "Missing network mask" in caplog.text
 
         caplog.clear()
         invalid_subnet = "nosubnet"
@@ -157,17 +173,30 @@ class TestAutoListener:
                                                               network_mask=invalid_subnet)
         ret = stub.del_subsystem_network(invalid_netmask_param)
         assert ret.status != 0
-        assert f"Failure deleting network_mask for subsystem {subsystem}: " \
+        assert f"Failure deleting network mask for subsystem {subsystem}: " \
                f"Invalid subnet \"{invalid_subnet}\"" in caplog.text
         caplog.clear()
+
+    def test_del_network_mask_not_found(self, caplog, gateway):
+        _, stub = gateway
+        caplog.clear()
+        nonexistent_subnet = "10.0.0.0/24"
+        req = pb2.del_subsystem_network_req(subsystem_nqn=subsystem,
+                                            network_mask=nonexistent_subnet)
+        ret = stub.del_subsystem_network(req)
+        assert ret.status == 0
+        expected_warn = f"Network mask {nonexistent_subnet} not found for subsystem {subsystem}"
+        assert expected_warn in ret.error_message
+        assert expected_warn in caplog.text
 
     def test_del_network_mask(self, caplog, gateway):
         cli(["subsystem", "list"])
         caplog.clear()
-        cli(["subsystem", "del_network", "--subsystem", subsystem,
-             '--network-mask', addr_subnet])
-        assert f"Network mask {addr_subnet} deleted for subsystem {subsystem}: " \
-               f"Successful" in caplog.text
+        ret = cli_test(["subsystem", "del_network", "--subsystem", subsystem,
+                        '--network-mask', addr_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
+        assert f"Deleted network {addr_subnet} for subsystem {subsystem}" in caplog.text
         assert f"Automatically deleted listener at {addr}:4420 for {subsystem}" in caplog.text
         assert f"Automatically created listener at {addr}:4420 for {subsystem}" not in caplog.text
 
@@ -179,9 +208,10 @@ class TestAutoListener:
 
     def test_del_network_listener_list(self, caplog, gateway):
         cli(["subsystem", "list"])
-        time.sleep(30)
+        assert wait_for_listener_count(subsystem, 1)
         caplog.clear()
         listeners = cli_test(["listener", "list", "--subsystem", subsystem])
+        assert listeners.status == 0
         assert len(listeners.listeners) == 1
         assert listeners.listeners[0].trtype == "TCP"
         assert listeners.listeners[0].traddr == addr_ipv6
@@ -196,14 +226,14 @@ class TestAutoListener:
         no_subsystem_param = pb2.add_subsystem_network_req(network_mask=addr_subnet)
         ret = stub.add_subsystem_network(no_subsystem_param)
         assert ret.status != 0
-        assert "Failure adding network_mask, missing subsystem NQN" in caplog.text
+        assert "Failure adding network mask, missing subsystem NQN" in caplog.text
 
         caplog.clear()
         no_netmask_param = pb2.add_subsystem_network_req(subsystem_nqn=subsystem)
         ret = stub.add_subsystem_network(no_netmask_param)
         assert ret.status != 0
-        assert f"Failure adding network_mask for subsystem {subsystem}: " \
-               "Missing network_mask" in caplog.text
+        assert f"Failure adding network mask for subsystem {subsystem}: " \
+               "Missing network mask" in caplog.text
 
         caplog.clear()
         invalid_subnet = "nosubnet"
@@ -211,18 +241,30 @@ class TestAutoListener:
                                                               network_mask=invalid_subnet)
         ret = stub.add_subsystem_network(invalid_netmask_param)
         assert ret.status != 0
-        assert f"Failure adding network_mask for subsystem {subsystem}: " \
+        assert f"Failure adding network mask for subsystem {subsystem}: " \
                f"Invalid subnet \"{invalid_subnet}\"" in caplog.text
         caplog.clear()
 
     def test_add_network_mask(self, caplog, gateway):
         cli(["subsystem", "list"])
         caplog.clear()
-        cli(["subsystem", "add_network", "--subsystem", subsystem,
-             '--network-mask', addr_subnet])
+        ret = cli_test(["subsystem", "add_network", "--subsystem", subsystem,
+                        '--network-mask', addr_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert f"Added network {addr_subnet} for subsystem {subsystem}" in caplog.text
         assert f"Automatically created listener at {addr}:4420 for {subsystem}" in caplog.text
         assert f"Automatically deleted listener at {addr}:4420 for {subsystem}" not in caplog.text
+
+    def test_add_network_mask_already_exists(self, caplog, gateway):
+        _, stub = gateway
+        caplog.clear()
+        req = pb2.add_subsystem_network_req(subsystem_nqn=subsystem, network_mask=addr_subnet)
+        ret = stub.add_subsystem_network(req)
+        assert ret.status == 0
+        expected_warn = f"Network mask {addr_subnet} already exists for subsystem {subsystem}"
+        assert expected_warn in ret.error_message
+        assert expected_warn in caplog.text
 
     def test_add_network_subsystem_list(self, caplog, gateway):
         subsystems = cli_test(["subsystem", "list", "--subsystem", subsystem])
@@ -232,7 +274,7 @@ class TestAutoListener:
 
     def test_add_network_listener_list(self, caplog, gateway):
         cli(["subsystem", "list"])
-        time.sleep(30)
+        assert wait_for_listener_count(subsystem, 2)
         caplog.clear()
         listeners = cli_test(["listener", "list", "--subsystem", subsystem])
         assert len(listeners.listeners) == 2
@@ -260,9 +302,10 @@ class TestAutoListener:
     def test_subsystem_with_networks_and_port(self, caplog, gateway):
         cli(["subsystem", "list"])
         caplog.clear()
-        cli(["subsystem", "add", "--subsystem", subsystem3, "--no-group-append",
-             '--network-mask', addr_subnet, addr_ipv6_subnet, "--port", "4500"])
-        assert f"Adding subsystem {subsystem3}: Successful" in caplog.text
+        ret = cli_test(["subsystem", "add", "--subsystem", subsystem3, "--no-group-append",
+                        '--network-mask', addr_subnet, addr_ipv6_subnet, "--port", "4500"])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert "ipv4" in caplog.text.lower()
         assert f"Automatically created listener at {addr}:4500 for {subsystem3}" in caplog.text
         assert "ipv6" in caplog.text.lower()
@@ -288,9 +331,10 @@ class TestAutoListener:
 
     def test_auto_listener_secure_with_port(self, caplog, gateway):
         caplog.clear()
-        cli(["subsystem", "add", "--subsystem", subsystem4, "--no-group-append",
-             '--network-mask', addr_subnet, '--secure-listeners', "--port", "4501"])
-        assert f"Adding subsystem {subsystem4}: Successful" in caplog.text
+        ret = cli_test(["subsystem", "add", "--subsystem", subsystem4, "--no-group-append",
+                        '--network-mask', addr_subnet, '--secure-listeners', "--port", "4501"])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert "ipv4" in caplog.text.lower()
         assert f"Automatically created listener at {addr}:4501 for {subsystem4}" in caplog.text
         cli(["subsystem", "list"])
@@ -306,20 +350,24 @@ class TestAutoListener:
 
     def test_del_and_add_network_mask(self, caplog, gateway):
         caplog.clear()
-        cli(["subsystem", "del_network", "--subsystem", subsystem3, '--network-mask', addr_subnet])
-        assert f"Network mask {addr_subnet} deleted for subsystem {subsystem3}: " \
-               f"Successful" in caplog.text
+        ret = cli_test(["subsystem", "del_network", "--subsystem", subsystem3,
+                        '--network-mask', addr_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
+        assert f"Deleted network {addr_subnet} for subsystem {subsystem3}" in caplog.text
         cli(["subsystem", "list"])
-        time.sleep(30)
+        assert wait_for_listener_count(subsystem3, 1)
         listeners = cli_test(["listener", "list", "--subsystem", subsystem3])
         assert len(listeners.listeners) == 1
         caplog.clear()
-        cli(["subsystem", "add_network", "--subsystem", subsystem3,
-             '--network-mask', addr_subnet])
+        ret = cli_test(["subsystem", "add_network", "--subsystem", subsystem3,
+                        '--network-mask', addr_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
         assert f"Added network {addr_subnet} for subsystem {subsystem3}" in caplog.text
         assert f"Automatically created listener at {addr}:4500 for {subsystem3}" in caplog.text
         cli(["subsystem", "list"])
-        time.sleep(30)
+        assert wait_for_listener_count(subsystem3, 2)
         listeners = cli_test(["listener", "list", "--subsystem", subsystem3])
         assert len(listeners.listeners) == 2
         assert listeners.listeners[0].trsvcid == 4500
@@ -344,3 +392,120 @@ class TestAutoListener:
             rc = sysex.code
         assert "Secure listeners cannot be set without a network mask" in caplog.text
         assert rc == 2
+
+    def test_overlapping_network_masks(self, caplog, gateway):
+        caplog.clear()
+        larger_subnet = "127.0.0.0/16"
+        smaller_subnet = addr_subnet  # 127.0.0.1/24
+        ret = cli_test(["subsystem", "add", "--subsystem", subsystem5, "--no-group-append",
+                        '--network-mask', larger_subnet, smaller_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
+
+        subsystems = cli_test(["subsystem", "list", "--subsystem", subsystem5])
+        masks = subsystems.subsystems[0].network_mask
+        assert len(masks) == 2
+        assert set(masks) == {larger_subnet, smaller_subnet}
+
+        cli(["subsystem", "list"])
+        assert wait_for_listener_count(subsystem5, 1, timeout=30)
+
+        caplog.clear()
+        ret = cli_test(["subsystem", "del_network", "--subsystem", subsystem5,
+                        '--network-mask', smaller_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
+        assert f"Deleted network {smaller_subnet} for subsystem {subsystem5}" in caplog.text
+        assert f"Keeping 1 auto-listener(s) for {subsystem5}" in caplog.text
+
+        subsystems = cli_test(["subsystem", "list", "--subsystem", subsystem5])
+        masks = subsystems.subsystems[0].network_mask
+        assert len(masks) == 1
+        assert masks[0] == larger_subnet
+
+        assert wait_for_listener_count(subsystem5, 1)
+        listeners = cli_test(["listener", "list", "--subsystem", subsystem5])
+        assert len(listeners.listeners) == 1
+
+        caplog.clear()
+        ret = cli_test(["subsystem", "del_network", "--subsystem", subsystem5,
+                        '--network-mask', larger_subnet])
+        assert ret.status == 0
+        assert ret.error_message == ""
+        assert f"Deleted network {larger_subnet} for subsystem {subsystem5}" in caplog.text
+
+        subsystems = cli_test(["subsystem", "list", "--subsystem", subsystem5])
+        masks = subsystems.subsystems[0].network_mask
+        assert len(masks) == 0
+
+        assert wait_for_listener_count(subsystem5, 0)
+        listeners = cli_test(["listener", "list", "--subsystem", subsystem5])
+        assert len(listeners.listeners) == 0
+
+    def test_del_network_no_masks(self, caplog, gateway):
+        _, stub = gateway
+        caplog.clear()
+        req = pb2.del_subsystem_network_req(subsystem_nqn=subsystem5, network_mask=addr_subnet)
+        ret = stub.del_subsystem_network(req)
+        assert ret.status == 0
+        expected_warn = f"No existing network mask found for subsystem {subsystem5}"
+        assert expected_warn in ret.error_message
+        assert expected_warn in caplog.text
+
+    def test_refresh_network_no_change(self, caplog, gateway):
+        caplog.clear()
+        ret = cli_test(["gw", "refresh_network", "--subsystem", subsystem])
+        assert ret.status == 0
+        assert ret.error_message == ""
+        assert len(ret.added) == 0
+        assert len(ret.removed) == 0
+        assert "Automatically created listener" not in caplog.text
+        assert "Automatically deleted listener" not in caplog.text
+
+    def test_refresh_network_removes(self, caplog, gateway):
+        gw, stub = gateway
+        fake_ip = "192.168.99.99"
+        gw.subsystem_auto_listeners[subsystem].add(("ipv4", fake_ip, 4420))
+        caplog.clear()
+        req = pb2.gw_refresh_network_req(subsystem_nqn=subsystem)
+        ret = stub.gw_refresh_network(req)
+        assert ret.status == 0
+        assert len(ret.added) == 0
+        assert f"{fake_ip}:4420" in ret.removed
+        assert f"Automatically deleted listener at {fake_ip}:4420 for {subsystem}" in caplog.text
+
+    def test_refresh_network_adds(self, caplog, gateway):
+        gw, stub = gateway
+        # simulate a new IP in netmask subnet by
+        # removing auto-listener without removing network_mask from subsystem
+        with gw.rpc_lock:
+            gw.del_listeners(subsystem, [addr], False, 4420)
+        caplog.clear()
+        req = pb2.gw_refresh_network_req(subsystem_nqn=subsystem)
+        ret = stub.gw_refresh_network(req)
+        assert ret.status == 0
+        assert f"{addr}:4420" in ret.added
+        assert len(ret.removed) == 0
+        assert f"Automatically created listener at {addr}:4420 for {subsystem}" in caplog.text
+
+    def test_refresh_network_invalid_subsystem(self, caplog, gateway):
+        _, stub = gateway
+        caplog.clear()
+        req = pb2.gw_refresh_network_req(subsystem_nqn="nqn.invalid")
+        ret = stub.gw_refresh_network(req)
+        assert ret.status != 0
+        assert len(ret.added) == 0
+        assert len(ret.removed) == 0
+        assert "Failure refreshing network for subsystem nqn.invalid: subsystem nqn.invalid" \
+               " not found" in ret.error_message
+
+    def test_refresh_network_netmasks_not_configured(self, caplog, gateway):
+        _, stub = gateway
+        caplog.clear()
+        req = pb2.gw_refresh_network_req(subsystem_nqn=subsystem5)
+        ret = stub.gw_refresh_network(req)
+        assert ret.status != 0
+        assert len(ret.added) == 0
+        assert len(ret.removed) == 0
+        assert (f"Failure refreshing network for subsystem {subsystem5}: subsystem {subsystem5}"
+                f" has no network masks configured") in ret.error_message

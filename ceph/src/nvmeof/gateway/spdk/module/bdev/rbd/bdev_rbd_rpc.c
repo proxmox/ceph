@@ -117,7 +117,7 @@ bdev_rbd_decode_encryption_format(const struct spdk_json_val *values, void *out)
 	return 0;
 }
 
-static const struct spdk_json_object_decoder rpc_create_rbd_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_rbd_create_decoders[] = {
 	{"name", offsetof(struct rpc_create_rbd, name), spdk_json_decode_string, true},
 	{"user_id", offsetof(struct rpc_create_rbd, user_id), spdk_json_decode_string, true},
 	{"pool_name", offsetof(struct rpc_create_rbd, pool_name), spdk_json_decode_string},
@@ -141,8 +141,8 @@ rpc_bdev_rbd_create(struct spdk_jsonrpc_request *request,
 	struct spdk_bdev *bdev;
 	int rc = 0;
 
-	if (spdk_json_decode_object(params, rpc_create_rbd_decoders,
-				    SPDK_COUNTOF(rpc_create_rbd_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_rbd_create_decoders,
+				    SPDK_COUNTOF(rpc_bdev_rbd_create_decoders),
 				    &req)) {
 		SPDK_DEBUGLOG(bdev_rbd, "spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -322,7 +322,7 @@ free_rpc_register_cluster(struct cluster_register_info *req)
 	free(req->core_mask);
 }
 
-static const struct spdk_json_object_decoder rpc_register_cluster_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_rbd_register_cluster_decoders[] = {
 	{"name", offsetof(struct cluster_register_info, name), spdk_json_decode_string, true},
 	{"user_id", offsetof(struct cluster_register_info, user_id), spdk_json_decode_string, true},
 	{"config_param", offsetof(struct cluster_register_info, config_param), bdev_rbd_decode_config, true},
@@ -339,8 +339,8 @@ rpc_bdev_rbd_register_cluster(struct spdk_jsonrpc_request *request,
 	int rc = 0;
 	struct spdk_json_write_ctx *w;
 
-	if (spdk_json_decode_object(params, rpc_register_cluster_decoders,
-				    SPDK_COUNTOF(rpc_register_cluster_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_rbd_register_cluster_decoders,
+				    SPDK_COUNTOF(rpc_bdev_rbd_register_cluster_decoders),
 				    &req)) {
 		SPDK_DEBUGLOG(bdev_rbd, "spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -413,7 +413,7 @@ free_rpc_bdev_rbd_get_cluster_info(struct rpc_bdev_rbd_get_cluster_info *req)
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_bdev_rbd_get_cluster_info_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_rbd_get_clusters_info_decoders[] = {
 	{"name", offsetof(struct rpc_bdev_rbd_get_cluster_info, name), spdk_json_decode_string, true},
 };
 
@@ -424,8 +424,8 @@ rpc_bdev_rbd_get_clusters_info(struct spdk_jsonrpc_request *request,
 	struct rpc_bdev_rbd_get_cluster_info req = {NULL};
 	int rc;
 
-	if (params && spdk_json_decode_object(params, rpc_bdev_rbd_get_cluster_info_decoders,
-					      SPDK_COUNTOF(rpc_bdev_rbd_get_cluster_info_decoders),
+	if (params && spdk_json_decode_object(params, rpc_bdev_rbd_get_clusters_info_decoders,
+					      SPDK_COUNTOF(rpc_bdev_rbd_get_clusters_info_decoders),
 					      &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");

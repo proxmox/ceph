@@ -20,13 +20,14 @@
 
 #define SPDK_BDEV_HISTOGRAM_DEFAULT_MIN_VALUE_NS (1000)
 #define SPDK_BDEV_HISTOGRAM_DEFAULT_MAX_VALUE_NS (120000000000)
+#define SPDK_BDEV_MAX_GET_IOSTAT_BDEV_NAMES (1024)
 
 static void
 dummy_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *ctx)
 {
 }
 
-static const struct spdk_json_object_decoder rpc_set_bdev_opts_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_set_options_decoders[] = {
 	{"bdev_io_pool_size", offsetof(struct spdk_bdev_opts, bdev_io_pool_size), spdk_json_decode_uint32, true},
 	{"bdev_io_cache_size", offsetof(struct spdk_bdev_opts, bdev_io_cache_size), spdk_json_decode_uint32, true},
 	{"bdev_auto_examine", offsetof(struct spdk_bdev_opts, bdev_auto_examine), spdk_json_decode_bool, true},
@@ -42,8 +43,8 @@ rpc_bdev_set_options(struct spdk_jsonrpc_request *request, const struct spdk_jso
 
 	spdk_bdev_get_opts(&opts, sizeof(opts));
 	if (params != NULL) {
-		if (spdk_json_decode_object(params, rpc_set_bdev_opts_decoders,
-					    SPDK_COUNTOF(rpc_set_bdev_opts_decoders), &opts)) {
+		if (spdk_json_decode_object(params, rpc_bdev_set_options_decoders,
+					    SPDK_COUNTOF(rpc_bdev_set_options_decoders), &opts)) {
 			SPDK_ERRLOG("spdk_json_decode_object() failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 							 "Invalid parameters");
@@ -100,19 +101,19 @@ free_rpc_bdev_examine(struct rpc_bdev_examine *r)
 	free(r->name);
 }
 
-static const struct spdk_json_object_decoder rpc_examine_bdev_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_examine_decoders[] = {
 	{"name", offsetof(struct rpc_bdev_examine, name), spdk_json_decode_string},
 };
 
 static void
-rpc_bdev_examine_bdev(struct spdk_jsonrpc_request *request,
-		      const struct spdk_json_val *params)
+rpc_bdev_examine(struct spdk_jsonrpc_request *request,
+		 const struct spdk_json_val *params)
 {
 	struct rpc_bdev_examine req = {NULL};
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_examine_bdev_decoders,
-				    SPDK_COUNTOF(rpc_examine_bdev_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_examine_decoders,
+				    SPDK_COUNTOF(rpc_bdev_examine_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object() failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -131,7 +132,7 @@ rpc_bdev_examine_bdev(struct spdk_jsonrpc_request *request,
 cleanup:
 	free_rpc_bdev_examine(&req);
 }
-SPDK_RPC_REGISTER("bdev_examine", rpc_bdev_examine_bdev, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_examine", rpc_bdev_examine, SPDK_RPC_RUNTIME)
 
 struct rpc_get_iostat_ctx {
 	int bdev_count;
@@ -214,6 +215,8 @@ bdev_get_iostat_done(struct spdk_bdev *bdev, struct spdk_bdev_io_stat *stat,
 	struct rpc_get_iostat_ctx *rpc_ctx = bdev_ctx->rpc_ctx;
 	struct spdk_json_write_ctx *w = rpc_ctx->w;
 
+	assert(spdk_thread_is_app_thread(NULL));
+
 	if (rc != 0 || rpc_ctx->rc != 0) {
 		if (rpc_ctx->rc == 0) {
 			rpc_ctx->rc = rc;
@@ -256,35 +259,6 @@ done:
 	bdev_iostat_ctx_free(bdev_ctx);
 }
 
-static int
-bdev_get_iostat(void *ctx, struct spdk_bdev *bdev)
-{
-	struct rpc_get_iostat_ctx *rpc_ctx = ctx;
-	struct bdev_get_iostat_ctx *bdev_ctx;
-	int rc;
-
-	bdev_ctx = bdev_iostat_ctx_alloc(true);
-	if (bdev_ctx == NULL) {
-		SPDK_ERRLOG("Failed to allocate bdev_iostat_ctx struct\n");
-		return -ENOMEM;
-	}
-
-	rc = spdk_bdev_open_ext(spdk_bdev_get_name(bdev), false, dummy_bdev_event_cb, NULL,
-				&bdev_ctx->desc);
-	if (rc != 0) {
-		bdev_iostat_ctx_free(bdev_ctx);
-		SPDK_ERRLOG("Failed to open bdev\n");
-		return rc;
-	}
-
-	rpc_ctx->bdev_count++;
-	bdev_ctx->rpc_ctx = rpc_ctx;
-	spdk_bdev_get_device_stat(bdev, bdev_ctx->stat, rpc_ctx->reset_mode, bdev_get_iostat_done,
-				  bdev_ctx);
-
-	return 0;
-}
-
 static void
 bdev_get_per_channel_stat_done(struct spdk_bdev *bdev, void *ctx, int status)
 {
@@ -314,16 +288,74 @@ bdev_get_per_channel_stat(struct spdk_bdev_channel_iter *i, struct spdk_bdev *bd
 	spdk_bdev_for_each_channel_continue(i, 0);
 }
 
+static int
+bdev_get_iostat(void *ctx, struct spdk_bdev *bdev)
+{
+	struct rpc_get_iostat_ctx *rpc_ctx = ctx;
+	struct bdev_get_iostat_ctx *bdev_ctx;
+	int rc;
+
+	bdev_ctx = bdev_iostat_ctx_alloc(true);
+	if (bdev_ctx == NULL) {
+		SPDK_ERRLOG("Failed to allocate bdev_iostat_ctx struct\n");
+		return -ENOMEM;
+	}
+
+	rc = spdk_bdev_open_ext(spdk_bdev_get_name(bdev), false, dummy_bdev_event_cb, NULL,
+				&bdev_ctx->desc);
+	if (rc != 0) {
+		bdev_iostat_ctx_free(bdev_ctx);
+		SPDK_ERRLOG("Failed to open bdev\n");
+		return rc;
+	}
+
+	rpc_ctx->bdev_count++;
+	bdev_ctx->rpc_ctx = rpc_ctx;
+
+	if (rpc_ctx->per_channel) {
+		/* bdev_count equals 2 because of initial increment */
+		assert(rpc_ctx->bdev_count == 2 && "we support per_channel only for single bdev");
+		rpc_get_iostat_started(rpc_ctx);
+		spdk_json_write_named_string(rpc_ctx->w, "name", spdk_bdev_get_name(bdev));
+		spdk_json_write_named_array_begin(rpc_ctx->w, "channels");
+
+		spdk_bdev_for_each_channel(bdev,
+					   bdev_get_per_channel_stat,
+					   bdev_ctx,
+					   bdev_get_per_channel_stat_done);
+	} else {
+		spdk_bdev_get_device_stat(bdev, bdev_ctx->stat, rpc_ctx->reset_mode, bdev_get_iostat_done,
+					  bdev_ctx);
+	}
+
+	return 0;
+}
+
+struct rpc_bdev_get_iostat_names {
+	size_t count;
+	char *names[SPDK_BDEV_MAX_GET_IOSTAT_BDEV_NAMES];
+};
+
 struct rpc_bdev_get_iostat {
 	char *name;
 	bool per_channel;
 	enum spdk_bdev_reset_stat_mode reset_mode;
+	struct rpc_bdev_get_iostat_names names;
 };
 
 static void
 free_rpc_bdev_get_iostat(struct rpc_bdev_get_iostat *r)
 {
+	size_t i = 0;
+
 	free(r->name);
+	if (r->names.count == UINT32_MAX) {
+		/* No value was provided */
+		return;
+	}
+	for (i = 0; i < r->names.count; i++) {
+		free(r->names.names[i]);
+	}
 }
 
 static int
@@ -335,6 +367,8 @@ rpc_decode_reset_iostat_mode(const struct spdk_json_val *val, void *out)
 		*mode = SPDK_BDEV_RESET_STAT_ALL;
 	} else if (spdk_json_strequal(val, "maxmin") == true) {
 		*mode = SPDK_BDEV_RESET_STAT_MAXMIN;
+	} else if (spdk_json_strequal(val, "error") == true) {
+		*mode = SPDK_BDEV_RESET_STAT_ERROR;
 	} else if (spdk_json_strequal(val, "none") == true) {
 		*mode = SPDK_BDEV_RESET_STAT_NONE;
 	} else {
@@ -345,22 +379,33 @@ rpc_decode_reset_iostat_mode(const struct spdk_json_val *val, void *out)
 	return 0;
 }
 
+static int
+rpc_decode_iostat_bdev_names(const struct spdk_json_val *val, void *out)
+{
+	struct rpc_bdev_get_iostat_names *names = out;
+
+	return spdk_json_decode_array(val, spdk_json_decode_string, names->names,
+				      SPDK_BDEV_MAX_GET_IOSTAT_BDEV_NAMES, &names->count, sizeof(char *));
+}
+
 static const struct spdk_json_object_decoder rpc_bdev_get_iostat_decoders[] = {
 	{"name", offsetof(struct rpc_bdev_get_iostat, name), spdk_json_decode_string, true},
 	{"per_channel", offsetof(struct rpc_bdev_get_iostat, per_channel), spdk_json_decode_bool, true},
 	{"reset_mode", offsetof(struct rpc_bdev_get_iostat, reset_mode), rpc_decode_reset_iostat_mode, true},
+	{"names", offsetof(struct rpc_bdev_get_iostat, names), rpc_decode_iostat_bdev_names, true},
 };
+
+SPDK_LOG_DEPRECATION_REGISTER(bdev_get_iostat_with_name,
+			      "--name option for bdev_get_iostat is deprecated", "v26.05", SPDK_LOG_DEPRECATION_ALWAYS);
 
 static void
 rpc_bdev_get_iostat(struct spdk_jsonrpc_request *request,
 		    const struct spdk_json_val *params)
 {
-	struct rpc_bdev_get_iostat req = { .reset_mode = SPDK_BDEV_RESET_STAT_NONE };
-	struct spdk_bdev_desc *desc = NULL;
+	struct rpc_bdev_get_iostat req = { .reset_mode = SPDK_BDEV_RESET_STAT_NONE, .names.count = UINT32_MAX };
 	struct rpc_get_iostat_ctx *rpc_ctx;
-	struct bdev_get_iostat_ctx *bdev_ctx;
-	struct spdk_bdev *bdev;
 	int rc;
+	static bool deprecated_name_option_used = false;
 
 	if (params != NULL) {
 		if (spdk_json_decode_object(params, rpc_bdev_get_iostat_decoders,
@@ -373,31 +418,37 @@ rpc_bdev_get_iostat(struct spdk_jsonrpc_request *request,
 			return;
 		}
 
-		if (req.per_channel == true && !req.name) {
-			SPDK_ERRLOG("Bdev name is required for per channel IO statistics\n");
-			spdk_jsonrpc_send_error_response(request, -EINVAL, spdk_strerror(EINVAL));
-			free_rpc_bdev_get_iostat(&req);
-			return;
+		if (req.name && req.names.count != UINT32_MAX) {
+			SPDK_ERRLOG("Can't report statistics when both name and names provided\n");
+			rc = -EINVAL;
+			goto err;
 		}
 
 		if (req.name) {
-			rc = spdk_bdev_open_ext(req.name, false, dummy_bdev_event_cb, NULL, &desc);
-			if (rc != 0) {
-				SPDK_ERRLOG("Failed to open bdev '%s': %d\n", req.name, rc);
-				spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
-				free_rpc_bdev_get_iostat(&req);
-				return;
+			if (!deprecated_name_option_used) {
+				SPDK_LOG_DEPRECATED(bdev_get_iostat_with_name);
+				deprecated_name_option_used = true;
 			}
+			req.names.names[0] = strdup(req.name);
+			if (!req.names.names[0]) {
+				rc = -ENOMEM;
+				goto err;
+			}
+			req.names.count = 1;
 		}
 	}
 
-	free_rpc_bdev_get_iostat(&req);
+	if (req.per_channel && req.names.count != 1) {
+		SPDK_ERRLOG("Can't use per_channel with multiple bdevs\n");
+		rc = -EINVAL;
+		goto err;
+	}
 
 	rpc_ctx = calloc(1, sizeof(struct rpc_get_iostat_ctx));
 	if (rpc_ctx == NULL) {
 		SPDK_ERRLOG("Failed to allocate rpc_iostat_ctx struct\n");
-		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
-		return;
+		rc = -ENOMEM;
+		goto err;
 	}
 
 	/*
@@ -409,40 +460,11 @@ rpc_bdev_get_iostat(struct spdk_jsonrpc_request *request,
 	rpc_ctx->per_channel = req.per_channel;
 	rpc_ctx->reset_mode = req.reset_mode;
 
-	if (desc != NULL) {
-		bdev = spdk_bdev_desc_get_bdev(desc);
-
-		bdev_ctx = bdev_iostat_ctx_alloc(req.per_channel == false);
-		if (bdev_ctx == NULL) {
-			SPDK_ERRLOG("Failed to allocate bdev_iostat_ctx struct\n");
-			rpc_ctx->rc = -ENOMEM;
-
-			spdk_bdev_close(desc);
-		} else {
-			bdev_ctx->desc = desc;
-
-			rpc_ctx->bdev_count++;
-			bdev_ctx->rpc_ctx = rpc_ctx;
-			if (req.per_channel == false) {
-				spdk_bdev_get_device_stat(bdev, bdev_ctx->stat, rpc_ctx->reset_mode,
-							  bdev_get_iostat_done, bdev_ctx);
-			} else {
-				/* If per_channel is true, there is no failure after here and
-				 * we have to start RPC response before executing
-				 * spdk_bdev_for_each_channel().
-				 */
-				rpc_get_iostat_started(rpc_ctx);
-				spdk_json_write_named_string(rpc_ctx->w, "name", spdk_bdev_get_name(bdev));
-				spdk_json_write_named_array_begin(rpc_ctx->w, "channels");
-
-				spdk_bdev_for_each_channel(bdev,
-							   bdev_get_per_channel_stat,
-							   bdev_ctx,
-							   bdev_get_per_channel_stat_done);
-
-				rpc_get_iostat_done(rpc_ctx);
-				return;
-			}
+	if (req.names.count != UINT32_MAX) {
+		rc = spdk_for_each_bdev_by_name(rpc_ctx, bdev_get_iostat, (const char **)req.names.names,
+						req.names.count);
+		if (rc != 0 && rpc_ctx->rc == 0) {
+			rpc_ctx->rc = rc;
 		}
 	} else {
 		rc = spdk_for_each_bdev(rpc_ctx, bdev_get_iostat);
@@ -451,7 +473,7 @@ rpc_bdev_get_iostat(struct spdk_jsonrpc_request *request,
 		}
 	}
 
-	if (rpc_ctx->rc == 0) {
+	if (rpc_ctx->rc == 0 && !req.per_channel) {
 		/* We want to fail the RPC for all failures. If per_channel is false,
 		 * it is enough to defer starting RPC response until it is ensured that
 		 * all spdk_bdev_for_each_channel() calls will succeed or there is no bdev.
@@ -461,6 +483,11 @@ rpc_bdev_get_iostat(struct spdk_jsonrpc_request *request,
 	}
 
 	rpc_get_iostat_done(rpc_ctx);
+	free_rpc_bdev_get_iostat(&req);
+	return;
+err:
+	spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	free_rpc_bdev_get_iostat(&req);
 }
 SPDK_RPC_REGISTER("bdev_get_iostat", rpc_bdev_get_iostat, SPDK_RPC_RUNTIME)
 
@@ -518,6 +545,8 @@ bdev_reset_iostat(void *ctx, struct spdk_bdev *bdev)
 	struct rpc_reset_iostat_ctx *rpc_ctx = ctx;
 	struct bdev_reset_iostat_ctx *bdev_ctx;
 	int rc;
+
+	assert(spdk_thread_is_app_thread(NULL));
 
 	bdev_ctx = calloc(1, sizeof(struct bdev_reset_iostat_ctx));
 	if (bdev_ctx == NULL) {
@@ -1021,7 +1050,7 @@ free_rpc_bdev_enable_histogram_request(struct rpc_bdev_enable_histogram_request 
 	free(r->opc);
 }
 
-static const struct spdk_json_object_decoder rpc_bdev_enable_histogram_request_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_enable_histogram_decoders[] = {
 	{"name", offsetof(struct rpc_bdev_enable_histogram_request, name), spdk_json_decode_string},
 	{"enable", offsetof(struct rpc_bdev_enable_histogram_request, enable), spdk_json_decode_bool},
 	{"opc", offsetof(struct rpc_bdev_enable_histogram_request, opc), spdk_json_decode_string, true},
@@ -1055,8 +1084,8 @@ rpc_bdev_enable_histogram(struct spdk_jsonrpc_request *request,
 	struct spdk_bdev_enable_histogram_opts opts = {};
 	int io_type = 0;
 
-	if (spdk_json_decode_object(params, rpc_bdev_enable_histogram_request_decoders,
-				    SPDK_COUNTOF(rpc_bdev_enable_histogram_request_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_enable_histogram_decoders,
+				    SPDK_COUNTOF(rpc_bdev_enable_histogram_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -1104,7 +1133,7 @@ struct rpc_bdev_get_histogram_request {
 	char *name;
 };
 
-static const struct spdk_json_object_decoder rpc_bdev_get_histogram_request_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_get_histogram_decoders[] = {
 	{"name", offsetof(struct rpc_bdev_get_histogram_request, name), spdk_json_decode_string}
 };
 
@@ -1173,8 +1202,8 @@ rpc_bdev_get_histogram(struct spdk_jsonrpc_request *request,
 	struct spdk_bdev *bdev;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_bdev_get_histogram_request_decoders,
-				    SPDK_COUNTOF(rpc_bdev_get_histogram_request_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_get_histogram_decoders,
+				    SPDK_COUNTOF(rpc_bdev_get_histogram_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,

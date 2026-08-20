@@ -1,0 +1,50 @@
+---
+name: Sync docs to github pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"    # Every 24 hours at midnight UTC
+  push:
+    paths:
+      - doc
+      - schema
+
+jobs:
+  sync-gh-pages:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/spdk/spdk-ci:fedora_40
+    steps:
+    - name: Checkout Pages repository
+      uses: actions/checkout@v4.1.7
+      with:
+        repository: spdk/spdk.github.io
+        path: pages
+    - name: Install dependencies
+      run: |
+        set -x
+        dnf -y install jekyll
+    - name: Run doc generation script
+      id: vars
+      working-directory: pages
+      run: |
+        set -x
+        ./update-doc.sh
+        echo "spdk_sha=$(cat _doc_version.txt)" >> $GITHUB_OUTPUT
+    - name: Commit and Push changes
+      working-directory: pages
+      run: |
+        set -x
+        if ! git diff --cached --quiet; then
+            git config user.name "spdk-bot"
+            git config user.email "spdkbot@gmail.com"
+            git remote set-url origin https://$GERRIT_BOT_USER:$GERRIT_BOT_PASSWORD@review.spdk.io/spdk/spdk.github.io
+            git commit --signoff --message "doc: update to ${{ steps.vars.outputs.spdk_sha }}"
+            git push origin HEAD:master
+        else
+            echo "No changes staged, skipping commit/push."
+        fi
+      env:
+        GERRIT_BOT_USER: ${{ secrets.GERRIT_BOT_USER }}
+        GERRIT_BOT_PASSWORD: ${{ secrets.GERRIT_BOT_HTTP_PASSWD }}

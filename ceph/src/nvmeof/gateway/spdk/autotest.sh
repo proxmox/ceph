@@ -29,27 +29,7 @@ if [ $EUID -ne 0 ]; then
 	exit 1
 fi
 
-if [ $(uname -s) = Linux ]; then
-	old_core_pattern=$(< /proc/sys/kernel/core_pattern)
-	mkdir -p "$output_dir/coredumps"
-	# Set core_pattern to a known value to avoid looking for cores handled by different
-	# entities, like apport, systemd-coredump, etc. We also don't want to pipe core to our
-	# own collector as under SELINUX it won't be able to execute due to limitation
-	# kernel_generic_help_t|kernel_t domains may impose. Stick to a simple pattern
-	# pointing at $output_dir/coredumps - when autotest finishes, process_core() will
-	# pick any core from that location.
-	echo "$output_dir/coredumps/%s-%p-%i-%t-%E.core" > /proc/sys/kernel/core_pattern
-
-	# make sure nbd (network block device) driver is loaded if it is available
-	# this ensures that when tests need to use nbd, it will be fully initialized
-	modprobe nbd || true
-
-	if udevadm=$(type -P udevadm); then
-		"$udevadm" monitor --property &> "$output_dir/udev.log" &
-		udevadm_pid=$!
-	fi
-
-fi
+init_linux_env
 
 start_monitor_resources
 
@@ -153,7 +133,11 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 		export SPDK_SOCK_IMPL_DEFAULT="uring"
 	fi
 
-	run_test "env" $rootdir/test/env/env.sh
+	if [[ $SPDK_TEST_NO_HUGE -eq 0 ]]; then
+		run_test "env" $rootdir/test/env/env.sh
+		run_test "event" $rootdir/test/event/event.sh
+		run_test "thread" $rootdir/test/thread/thread.sh
+	fi
 	run_test "rpc" $rootdir/test/rpc/rpc.sh
 	run_test "skip_rpc" $rootdir/test/rpc/skip_rpc.sh
 	run_test "rpc_client" $rootdir/test/rpc_client/rpc_client.sh
@@ -166,8 +150,6 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 	fi
 
 	run_test "dpdk_mem_utility" $rootdir/test/dpdk_memory_utility/test_dpdk_mem_info.sh
-	run_test "event" $rootdir/test/event/event.sh
-	run_test "thread" $rootdir/test/thread/thread.sh
 
 	if [[ $SPDK_TEST_ACCEL -eq 1 ]]; then
 		run_test "accel" $rootdir/test/accel/accel.sh
@@ -276,9 +258,13 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 			run_test "nvmf_tcp" $rootdir/test/nvmf/nvmf.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
 			if [[ $SPDK_TEST_URING -eq 0 ]]; then
 				run_test "spdkcli_nvmf_tcp" $rootdir/test/spdkcli/nvmf.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
-				run_test "nvmf_identify_passthru" $rootdir/test/nvmf/target/identify_passthru.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
+				if [[ $SPDK_TEST_NO_HUGE -eq 0 ]]; then
+					run_test "nvmf_identify_passthru" $rootdir/test/nvmf/target/identify_passthru.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
+				fi
 			fi
-			run_test "nvmf_dif" $rootdir/test/nvmf/target/dif.sh
+			if [[ $SPDK_TEST_NO_HUGE -eq 0 ]]; then
+				run_test "nvmf_dif" $rootdir/test/nvmf/target/dif.sh
+			fi
 			run_test "nvmf_abort_qd_sizes" $rootdir/test/nvmf/target/abort_qd_sizes.sh
 			# The keyring tests utilize NVMe/TLS
 			run_test "keyring_file" "$rootdir/test/keyring/file.sh"
@@ -311,6 +297,7 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 	if [ $SPDK_TEST_LVOL -eq 1 ]; then
 		run_test "blobstore" $rootdir/test/blobstore/blobstore.sh
 		run_test "blobstore_grow" $rootdir/test/blobstore/blobstore_grow/blobstore_grow.sh
+		run_test "max_growable" $rootdir/test/blobstore/blobstore_grow/max_growable.sh
 		run_test "hello_blob" $SPDK_EXAMPLE_DIR/hello_blob \
 			examples/blob/hello_world/hello_blob.json
 		run_test "lvol" $rootdir/test/lvol/lvol.sh

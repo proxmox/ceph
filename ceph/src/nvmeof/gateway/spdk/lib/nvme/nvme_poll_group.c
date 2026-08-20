@@ -77,18 +77,6 @@ spdk_nvme_poll_group_create(void *ctx, struct spdk_nvme_accel_fn_table *table)
 	return group;
 }
 
-int
-spdk_nvme_poll_group_get_fd(struct spdk_nvme_poll_group *group)
-{
-	if (!group->fgrp) {
-		SPDK_ERRLOG("No fd group present for the nvme poll group.\n");
-		assert(false);
-		return -EINVAL;
-	}
-
-	return spdk_fd_group_get_fd(group->fgrp);
-}
-
 struct spdk_fd_group *
 spdk_nvme_poll_group_get_fd_group(struct spdk_nvme_poll_group *group)
 {
@@ -107,20 +95,6 @@ spdk_nvme_poll_group_set_interrupt_callback(struct spdk_nvme_poll_group *group,
 	group->interrupt.cb_ctx = cb_ctx;
 
 	return 0;
-}
-
-struct spdk_nvme_poll_group *
-spdk_nvme_qpair_get_optimal_poll_group(struct spdk_nvme_qpair *qpair)
-{
-	struct spdk_nvme_transport_poll_group *tgroup;
-
-	tgroup = nvme_transport_qpair_get_optimal_poll_group(qpair->transport, qpair);
-
-	if (tgroup == NULL) {
-		return NULL;
-	}
-
-	return tgroup->group;
 }
 
 #ifdef __linux__
@@ -249,6 +223,10 @@ spdk_nvme_poll_group_remove(struct spdk_nvme_poll_group *group, struct spdk_nvme
 {
 	struct spdk_nvme_transport_poll_group *tgroup;
 
+	if (nvme_qpair_get_state(qpair) != NVME_QPAIR_DISCONNECTED) {
+		return -EINVAL;
+	}
+
 	STAILQ_FOREACH(tgroup, &group->tgroups, link) {
 		if (tgroup->transport == qpair->transport) {
 			return nvme_transport_poll_group_remove(tgroup, qpair);
@@ -363,9 +341,9 @@ spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
 {
 	struct spdk_nvme_transport_poll_group *tgroup;
-	int64_t local_completions = 0, error_reason = 0, num_completions = 0;
+	int64_t error_reason = 0, num_completions = 0;
 
-	if (disconnected_qpair_cb == NULL) {
+	if (spdk_unlikely(disconnected_qpair_cb == NULL)) {
 		return -EINVAL;
 	}
 
@@ -375,10 +353,14 @@ spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 	group->in_process_completions = true;
 
 	STAILQ_FOREACH(tgroup, &group->tgroups, link) {
+		int64_t local_completions;
+
 		local_completions = nvme_transport_poll_group_process_completions(tgroup, completions_per_qpair,
 				    disconnected_qpair_cb);
-		if (local_completions < 0 && error_reason == 0) {
-			error_reason = local_completions;
+		if (spdk_unlikely(local_completions < 0)) {
+			if (!error_reason) {
+				error_reason = local_completions;
+			}
 		} else {
 			num_completions += local_completions;
 			/* Just to be safe */

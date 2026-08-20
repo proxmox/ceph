@@ -349,6 +349,22 @@ nvmf_ns_is_ptpl_capable(const struct spdk_nvmf_ns *ns)
 	return ns->ptpl_file != NULL;
 }
 
+struct spdk_nvme_rescap
+nvmf_ns_get_rescap(struct spdk_nvmf_ns *ns)
+{
+	struct spdk_nvme_rescap rescap = {
+		.ptpls = nvmf_ns_is_ptpl_capable(ns),
+		.wes = 1,
+		.eas = 1,
+		.weros = 1,
+		.earos = 1,
+		.wears = 1,
+		.eaars = 1,
+		.ieks = 1,
+	};
+	return rescap;
+}
+
 static void
 test_get_rw_params(void)
 {
@@ -374,7 +390,7 @@ test_get_rw_ext_params(void)
 	to_le32(&cmd.cdw12, 0x9875 | SPDK_NVME_IO_FLAGS_DATA_PLACEMENT_DIRECTIVE |
 		SPDK_NVME_IO_FLAGS_PRCHK_GUARD);
 	to_le32(&cmd.cdw13, 0x2 << 16);
-	nvmf_bdev_ctrlr_get_rw_ext_params(&cmd, &opts);
+	nvmf_bdev_ctrlr_get_rw_ext_params(&cmd, &opts, true);
 	CU_ASSERT(opts.nvme_cdw12.raw == 0x10209875);
 	CU_ASSERT(opts.nvme_cdw13.raw == 0x20000);
 	CU_ASSERT((opts.dif_check_flags_exclude_mask ^ SPDK_NVME_IO_FLAGS_PRCHK_MASK)
@@ -596,15 +612,15 @@ test_nvmf_bdev_ctrlr_identify_ns(void)
 	CU_ASSERT(nsdata.dpc.pit1 == 1);
 	CU_ASSERT(nsdata.dps.pit == SPDK_NVME_FMT_NVM_PROTECTION_TYPE1);
 	CU_ASSERT(nsdata.noiob == SPDK_BDEV_IO_NUM_CHILD_IOV);
-	CU_ASSERT(nsdata.nmic.can_share == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.persist == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive_reg_only == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access_reg_only == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive_all_reg == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access_all_reg == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.ignore_existing_key == 1);
+	CU_ASSERT(nsdata.nmic.shrns == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.ptpls == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.wes == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.eas == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.weros == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.earos == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.wears == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.eaars == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.ieks == 1);
 	CU_ASSERT(nsdata.flbas.extended == 1);
 	CU_ASSERT(nsdata.mc.extended == 1);
 	CU_ASSERT(nsdata.mc.pointer == 0);
@@ -623,16 +639,16 @@ test_nvmf_bdev_ctrlr_identify_ns(void)
 	CU_ASSERT(nsdata.nacwu == 0);
 	CU_ASSERT(nsdata.lbaf[0].lbads == spdk_u32log2(4096));
 	CU_ASSERT(nsdata.noiob == SPDK_BDEV_IO_NUM_CHILD_IOV);
-	CU_ASSERT(nsdata.nmic.can_share == 1);
+	CU_ASSERT(nsdata.nmic.shrns == 1);
 	CU_ASSERT(nsdata.lbaf[0].ms == 0);
-	CU_ASSERT(nsdata.nsrescap.rescap.persist == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive_reg_only == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access_reg_only == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.write_exclusive_all_reg == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.exclusive_access_all_reg == 1);
-	CU_ASSERT(nsdata.nsrescap.rescap.ignore_existing_key == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.ptpls == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.wes == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.eas == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.weros == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.earos == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.wears == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.eaars == 1);
+	CU_ASSERT(nsdata.nsrescap.rescap.ieks == 1);
 	CU_ASSERT(!strncmp(nsdata.nguid, ns_g_id, 16));
 	CU_ASSERT(!strncmp((uint8_t *)&nsdata.eui64, eui64, 8));
 }

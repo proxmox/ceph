@@ -37,19 +37,19 @@
 %include "clear_regs.inc"
 
 default rel
-%define TW              rsp     ; store 8 tweak values
-%define keys    rsp + 16*8      ; store 11 expanded keys
-
-%ifidn __OUTPUT_FORMAT__, win64
-	%define _xmm    rsp + 16*(8+11)     ; store xmm6:xmm15
-%endif
 
 %ifidn __OUTPUT_FORMAT__, elf64
-%define _gpr    rsp + 16*(8+11)     ; store rbx
-%define VARIABLE_OFFSET 16*8 + 16*11 + 8*1     ; VARIABLE_OFFSET has to be an odd multiple of 8
+%define _gpr    rsp     ; store rbx
+%define VARIABLE_OFFSET 8*1     ; stack frame size for rbx
 %else
-%define _gpr    rsp + 16*(8+11+10)     ; store rdi, rsi, rbx
-%define VARIABLE_OFFSET 16*8 + 16*11 + 16*10 + 8*3     ; VARIABLE_OFFSET has to be an odd multiple of 8
+%define _xmm    rsp             ; store xmm6:xmm15
+%define _gpr    rsp + 16*10     ; store rdi, rsi, rbx
+%define VARIABLE_OFFSET 16*10 + 8*3     ; stack frame size for XMM6-15 and GP regs
+%endif
+
+%ifndef NROUNDS
+%define NROUNDS 9
+%define FUNC _XTS_AES_128_enc_expanded_key_vaes
 %endif
 
 %define GHASH_POLY 0x87
@@ -77,8 +77,8 @@ default rel
 	%xdefine ptr_key1 rdx
 	%xdefine T_val r8
 	%xdefine N_val r9
-	%xdefine ptr_plaintext r10; [rsp + VARIABLE_OFFSET + 8*5]
-	%xdefine ptr_ciphertext r11; [rsp + VARIABLE_OFFSET + 8*6]
+	%xdefine ptr_plaintext r10
+	%xdefine ptr_ciphertext r11
 %endif
 
 ; arguments for temp parameters
@@ -95,197 +95,32 @@ default rel
 %define twtempl rax     ; global temp registers used for tweak computation
 %define twtemph rbx
 %define zpoly   zmm25
+%define prev_tweak zmm31
 
 
 ; macro to encrypt the tweak value
 
-%macro  encrypt_T 8
-%define %%xkey2         %1
-%define %%xstate_tweak  %2
-%define %%xkey1         %3
-%define %%xraw_key      %4
-%define %%xtmp          %5
-%define %%ptr_key2      %6
-%define %%ptr_key1      %7
-%define %%ptr_expanded_keys     %8
+%macro  encrypt_T 2
+%define %%xstate_tweak  %1
+%define %%ptr_key2      %2
 
-	vmovdqu  %%xkey2, [%%ptr_key2]
-	vpxor    %%xstate_tweak, %%xkey2                         ; ARK for tweak encryption
+	vpxorq   %%xstate_tweak, [%%ptr_key2]                    ; ARK for tweak encryption
 
-	vmovdqu  %%xkey1, [%%ptr_key1]
-	vmovdqa  [%%ptr_expanded_keys+16*0], %%xkey1             ; store round keys in stack
+        ; Do N AES rounds for tweak encryption
+%assign %%I 1
+%rep NROUNDS
+	vaesenc  %%xstate_tweak, [%%ptr_key2 + 16*%%I]           ; round 1 for tweak encryption
+%assign %%I (%%I + 1)
+%endrep
 
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*1]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 1 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*1]
-	vmovdqa  [%%ptr_expanded_keys+16*1], %%xkey1             ; store round keys in stack
-
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*2]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 2 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*2]
-	vmovdqa  [%%ptr_expanded_keys+16*2], %%xkey1             ; store round keys in stack
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*3]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 3 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*3]
-	vmovdqa  [%%ptr_expanded_keys+16*3], %%xkey1             ; store round keys in stack
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*4]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 4 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*4]
-	vmovdqa  [%%ptr_expanded_keys+16*4], %%xkey1             ; store round keys in stack
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*5]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 5 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*5]
-	vmovdqa  [%%ptr_expanded_keys+16*5], %%xkey1             ; store round keys in stack
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*6]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 6 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*6]
-	vmovdqa  [%%ptr_expanded_keys+16*6], %%xkey1             ; store round keys in stack
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*7]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 7 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*7]
-	vmovdqa  [%%ptr_expanded_keys+16*7], %%xkey1             ; store round keys in stack
-
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*8]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 8 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*8]
-	vmovdqa  [%%ptr_expanded_keys+16*8], %%xkey1             ; store round keys in stack
-
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*9]
-	vaesenc  %%xstate_tweak, %%xkey2                         ; round 9 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*9]
-	vmovdqa  [%%ptr_expanded_keys+16*9], %%xkey1             ; store round keys in stack
-
-
-	vmovdqu  %%xkey2, [%%ptr_key2 + 16*10]
-	vaesenclast      %%xstate_tweak, %%xkey2                 ; round 10 for tweak encryption
-
-	vmovdqu  %%xkey1, [%%ptr_key1 + 16*10]
-	vmovdqa  [%%ptr_expanded_keys+16*10], %%xkey1            ; store round keys in stack
-
-	vmovdqa  [TW], %%xstate_tweak                            ; Store the encrypted Tweak value
+	vaesenclast      %%xstate_tweak, [%%ptr_key2 + 16*(NROUNDS + 1)]    ; round 10 for tweak encryption
 %endmacro
 
 
-; generate initial tweak values
-; load initial plaintext values
-%macro  initialize 16
-
-%define %%ST1   %1      ; state 1
-%define %%ST2   %2      ; state 2
-%define %%ST3   %3      ; state 3
-%define %%ST4   %4      ; state 4
-%define %%ST5   %5      ; state 5
-%define %%ST6   %6      ; state 6
-%define %%ST7   %7      ; state 7
-%define %%ST8   %8      ; state 8
-
-%define %%TW1   %9      ; tweak 1
-%define %%TW2   %10     ; tweak 2
-%define %%TW3   %11     ; tweak 3
-%define %%TW4   %12     ; tweak 4
-%define %%TW5   %13     ; tweak 5
-%define %%TW6   %14     ; tweak 6
-%define %%TW7   %15     ; tweak 7
-
-%define %%num_initial_blocks    %16
-
-
-		; generate next Tweak values
-		vmovdqa  %%TW1, [TW+16*0]
-		mov     twtempl, [TW+8*0]
-		mov     twtemph, [TW+8*1]
-		vmovdqu  %%ST1, [ptr_plaintext+16*0]
-%if (%%num_initial_blocks>=2)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*2], twtempl
-		mov     [TW+8*3], twtemph;
-		vmovdqa  %%TW2, [TW+16*1]
-		vmovdqu  %%ST2, [ptr_plaintext+16*1]
-%endif
-%if (%%num_initial_blocks>=3)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*4], twtempl
-		mov     [TW+8*5], twtemph;
-		vmovdqa  %%TW3, [TW+16*2]
-		vmovdqu  %%ST3, [ptr_plaintext+16*2]
-%endif
-%if (%%num_initial_blocks>=4)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*6], twtempl
-		mov     [TW+8*7], twtemph;
-		vmovdqa  %%TW4, [TW+16*3]
-		vmovdqu  %%ST4, [ptr_plaintext+16*3]
-%endif
-%if (%%num_initial_blocks>=5)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*8], twtempl
-		mov     [TW+8*9], twtemph;
-		vmovdqa  %%TW5, [TW+16*4]
-		vmovdqu  %%ST5, [ptr_plaintext+16*4]
-%endif
-%if (%%num_initial_blocks>=6)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*10], twtempl
-		mov     [TW+8*11], twtemph;
-		vmovdqa  %%TW6, [TW+16*5]
-		vmovdqu  %%ST6, [ptr_plaintext+16*5]
-%endif
-%if (%%num_initial_blocks>=7)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW+8*12], twtempl
-		mov     [TW+8*13], twtemph;
-		vmovdqa  %%TW7, [TW+16*6]
-		vmovdqu  %%ST7, [ptr_plaintext+16*6]
-%endif
-
-%endmacro
-
-
-; encrypt initial blocks of AES
+; encrypt final blocks of AES
 ; 1, 2, 3, 4, 5, 6 or 7 blocks are encrypted
 ; next 8 Tweak values are generated
-%macro  encrypt_initial 18
+%macro  encrypt_final 17
 %define %%ST1   %1      ; state 1
 %define %%ST2   %2      ; state 2
 %define %%ST3   %3      ; state 3
@@ -307,394 +142,66 @@ default rel
 ; %%num_blocks blocks encrypted
 ; %%num_blocks can be 1, 2, 3, 4, 5, 6, 7
 
-%define %%lt128  %18     ; less than 128 bytes
+	; xor Tweak value + ARK
+	vmovdqu  %%T0, [ptr_key1]
+%assign %%I 1
+%rep %%num_blocks
+	vpternlogq %%ST %+ %%I, %%TW %+ %%I, %%T0, 0x96
+%assign %%I (%%I + 1)
+%endrep
 
-	; xor Tweak value
-	vpxor    %%ST1, %%TW1
-%if (%%num_blocks>=2)
-	vpxor    %%ST2, %%TW2
+	; AES rounds
+%assign %%ROUND 1
+%rep (NROUNDS + 1)
+	vmovdqu  %%T0, [ptr_key1 + 16*%%ROUND]
+%assign %%IDX 1
+%rep %%num_blocks
+%if %%ROUND == (NROUNDS + 1)
+	vaesenclast  %%ST %+ %%IDX, %%T0
+%else
+	vaesenc  %%ST %+ %%IDX, %%T0
 %endif
-%if (%%num_blocks>=3)
-	vpxor    %%ST3, %%TW3
-%endif
-%if (%%num_blocks>=4)
-	vpxor    %%ST4, %%TW4
-%endif
-%if (%%num_blocks>=5)
-	vpxor    %%ST5, %%TW5
-%endif
-%if (%%num_blocks>=6)
-	vpxor    %%ST6, %%TW6
-%endif
-%if (%%num_blocks>=7)
-	vpxor    %%ST7, %%TW7
-%endif
+%assign %%IDX (%%IDX + 1)
+%endrep
 
-
-	; ARK
-	vmovdqa  %%T0, [keys]
-	vpxor    %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vpxor    %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vpxor    %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vpxor    %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vpxor    %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vpxor    %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vpxor    %%ST7, %%T0
-%endif
-
-
-	%if (0 == %%lt128)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-	%endif
-
-	; round 1
-	vmovdqa  %%T0, [keys + 16*1]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-	%if (0 == %%lt128)
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*0], twtempl     ; next Tweak1 generated
-		mov     [TW + 8*1], twtemph
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-	%endif
-
-	; round 2
-	vmovdqa  %%T0, [keys + 16*2]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*2], twtempl ; next Tweak2 generated
-	%endif
-
-	; round 3
-	vmovdqa  %%T0, [keys + 16*3]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-	%if (0 == %%lt128)
-		mov     [TW + 8*3], twtemph
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-	%endif
-
-	; round 4
-	vmovdqa  %%T0, [keys + 16*4]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*4], twtempl ; next Tweak3 generated
-		mov     [TW + 8*5], twtemph
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-	%endif
-
-	; round 5
-	vmovdqa  %%T0, [keys + 16*5]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*6], twtempl ; next Tweak4 generated
-		mov     [TW + 8*7], twtemph
-	%endif
-
-	; round 6
-	vmovdqa  %%T0, [keys + 16*6]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*8], twtempl ; next Tweak5 generated
-		mov     [TW + 8*9], twtemph
-	%endif
-
-	; round 7
-	vmovdqa  %%T0, [keys + 16*7]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*10], twtempl ; next Tweak6 generated
-		mov     [TW + 8*11], twtemph
-	%endif
-	; round 8
-	vmovdqa  %%T0, [keys + 16*8]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*12], twtempl ; next Tweak7 generated
-		mov     [TW + 8*13], twtemph
-	%endif
-	; round 9
-	vmovdqa  %%T0, [keys + 16*9]
-	vaesenc  %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenc  %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenc  %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenc  %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenc  %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenc  %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenc  %%ST7, %%T0
-%endif
-
-	%if (0 == %%lt128)
-		xor     ghash_poly_8b_temp, ghash_poly_8b_temp
-		shl     twtempl, 1
-		adc     twtemph, twtemph
-		cmovc   ghash_poly_8b_temp, ghash_poly_8b
-		xor     twtempl, ghash_poly_8b_temp
-		mov     [TW + 8*14], twtempl ; next Tweak8 generated
-		mov     [TW + 8*15], twtemph
-	%endif
-
-
-	; round 10
-	vmovdqa  %%T0, [keys + 16*10]
-	vaesenclast      %%ST1, %%T0
-%if (%%num_blocks>=2)
-	vaesenclast      %%ST2, %%T0
-%endif
-%if (%%num_blocks>=3)
-	vaesenclast      %%ST3, %%T0
-%endif
-%if (%%num_blocks>=4)
-	vaesenclast      %%ST4, %%T0
-%endif
-%if (%%num_blocks>=5)
-	vaesenclast      %%ST5, %%T0
-%endif
-%if (%%num_blocks>=6)
-	vaesenclast      %%ST6, %%T0
-%endif
-%if (%%num_blocks>=7)
-	vaesenclast      %%ST7, %%T0
-%endif
-
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 
 	; xor Tweak values
-	vpxor    %%ST1, %%TW1
-%if (%%num_blocks>=2)
-	vpxor    %%ST2, %%TW2
-%endif
-%if (%%num_blocks>=3)
-	vpxor    %%ST3, %%TW3
-%endif
-%if (%%num_blocks>=4)
-	vpxor    %%ST4, %%TW4
-%endif
-%if (%%num_blocks>=5)
-	vpxor    %%ST5, %%TW5
-%endif
-%if (%%num_blocks>=6)
-	vpxor    %%ST6, %%TW6
-%endif
-%if (%%num_blocks>=7)
-	vpxor    %%ST7, %%TW7
-%endif
-
-
-%if (0 == %%lt128)
-		; load next Tweak values
-		vmovdqa  %%TW1, [TW + 16*0]
-		vmovdqa  %%TW2, [TW + 16*1]
-		vmovdqa  %%TW3, [TW + 16*2]
-		vmovdqa  %%TW4, [TW + 16*3]
-		vmovdqa  %%TW5, [TW + 16*4]
-		vmovdqa  %%TW6, [TW + 16*5]
-		vmovdqa  %%TW7, [TW + 16*6]
-
-%endif
+%assign %%I 1
+%rep %%num_blocks
+	vpxor   %%ST %+ %%I, %%TW %+ %%I
+%assign %%I (%%I + 1)
+%endrep
 
 %endmacro
 
+; Encrypt 4 blocks in parallel
+%macro  encrypt_by_four_zmm 3
+%define %%ST1   %1      ; state 1
+%define %%TW1   %2      ; tweak 1
+%define %%T0    %3     ; Temp register
 
+	; xor Tweak values + ARK
+	vbroadcasti32x4 %%T0, [ptr_key1]
+	vpternlogq    %%ST1, %%TW1, %%T0, 0x96
+
+	; AES rounds
+%assign %%ROUND 1
+%rep (NROUNDS + 1)
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
+%if %%ROUND == (NROUNDS + 1)
+	vaesenclast  %%ST1, %%T0
+%else
+	vaesenc  %%ST1, %%T0
+%endif
+%assign %%ROUND (%%ROUND + 1)
+%endrep
+
+	; xor Tweak values
+	vpxorq    %%ST1, %%TW1
+
+%endmacro
 
 
 ; Encrypt 8 blocks in parallel
@@ -707,14 +214,10 @@ default rel
 %define %%T0    %5     ; Temp register
 %define %%last_eight     %6
 
-	; xor Tweak values
-	vpxorq    %%ST1, %%TW1
-	vpxorq    %%ST2, %%TW2
-
-	; ARK
-	vbroadcasti32x4 %%T0, [keys]
-	vpxorq    %%ST1, %%T0
-	vpxorq    %%ST2, %%T0
+	; xor Tweak values + ARK
+	vbroadcasti32x4 %%T0, [ptr_key1]
+	vpternlogq    %%ST1, %%TW1, %%T0, 0x96
+	vpternlogq    %%ST2, %%TW2, %%T0, 0x96
 
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, %%TW1, 15
@@ -722,73 +225,50 @@ default rel
 		vpslldq		zmm15, %%TW1, 1
 		vpxord		zmm15, zmm15, zmm14
 %endif
-	; round 1
-	vbroadcasti32x4 %%T0, [keys + 16*1]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
 
-	; round 2
-	vbroadcasti32x4 %%T0, [keys + 16*2]
+	; AES rounds 1-3
+%assign %%ROUND 1
+%rep 3
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
 	vaesenc  %%ST1, %%T0
 	vaesenc  %%ST2, %%T0
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 
-	; round 3
-	vbroadcasti32x4 %%T0, [keys + 16*3]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, %%TW2, 15
 		vpclmulqdq	zmm14, zmm13, zpoly, 0
 		vpslldq		zmm16, %%TW2, 1
 		vpxord		zmm16, zmm16, zmm14
 %endif
-	; round 4
-	vbroadcasti32x4 %%T0, [keys + 16*4]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
 
-	; round 5
-	vbroadcasti32x4 %%T0, [keys + 16*5]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-
-	; round 6
-	vbroadcasti32x4 %%T0, [keys + 16*6]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-
-	; round 7
-	vbroadcasti32x4 %%T0, [keys + 16*7]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-
-	; round 8
-	vbroadcasti32x4 %%T0, [keys + 16*8]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-
-	; round 9
-	vbroadcasti32x4 %%T0, [keys + 16*9]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-
-	; round 10
-	vbroadcasti32x4 %%T0, [keys + 16*10]
+	; Remaining AES rounds
+%rep (NROUNDS + 1 - 3)
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
+%if %%ROUND == (NROUNDS + 1)
 	vaesenclast  %%ST1, %%T0
 	vaesenclast  %%ST2, %%T0
+%else
+	vaesenc  %%ST1, %%T0
+	vaesenc  %%ST2, %%T0
+%endif
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 
 	; xor Tweak values
 	vpxorq    %%ST1, %%TW1
 	vpxorq    %%ST2, %%TW2
 
 	; load next Tweak values
+%if (0 == %%last_eight)
 	vmovdqa32  %%TW1, zmm15
 	vmovdqa32  %%TW2, zmm16
+%endif
 %endmacro
 
 
 ; Encrypt 16 blocks in parallel
-; generate next 8 tweak values
+; generate next 16 tweak values
 %macro  encrypt_by_16_zmm 10
 %define %%ST1   %1      ; state 1
 %define %%ST2   %2      ; state 2
@@ -803,18 +283,13 @@ default rel
 %define %%T0    %9     ; Temp register
 %define %%last_eight     %10
 
-	; xor Tweak values
-	vpxorq    %%ST1, %%TW1
-	vpxorq    %%ST2, %%TW2
-	vpxorq    %%ST3, %%TW3
-	vpxorq    %%ST4, %%TW4
+	; xor Tweak values + ARK
+	vbroadcasti32x4 %%T0, [ptr_key1]
+	vpternlogq    %%ST1, %%TW1, %%T0, 0x96
+	vpternlogq    %%ST2, %%TW2, %%T0, 0x96
+	vpternlogq    %%ST3, %%TW3, %%T0, 0x96
+	vpternlogq    %%ST4, %%TW4, %%T0, 0x96
 
-	; ARK
-	vbroadcasti32x4 %%T0, [keys]
-	vpxorq    %%ST1, %%T0
-	vpxorq    %%ST2, %%T0
-	vpxorq    %%ST3, %%T0
-	vpxorq    %%ST4, %%T0
 
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, %%TW3, 15
@@ -822,90 +297,69 @@ default rel
 		vpslldq		zmm15, %%TW3, 1
 		vpxord		zmm15, zmm15, zmm14
 %endif
-	; round 1
-	vbroadcasti32x4 %%T0, [keys + 16*1]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
 
-	; round 2
-	vbroadcasti32x4 %%T0, [keys + 16*2]
+	; AES rounds 1-3
+%assign %%ROUND 1
+%rep 3
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
 	vaesenc  %%ST1, %%T0
 	vaesenc  %%ST2, %%T0
 	vaesenc  %%ST3, %%T0
 	vaesenc  %%ST4, %%T0
-
-	; round 3
-	vbroadcasti32x4 %%T0, [keys + 16*3]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, %%TW4, 15
 		vpclmulqdq	zmm14, zmm13, zpoly, 0
 		vpslldq		zmm16, %%TW4, 1
 		vpxord		zmm16, zmm16, zmm14
 %endif
-	; round 4
-	vbroadcasti32x4 %%T0, [keys + 16*4]
+	; AES rounds 4-6
+%rep 3
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
 	vaesenc  %%ST1, %%T0
 	vaesenc  %%ST2, %%T0
 	vaesenc  %%ST3, %%T0
 	vaesenc  %%ST4, %%T0
-
-	; round 5
-	vbroadcasti32x4 %%T0, [keys + 16*5]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
-
-	; round 6
-	vbroadcasti32x4 %%T0, [keys + 16*6]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, zmm15, 15
 		vpclmulqdq	zmm14, zmm13, zpoly, 0
 		vpslldq		zmm17, zmm15, 1
 		vpxord		zmm17, zmm17, zmm14
 %endif
-	; round 7
-	vbroadcasti32x4 %%T0, [keys + 16*7]
+	; AES rounds 7-9
+%rep 3
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
 	vaesenc  %%ST1, %%T0
 	vaesenc  %%ST2, %%T0
 	vaesenc  %%ST3, %%T0
 	vaesenc  %%ST4, %%T0
-
-	; round 8
-	vbroadcasti32x4 %%T0, [keys + 16*8]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
-
-	; round 9
-	vbroadcasti32x4 %%T0, [keys + 16*9]
-	vaesenc  %%ST1, %%T0
-	vaesenc  %%ST2, %%T0
-	vaesenc  %%ST3, %%T0
-	vaesenc  %%ST4, %%T0
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 %if (0 == %%last_eight)
 		vpsrldq		zmm13, zmm16, 15
 		vpclmulqdq	zmm14, zmm13, zpoly, 0
 		vpslldq		zmm18, zmm16, 1
 		vpxord		zmm18, zmm18, zmm14
 %endif
-	; round 10
-	vbroadcasti32x4 %%T0, [keys + 16*10]
+	; Remaining AES rounds
+%rep (NROUNDS + 1 - 9)
+	vbroadcasti32x4 %%T0, [ptr_key1 + 16*%%ROUND]
+%if (%%ROUND == (NROUNDS + 1))
 	vaesenclast  %%ST1, %%T0
 	vaesenclast  %%ST2, %%T0
 	vaesenclast  %%ST3, %%T0
 	vaesenclast  %%ST4, %%T0
+%else
+	vaesenc  %%ST1, %%T0
+	vaesenc  %%ST2, %%T0
+	vaesenc  %%ST3, %%T0
+	vaesenc  %%ST4, %%T0
+%endif
+%assign %%ROUND (%%ROUND + 1)
+%endrep
 
 	; xor Tweak values
 	vpxorq    %%ST1, %%TW1
@@ -923,19 +377,14 @@ default rel
 
 section .text
 
-mk_global _XTS_AES_128_enc_expanded_key_vaes, function, internal
-_XTS_AES_128_enc_expanded_key_vaes:
+mk_global FUNC, function, internal
+FUNC:
 	endbranch
 
-%define ALIGN_STACK
-%ifdef ALIGN_STACK
 	push		rbp
 	mov		rbp, rsp
 	sub		rsp, VARIABLE_OFFSET
 	and		rsp, ~63
-%else
-	sub		rsp, VARIABLE_OFFSET
-%endif
 
 	mov		[_gpr + 8*0], rbx
 %ifidn __OUTPUT_FORMAT__, win64
@@ -957,56 +406,48 @@ _XTS_AES_128_enc_expanded_key_vaes:
 	mov		ghash_poly_8b, GHASH_POLY       ; load 0x87 to ghash_poly_8b
 
 
-	vmovdqu		xmm1, [T_val]                   ; read initial Tweak value
-	vpxor		xmm4, xmm4                      ; for key expansion
-	encrypt_T       xmm0, xmm1, xmm2, xmm3, xmm4, ptr_key2, ptr_key1, keys
+	vmovdqu64	XWORD(prev_tweak), [T_val]                   ; read initial Tweak value
+	encrypt_T       XWORD(prev_tweak), ptr_key2
 
 
 %ifidn __OUTPUT_FORMAT__, win64
-%ifdef ALIGN_STACK
 	mov		ptr_plaintext, [rbp + 8 + 8*5]	; plaintext pointer
 	mov             ptr_ciphertext, [rbp + 8 + 8*6]	; ciphertext pointer
-%else
-	mov             ptr_plaintext, [rsp + VARIABLE_OFFSET + 8*5]	; plaintext pointer
-	mov             ptr_ciphertext, [rsp + VARIABLE_OFFSET + 8*6]	; ciphertext pointer
-%endif
 %endif
 
 	cmp		N_val, 128
-	jl              _less_than_128_bytes
+	jb              _less_than_128_bytes
 
 	vpbroadcastq	zpoly, ghash_poly_8b
 
 	cmp		N_val, 256
-	jge		_start_by16
+	jae		_start_by16
+	jmp		_start_by8
 
-	cmp		N_val, 128
-	jge		_start_by8
-
-_do_n_blocks:
+_do_last_n_blocks:
 	cmp		N_val, 0
 	je		_ret_
 
 	cmp		N_val, (7*16)
-	jge		_remaining_num_blocks_is_7
+	jae		_remaining_num_blocks_is_7
 
 	cmp		N_val, (6*16)
-	jge		_remaining_num_blocks_is_6
+	jae		_remaining_num_blocks_is_6
 
 	cmp		N_val, (5*16)
-	jge		_remaining_num_blocks_is_5
+	jae		_remaining_num_blocks_is_5
 
 	cmp		N_val, (4*16)
-	jge		_remaining_num_blocks_is_4
+	jae		_remaining_num_blocks_is_4
 
 	cmp		N_val, (3*16)
-	jge		_remaining_num_blocks_is_3
+	jae		_remaining_num_blocks_is_3
 
 	cmp		N_val, (2*16)
-	jge		_remaining_num_blocks_is_2
+	jae		_remaining_num_blocks_is_2
 
 	cmp		N_val, (1*16)
-	jge		_remaining_num_blocks_is_1
+	jae		_remaining_num_blocks_is_1
 
 ;; _remaining_num_blocks_is_0:
 	vmovdqa		xmm8, xmm0
@@ -1014,8 +455,7 @@ _do_n_blocks:
 	jmp		_steal_cipher
 
 _remaining_num_blocks_is_7:
-	mov		tmp1, -1
-	shr		tmp1, 16
+	mov		tmp1, 0x0000ffff_ffffffff
 	kmovq		k1, tmp1
 	vmovdqu8	zmm1, [ptr_plaintext+16*0]
 	vmovdqu8	zmm2 {k1}, [ptr_plaintext+16*4]
@@ -1055,7 +495,7 @@ _remaining_num_blocks_is_5:
 	vmovdqu		[ptr_ciphertext+16*4], xmm2
 	add		ptr_ciphertext, 16*5
 
-	movdqa		xmm8, xmm2
+	vmovdqa		xmm8, xmm2
 	vextracti32x4	xmm0, zmm10, 0x1
 	and		N_val, 15
 	je		_ret_
@@ -1064,47 +504,41 @@ _remaining_num_blocks_is_5:
 _remaining_num_blocks_is_4:
 	vmovdqu8	zmm1, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*4
-	encrypt_by_eight_zmm  zmm1, zmm2, zmm9, zmm10, zmm0, 1
+	encrypt_by_four_zmm  zmm1, zmm9, zmm0
 	vmovdqu8	[ptr_ciphertext+16*0], zmm1
 	add		ptr_ciphertext, 16*4
 
 	vextracti32x4	xmm8, zmm1, 0x3
-	vextracti32x4	xmm0, zmm10, 0x0
+	vmovdqa64	zmm0, zmm10
 	and		N_val, 15
 	je		_ret_
 	jmp		_steal_cipher
 
 _remaining_num_blocks_is_3:
-	vextracti32x4	xmm10, zmm9, 1
-	vextracti32x4	xmm11, zmm9, 2
-	vmovdqu		xmm1, [ptr_plaintext+16*0]
-	vmovdqu		xmm2, [ptr_plaintext+16*1]
-	vmovdqu		xmm3, [ptr_plaintext+16*2]
+	mov		tmp1, -1
+	shr		tmp1, 16
+	kmovq		k1, tmp1
+	vmovdqu8	zmm1{k1}, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*3
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 3, 1
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
+	encrypt_by_four_zmm  zmm1, zmm9, zmm0
+	vmovdqu8	[ptr_ciphertext+16*0]{k1}, zmm1
 	add		ptr_ciphertext, 16*3
 
-	vmovdqa		xmm8, xmm3
-	vextracti32x4	xmm0, zmm9, 3
+	vextracti32x4	xmm8, zmm1, 0x2
+	vextracti32x4	xmm0, zmm9, 0x3
 	and		N_val, 15
 	je		_ret_
 	jmp		_steal_cipher
 
 _remaining_num_blocks_is_2:
-	vextracti32x4	xmm10, zmm9, 1
-	vmovdqu		xmm1, [ptr_plaintext+16*0]
-	vmovdqu		xmm2, [ptr_plaintext+16*1]
+	vmovdqu8	ymm1, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*2
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 2, 1
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
+	encrypt_by_four_zmm  ymm1, ymm9, ymm0
+	vmovdqu8	[ptr_ciphertext+16*0], ymm1
 	add		ptr_ciphertext, 16*2
 
-	vmovdqa		xmm8, xmm2
-	vextracti32x4	xmm0, zmm9, 2
+	vextracti32x4	xmm8, zmm1, 0x1
+	vextracti32x4	xmm0, zmm9, 0x2
 	and		N_val, 15
 	je		_ret_
 	jmp		_steal_cipher
@@ -1112,7 +546,7 @@ _remaining_num_blocks_is_2:
 _remaining_num_blocks_is_1:
 	vmovdqu		xmm1, [ptr_plaintext]
 	add		ptr_plaintext, 16
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 1, 1
+	encrypt_final xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 1
 	vmovdqu		[ptr_ciphertext], xmm1
 	add		ptr_ciphertext, 16
 
@@ -1124,10 +558,10 @@ _remaining_num_blocks_is_1:
 
 
 _start_by16:
-	; Make first 7 tweek values
-	vbroadcasti32x4	zmm0, [TW]
+	; Make first 7 tweak values (after initial tweak)
+	vshufi32x4     	zmm0, prev_tweak, prev_tweak, 0x00
 	vbroadcasti32x4	zmm8, [shufb_15_7]
-	mov		tmp1, 0xaa
+	mov		DWORD(tmp1), 0xaa
 	kmovq		k2, tmp1
 
 	; Mult tweak by 2^{3, 2, 1, 0}
@@ -1145,7 +579,7 @@ _start_by16:
 	vpxorq		zmm5 {k2}, zmm5, zmm6		; tweaks shifted by 7-4
 	vpxord		zmm10, zmm7, zmm5
 
-	; Make next 8 tweek values by all x 2^8
+	; Make next 8 tweak values by all x 2^8
 	vpsrldq		zmm13, zmm9, 15
 	vpclmulqdq	zmm14, zmm13, zpoly, 0
 	vpslldq		zmm11, zmm9, 1
@@ -1173,19 +607,19 @@ _main_loop_run_16:
 	sub		N_val, 256
 
 	cmp		N_val, 256
-	jge		_main_loop_run_16
+	jae		_main_loop_run_16
 
 	cmp		N_val, 128
-	jge		_main_loop_run_8
+	jae		_main_loop_run_8
 
 	vextracti32x4	xmm0, zmm4, 0x3 ; keep last encrypted block
-	jmp		_do_n_blocks
+	jmp		_do_last_n_blocks
 
 _start_by8:
-	; Make first 7 tweek values
-	vbroadcasti32x4	zmm0, [TW]
+	; Make first 7 tweak values (after initial tweak)
+	vshufi32x4     	zmm0, prev_tweak, prev_tweak, 0x00
 	vbroadcasti32x4	zmm8, [shufb_15_7]
-	mov		tmp1, 0xaa
+	mov		DWORD(tmp1), 0xaa
 	kmovq		k2, tmp1
 
 	; Mult tweak by 2^{3, 2, 1, 0}
@@ -1218,21 +652,10 @@ _main_loop_run_8:
 	sub		N_val, 128
 
 	cmp		N_val, 128
-	jge		_main_loop_run_8
+	jae		_main_loop_run_8
 
 	vextracti32x4	xmm0, zmm2, 0x3 ; keep last encrypted block
-	jmp		_do_n_blocks
-
-_steal_cipher_next:
-	; generate next Tweak value
-	xor		ghash_poly_8b_temp, ghash_poly_8b_temp
-	shl		twtempl, 1
-	adc		twtemph, twtemph
-	cmovc		ghash_poly_8b_temp, ghash_poly_8b
-	xor		twtempl, ghash_poly_8b_temp
-	mov		[TW], twtempl
-	mov		[TW + 8], twtemph
-	vmovdqa		xmm0, [TW]
+	jmp		_do_last_n_blocks
 
 _steal_cipher:
 	; start cipher stealing simplified: xmm8 - last cipher block, xmm0 - next tweak
@@ -1253,23 +676,18 @@ _steal_cipher:
 	vpxor		xmm10, [mask1]
 	vpshufb		xmm3, xmm10
 
-	vpblendvb	xmm3, xmm3, xmm2, xmm10
+	vpblendvb	xmm8, xmm3, xmm2, xmm10
 
-	; xor Tweak value
-	vpxor		xmm8, xmm3, xmm0
+	; xor Tweak value and ARK round of last block encryption
+	vpternlogq	xmm8, xmm0, [ptr_key1], 0x96
 
-	;encrypt last block with cipher stealing
-	vpxor		xmm8, [keys]		; ARK
-	vaesenc		xmm8, [keys + 16*1]	; round 1
-	vaesenc		xmm8, [keys + 16*2]	; round 2
-	vaesenc		xmm8, [keys + 16*3]	; round 3
-	vaesenc		xmm8, [keys + 16*4]	; round 4
-	vaesenc		xmm8, [keys + 16*5]	; round 5
-	vaesenc		xmm8, [keys + 16*6]	; round 6
-	vaesenc		xmm8, [keys + 16*7]	; round 7
-	vaesenc		xmm8, [keys + 16*8]	; round 8
-	vaesenc		xmm8, [keys + 16*9]	; round 9
-	vaesenclast	xmm8, [keys + 16*10]	; round 10
+        ; AES rounds
+%assign I 1
+%rep NROUNDS
+	vaesenc         xmm8, [ptr_key1 + 16*I]
+%assign I (I + 1)
+%endrep
+	vaesenclast	xmm8, [ptr_key1 + 16*(NROUNDS+1)]
 
 	; xor Tweak value
 	vpxor		xmm8, xmm8, xmm0
@@ -1280,11 +698,6 @@ _steal_cipher:
 _ret_:
 %ifdef SAFE_DATA
         clear_all_zmms_asm
-        ; Clear expanded keys (16*11 bytes)
-        vmovdqa64       [keys], zmm0
-        vmovdqa64       [keys + 4*16], zmm0
-        vmovdqa64       [keys + 8*16], ymm0
-        vmovdqa64       [keys + 10*16], xmm0
 %else
         vzeroupper
 %endif
@@ -1306,18 +719,21 @@ _ret_:
 	vmovdqa		xmm15, [_xmm + 16*9]
 %endif
 
-%ifndef ALIGN_STACK
-	add		rsp, VARIABLE_OFFSET
-%else
 	mov		rsp, rbp
 	pop		rbp
-%endif
 	ret
 
 
 _less_than_128_bytes:
+	vpbroadcastq	zpoly, ghash_poly_8b
+
 	cmp		N_val, 16
 	jb		_ret_
+
+	vshufi32x4     	zmm0, prev_tweak, prev_tweak, 0x00
+	vbroadcasti32x4	zmm8, [shufb_15_7]
+	mov		DWORD(tmp1), 0xaa
+	kmovq		k2, tmp1
 
 	mov		tmp1, N_val
 	and		tmp1, (7 << 4)
@@ -1335,116 +751,199 @@ _less_than_128_bytes:
 	je		_num_blocks_is_1
 
 _num_blocks_is_7:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 7
+	; Make first 7 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	; Mult tweak by 2^{7, 6, 5, 4}
+	vpsllvq		zmm5, zmm0, [const_dq7654]	; shift l 7,6,5,4
+	vpsrlvq		zmm6, zmm1, [const_dq1234]	; shift r 1,2,3,4
+	vpclmulqdq      zmm7, zmm6, zpoly, 0x00
+	vpxorq		zmm5 {k2}, zmm5, zmm6		; tweaks shifted by 7-4
+	vpxord		zmm10, zmm7, zmm5
+
+	mov		tmp1, 0x0000ffff_ffffffff
+	kmovq		k1, tmp1
+	vmovdqu8	zmm1, [ptr_plaintext+16*0]
+	vmovdqu8	zmm2 {k1}, [ptr_plaintext+16*4]
 	add		ptr_plaintext, 16*7
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 7, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
-	vmovdqu		[ptr_ciphertext+16*3], xmm4
-	vmovdqu		[ptr_ciphertext+16*4], xmm5
-	vmovdqu		[ptr_ciphertext+16*5], xmm6
-	vmovdqu		[ptr_ciphertext+16*6], xmm7
+	encrypt_by_eight_zmm  zmm1, zmm2, zmm9, zmm10, zmm0, 1
+	vmovdqu8	[ptr_ciphertext+16*0], zmm1
+	vmovdqu8	[ptr_ciphertext+16*4] {k1}, zmm2
 	add		ptr_ciphertext, 16*7
-	vmovdqa		xmm8, xmm7
 
+	vextracti32x4	xmm8, zmm2, 0x2
+	vextracti32x4	xmm0, zmm10, 0x3
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 _num_blocks_is_6:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 6
+	; Make first 7 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	; Mult tweak by 2^{7, 6, 5, 4}
+	vpsllvq		zmm5, zmm0, [const_dq7654]	; shift l 7,6,5,4
+	vpsrlvq		zmm6, zmm1, [const_dq1234]	; shift r 1,2,3,4
+	vpclmulqdq      zmm7, zmm6, zpoly, 0x00
+	vpxorq		zmm5 {k2}, zmm5, zmm6		; tweaks shifted by 7-4
+	vpxord		zmm10, zmm7, zmm5
+
+	vmovdqu8	zmm1, [ptr_plaintext+16*0]
+	vmovdqu8	ymm2, [ptr_plaintext+16*4]
 	add		ptr_plaintext, 16*6
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 6, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
-	vmovdqu		[ptr_ciphertext+16*3], xmm4
-	vmovdqu		[ptr_ciphertext+16*4], xmm5
-	vmovdqu		[ptr_ciphertext+16*5], xmm6
-
+	encrypt_by_eight_zmm  zmm1, zmm2, zmm9, zmm10, zmm0, 1
+	vmovdqu8	[ptr_ciphertext+16*0], zmm1
+	vmovdqu8	[ptr_ciphertext+16*4], ymm2
 	add		ptr_ciphertext, 16*6
-	vmovdqa		xmm8, xmm6
 
+	vextracti32x4	xmm8, ymm2, 0x1
+	vextracti32x4	xmm0, zmm10, 0x2
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 _num_blocks_is_5:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 5
+	; Make first 7 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	; Mult tweak by 2^{7, 6, 5, 4}
+	vpsllvq		zmm5, zmm0, [const_dq7654]	; shift l 7,6,5,4
+	vpsrlvq		zmm6, zmm1, [const_dq1234]	; shift r 1,2,3,4
+	vpclmulqdq      zmm7, zmm6, zpoly, 0x00
+	vpxorq		zmm5 {k2}, zmm5, zmm6		; tweaks shifted by 7-4
+	vpxord		zmm10, zmm7, zmm5
+
+	vmovdqu8	zmm1, [ptr_plaintext+16*0]
+	vmovdqu8	xmm2, [ptr_plaintext+16*4]
 	add		ptr_plaintext, 16*5
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 5, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
-	vmovdqu		[ptr_ciphertext+16*3], xmm4
-	vmovdqu		[ptr_ciphertext+16*4], xmm5
-
+	encrypt_by_eight_zmm  zmm1, zmm2, zmm9, zmm10, zmm0, 1
+	vmovdqu8	[ptr_ciphertext+16*0], zmm1
+	vmovdqu8	[ptr_ciphertext+16*4], xmm2
 	add		ptr_ciphertext, 16*5
-	vmovdqa		xmm8, xmm5
 
+        vmovdqa         xmm8, xmm2
+	vextracti32x4	xmm0, zmm10, 0x1
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 _num_blocks_is_4:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 4
+	; Make first 7 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	; Mult tweak by 2^{7, 6, 5, 4}
+	vpsllvq		zmm5, zmm0, [const_dq7654]	; shift l 7,6,5,4
+	vpsrlvq		zmm6, zmm1, [const_dq1234]	; shift r 1,2,3,4
+	vpclmulqdq      zmm7, zmm6, zpoly, 0x00
+	vpxorq		zmm5 {k2}, zmm5, zmm6		; tweaks shifted by 7-4
+	vpxord		zmm10, zmm7, zmm5
+
+	vmovdqu8	zmm1, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*4
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 4, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
-	vmovdqu		[ptr_ciphertext+16*3], xmm4
-
+	encrypt_by_four_zmm  zmm1, zmm9, zmm0
+	vmovdqu8	[ptr_ciphertext+16*0], zmm1
 	add		ptr_ciphertext, 16*4
-	vmovdqa		xmm8, xmm4
 
+	vextracti32x4	xmm8, zmm1, 0x3
+        vmovdqa         xmm0, xmm10
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 _num_blocks_is_3:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 3
+	; Make first 3 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	mov		tmp1, 0x0000ffff_ffffffff
+	kmovq		k1, tmp1
+	vmovdqu8	zmm1{k1}, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*3
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 3, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext+16*0], xmm1
-	vmovdqu		[ptr_ciphertext+16*1], xmm2
-	vmovdqu		[ptr_ciphertext+16*2], xmm3
-
+	encrypt_by_four_zmm  zmm1, zmm9, zmm0
+	vmovdqu8	[ptr_ciphertext+16*0]{k1}, zmm1
 	add		ptr_ciphertext, 16*3
-	vmovdqa		xmm8, xmm3
 
+        vextracti32x4   xmm8, zmm1, 2
+	vextracti32x4	xmm0, zmm9, 3
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 
 _num_blocks_is_2:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 2
+	; Make first 3 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	vmovdqu8	ymm1, [ptr_plaintext+16*0]
 	add		ptr_plaintext, 16*2
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 2, 1
-	; store ciphertext
-	vmovdqu		[ptr_ciphertext], xmm1
-	vmovdqu		[ptr_ciphertext+16], xmm2
-
+	encrypt_by_four_zmm  ymm1, ymm9, ymm0
+	vmovdqu8	[ptr_ciphertext+16*0], ymm1
 	add		ptr_ciphertext, 16*2
-	vmovdqa		xmm8, xmm2
 
+        vextracti32x4   xmm8, ymm1, 1
+	vextracti32x4	xmm0, zmm9, 2
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
+	jmp		_steal_cipher
 
 _num_blocks_is_1:
-	initialize xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, 1
-	add		ptr_plaintext, 16*1
-	encrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, xmm0, 1, 1
-	vmovdqu		[ptr_ciphertext], xmm1
-	add		ptr_ciphertext, 16*1
-	vmovdqa		xmm8, xmm1
+	; Make first 3 tweak values (after initial tweak)
+
+	; Mult tweak by 2^{3, 2, 1, 0}
+	vpshufb		zmm1, zmm0, zmm8		; mov 15->0, 7->8
+	vpsllvq		zmm4, zmm0, [const_dq3210]	; shift l 3,2,1,0
+	vpsrlvq		zmm2, zmm1, [const_dq5678]	; shift r 5,6,7,8
+	vpclmulqdq      zmm3, zmm2, zpoly, 0x00
+	vpxorq		zmm4 {k2}, zmm4, zmm2		; tweaks shifted by 3-0
+	vpxord		zmm9, zmm3, zmm4
+
+	vmovdqu8	xmm1, [ptr_plaintext+16*0]
+	add		ptr_plaintext, 16
+	encrypt_by_four_zmm  ymm1, ymm9, ymm0
+	vmovdqu8	[ptr_ciphertext+16*0], xmm1
+	add		ptr_ciphertext, 16
+
+        vmovdqa         xmm8, xmm1
+	vextracti32x4	xmm0, zmm9, 1
 	and		N_val, 15               ; N_val = N_val mod 16
 	je		_ret_
-	jmp		_steal_cipher_next
-
+	jmp		_steal_cipher
 section .data
 align 16
 

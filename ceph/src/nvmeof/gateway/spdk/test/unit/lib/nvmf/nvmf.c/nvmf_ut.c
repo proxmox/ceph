@@ -1,6 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2021 Intel Corporation. All rights reserved.
  *   Copyright (c) 2019, 2021 Mellanox Technologies LTD. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 #include "spdk/stdinc.h"
@@ -26,12 +27,12 @@ DEFINE_STUB(nvmf_ctrlr_async_event_ana_change_notice, int,
 	    (struct spdk_nvmf_ctrlr *ctrlr), 0);
 DEFINE_STUB(nvmf_transport_poll_group_remove, int, (struct spdk_nvmf_transport_poll_group *group,
 		struct spdk_nvmf_qpair *qpair), 0);
-DEFINE_STUB(nvmf_transport_req_free, int, (struct spdk_nvmf_request *req), 0);
+DEFINE_STUB_V(nvmf_transport_req_free, (struct spdk_nvmf_request *req));
 DEFINE_STUB(nvmf_transport_poll_group_poll, int, (struct spdk_nvmf_transport_poll_group *group), 0);
 DEFINE_STUB_V(nvmf_subsystem_remove_all_listeners, (struct spdk_nvmf_subsystem *subsystem,
 		bool stop));
-DEFINE_STUB(nvmf_subsystem_poll_group_update_ns_reservation, int, (const struct spdk_nvmf_ns *ns,
-		struct spdk_nvmf_subsystem_pg_ns_info *pg_ns), 0);
+DEFINE_STUB_V(nvmf_subsystem_poll_group_update_ns_reservation, (const struct spdk_nvmf_ns *ns,
+		struct spdk_nvmf_subsystem_pg_ns_info *pg_ns));
 DEFINE_STUB(spdk_nvmf_subsystem_destroy, int, (struct spdk_nvmf_subsystem *subsystem,
 		nvmf_subsystem_destroy_cb cpl_cb, void *cpl_cb_arg), 0);
 DEFINE_STUB(spdk_nvmf_subsystem_get_first_listener, struct spdk_nvmf_subsystem_listener *,
@@ -57,8 +58,6 @@ DEFINE_STUB(spdk_nvmf_subsystem_get_min_cntlid, uint16_t,
 	    (const struct spdk_nvmf_subsystem *subsystem), 0);
 DEFINE_STUB(spdk_nvmf_subsystem_get_max_cntlid, uint16_t,
 	    (const struct spdk_nvmf_subsystem *subsystem), 0);
-DEFINE_STUB(spdk_nvmf_subsystem_listener_get_trid, const struct spdk_nvme_transport_id *,
-	    (struct spdk_nvmf_subsystem_listener *listener), NULL);
 DEFINE_STUB(spdk_nvme_transport_id_adrfam_str, const char *, (enum spdk_nvmf_adrfam adrfam), NULL);
 DEFINE_STUB(spdk_nvmf_subsystem_get_first_host, struct spdk_nvmf_host *,
 	    (struct spdk_nvmf_subsystem *subsystem), 0);

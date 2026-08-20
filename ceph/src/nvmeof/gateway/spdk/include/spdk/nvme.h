@@ -3003,15 +3003,6 @@ struct spdk_nvme_poll_group *spdk_nvme_poll_group_create(void *ctx,
 		struct spdk_nvme_accel_fn_table *table);
 
 /**
- * Get a optimal poll group.
- *
- * \param qpair The qpair to get the optimal poll group.
- *
- * \return Pointer to the optimal poll group, or NULL if not found.
- */
-struct spdk_nvme_poll_group *spdk_nvme_qpair_get_optimal_poll_group(struct spdk_nvme_qpair *qpair);
-
-/**
  * Add an spdk_nvme_qpair to a poll group. qpairs may only be added to
  * a poll group if they are in the disconnected state; i.e. either they were
  * just allocated and not yet connected or they have been disconnected with a call
@@ -3055,15 +3046,6 @@ int spdk_nvme_poll_group_remove(struct spdk_nvme_poll_group *group, struct spdk_
  */
 int spdk_nvme_poll_group_wait(struct spdk_nvme_poll_group *group,
 			      spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
-
-/**
- * Return the internal epoll file descriptor of this poll group.
- *
- * \param group The poll group for which epoll fd is requested.
- *
- * \return epoll fd for the poll group, -EINVAL if there is no fd group for this poll group.
- */
-int spdk_nvme_poll_group_get_fd(struct spdk_nvme_poll_group *group);
 
 /**
  * Return the fd_group associated with this poll group.
@@ -3351,6 +3333,18 @@ uint32_t spdk_nvme_ns_get_format_index(const struct spdk_nvme_ns_data *nsdata);
  * protection enabled, or false otherwise.
  */
 bool spdk_nvme_ns_supports_extended_lba(struct spdk_nvme_ns *ns);
+
+/**
+ * Check whether if the namespace supports write uncorrectable operation
+ *
+ * This function is thread safe and can be called at any point while the controller
+ * is attached to the SPDK NVMe driver.
+ *
+ * \param ns Namespace to query.
+ *
+ * \return true if the namespace supports write uncorrectable operation, or false otherwise.
+ */
+bool spdk_nvme_ns_supports_write_uncorrectable(struct spdk_nvme_ns *ns);
 
 /**
  * Check whether if the namespace supports compare operation
@@ -4672,8 +4666,6 @@ struct spdk_nvme_transport_ops {
 	void (*admin_qpair_abort_aers)(struct spdk_nvme_qpair *qpair);
 
 	struct spdk_nvme_transport_poll_group *(*poll_group_create)(void);
-	struct spdk_nvme_transport_poll_group *(*qpair_get_optimal_poll_group)(
-		struct spdk_nvme_qpair *qpair);
 
 	int (*poll_group_add)(struct spdk_nvme_transport_poll_group *tgroup, struct spdk_nvme_qpair *qpair);
 

@@ -1086,6 +1086,12 @@ nvme_fabric_qpair_authenticate_poll(struct spdk_nvme_qpair *qpair)
 	enum nvme_qpair_auth_state prev_state;
 	int rc;
 
+	if (auth->flags.in_auth_poll) {
+		return -EAGAIN;
+	}
+
+	auth->flags.in_auth_poll = true;
+
 	do {
 		prev_state = auth->state;
 
@@ -1099,7 +1105,10 @@ nvme_fabric_qpair_authenticate_poll(struct spdk_nvme_qpair *qpair)
 				break;
 			}
 			nvme_auth_set_state(qpair, NVME_QPAIR_AUTH_STATE_AWAIT_NEGOTIATE);
-			break;
+			/* Intentionally return here to prevent the state machine entering the DONE
+			 * state on the initial kick from nvme_fabric_qpair_authenticate_async. */
+			auth->flags.in_auth_poll = false;
+			return -EAGAIN;
 		case NVME_QPAIR_AUTH_STATE_AWAIT_NEGOTIATE:
 			rc = nvme_wait_for_completion_poll(qpair, status);
 			if (rc != 0) {
@@ -1196,22 +1205,18 @@ nvme_fabric_qpair_authenticate_poll(struct spdk_nvme_qpair *qpair)
 			nvme_auth_set_state(qpair, NVME_QPAIR_AUTH_STATE_DONE);
 			break;
 		case NVME_QPAIR_AUTH_STATE_DONE:
-			if (qpair->fabric_poll_status != NULL && !status->timed_out) {
-				qpair->fabric_poll_status = NULL;
-				spdk_free(status->dma_data);
-				free(status);
-			}
-			if (auth->cb_fn != NULL) {
-				auth->cb_fn(auth->cb_ctx, auth->status);
-				auth->cb_fn = NULL;
-			}
+			nvme_fabric_qpair_poll_cleanup(qpair);
+			nvme_fabric_qpair_auth_cleanup(qpair, auth->status);
+			auth->flags.in_auth_poll = false;
 			return auth->status;
 		default:
 			assert(0 && "invalid state");
+			auth->flags.in_auth_poll = false;
 			return -EINVAL;
 		}
 	} while (auth->state != prev_state);
 
+	auth->flags.in_auth_poll = false;
 	return -EAGAIN;
 }
 
@@ -1228,7 +1233,7 @@ nvme_fabric_qpair_authenticate_async(struct spdk_nvme_qpair *qpair)
 		return -ENOKEY;
 	}
 
-	if (qpair->auth.flags & NVME_QPAIR_AUTH_FLAG_ASCR) {
+	if (qpair->auth.flags.ascr) {
 		AUTH_ERRLOG(qpair, "secure channel concatenation is not supported\n");
 		return -EINVAL;
 	}

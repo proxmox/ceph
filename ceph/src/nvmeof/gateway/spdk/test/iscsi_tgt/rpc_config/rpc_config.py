@@ -4,14 +4,9 @@
 #  All rights reserved.
 #
 
-import os
-import os.path
-import re
-import sys
-import time
 import json
-import random
-from subprocess import check_call, call, check_output, Popen, PIPE, CalledProcessError
+import sys
+from subprocess import check_output
 
 if (len(sys.argv) == 6):
     target_ip = sys.argv[2]
@@ -43,7 +38,7 @@ rpc_param = {
     'header_digest': False,
     'data_digest': False,
     'log_flag': 'rpc',
-    'cpumask': 0x1
+    'cpumask': 0x1,
 }
 
 

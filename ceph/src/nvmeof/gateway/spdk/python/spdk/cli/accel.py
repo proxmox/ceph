@@ -5,8 +5,7 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
-import sys
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+from spdk.rpc.cmd_parser import print_dict
 
 
 def add_parser(subparsers):
@@ -20,7 +19,7 @@ def add_parser(subparsers):
     def accel_get_module_info(args):
         print_dict(args.client.accel_get_module_info())
 
-    p = subparsers.add_parser('accel_get_module_info', aliases=['accel_get_engine_info'],
+    p = subparsers.add_parser('accel_get_module_info',
                               help='Get list of valid module names and their operations.')
     p.set_defaults(func=accel_get_module_info)
 
@@ -28,8 +27,8 @@ def add_parser(subparsers):
         args.client.accel_assign_opc(opname=args.opname, module=args.module)
 
     p = subparsers.add_parser('accel_assign_opc', help='Manually assign an operation to a module.')
-    p.add_argument('-o', '--opname', help='opname')
-    p.add_argument('-m', '--module', help='name of module')
+    p.add_argument('-o', '--opname', help='opname', required=True)
+    p.add_argument('-m', '--module', help='name of module', required=True)
     p.set_defaults(func=accel_assign_opc)
 
     def accel_crypto_key_create(args):
@@ -49,10 +48,10 @@ def add_parser(subparsers):
     p.set_defaults(func=accel_crypto_key_create)
 
     def accel_crypto_key_destroy(args):
-        print_dict(args.client.accel_crypto_key_destroy(key_name=args.name))
+        print_dict(args.client.accel_crypto_key_destroy(key_name=args.key_name))
 
     p = subparsers.add_parser('accel_crypto_key_destroy', help='Destroy encryption key')
-    p.add_argument('-n', '--name', help='key name', required=True, type=str)
+    p.add_argument('-n', '--name', dest='key_name', help='key name', required=True, type=str)
     p.set_defaults(func=accel_crypto_key_destroy)
 
     def accel_crypto_keys_get(args):

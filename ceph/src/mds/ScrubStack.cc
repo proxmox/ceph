@@ -487,6 +487,19 @@ void ScrubStack::scrub_dir_inode_final(CInode *in)
   return;
 }
 
+void ScrubStack::identify_remote_link_damage(CDentry *dn) {
+
+  CDentry::linkage_t *dnl = dn->get_linkage();
+  CInode *remote_inode = mdcache->get_inode(dnl->get_remote_ino());
+  if (!remote_inode) {
+    if (mdcache->mds->damage_table.is_remote_damaged(dnl->get_remote_ino())) {
+      dout(4) << "scrub: remote dentry points to damaged ino " << *dn << dendl;
+      return;
+    }
+    mdcache->open_remote_dentry(dn, true, new C_MDSInternalNoop());
+  }
+}
+
 void ScrubStack::scrub_dirfrag(CDir *dir, bool *added_children, bool *done)
 {
   ceph_assert(dir != NULL);
@@ -508,8 +521,6 @@ void ScrubStack::scrub_dirfrag(CDir *dir, bool *added_children, bool *done)
       ++it; /* trim (in the future) may remove dentry */
 
       if (dn->scrub(next_seq)) {
-        std::string path;
-        dir->get_inode()->make_path_string(path, true);
         clog->warn() << "Scrub error on dentry " << *dn
                      << " see " << g_conf()->name
                      << " log and `damage ls` output for details";
@@ -531,7 +542,7 @@ void ScrubStack::scrub_dirfrag(CDir *dir, bool *added_children, bool *done)
   *added_children = true;
 	_enqueue(dnl->get_inode(), header, true);
       } else if (dnl->is_remote()) {
-	// TODO: check remote linkage
+        identify_remote_link_damage(dn);
       }
     }
   }

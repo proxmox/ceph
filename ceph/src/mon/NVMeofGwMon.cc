@@ -14,6 +14,8 @@
 #include <boost/tokenizer.hpp>
 #include "include/stringify.h"
 #include "NVMeofGwMon.h"
+#include "Monitor.h"
+#include "messages/MMonCommand.h"
 #include "messages/MNVMeofGwBeacon.h"
 #include "messages/MNVMeofGwMap.h"
 
@@ -217,6 +219,8 @@ void NVMeofGwMon::restore_pending_map_info(NVMeofGwMap & tmp_map) {
       }
       pending_map.created_gws[group_key][gw_id].last_gw_down_ts =
           gw_created_pair.second.last_gw_down_ts;
+      pending_map.created_gws[group_key][gw_id].delay_failbacks_ts =
+          gw_created_pair.second.delay_failbacks_ts;
       pending_map.created_gws[group_key][gw_id].last_gw_map_epoch_valid =
 	  gw_created_pair.second.last_gw_map_epoch_valid;
       pending_map.created_gws[group_key][gw_id].beacon_index =
@@ -270,9 +274,8 @@ void NVMeofGwMon::encode_pending(MonitorDBStore::TransactionRef t)
   put_last_committed(t, pending_map.epoch);
 
   //health
-  health_check_map_t checks;
+  auto& checks = get_health_checks_pending_writeable();
   pending_map.get_health_checks(&checks);
-  encode_health(checks, t);
 }
 
 void NVMeofGwMon::update_from_paxos(bool *need_bootstrap)
@@ -287,7 +290,6 @@ void NVMeofGwMon::update_from_paxos(bool *need_bootstrap)
     bufferlist bl;
     int err = get_version(version, bl);
     ceph_assert(err == 0);
-    load_health();
 
     auto p = bl.cbegin();
     map.decode(p);
@@ -1097,6 +1099,14 @@ bool NVMeofGwMon::prepare_beacon(MonOpRequestRef op)
 	       << map.created_gws << dendl;
       goto set_propose;
     } else {
+      if (pending_map.created_gws[group_key][gw_id].availability ==
+	  gw_availability_t::GW_DELETING) {
+	  dout(4) << "Beacon from GW in Created while in monitor's"
+	             " map it in DELETING state, ignore it"
+	          << gw_id << dendl;
+	  mon.no_reply(op);
+	  goto false_return; // not sending ack to this beacon
+      }
       pending_map.created_gws[group_key][gw_id].subsystems.clear();
       pending_map.set_gw_beacon_sequence_number(gw_id, header_ver,
             group_key, sequence);
@@ -1104,6 +1114,11 @@ bool NVMeofGwMon::prepare_beacon(MonOpRequestRef op)
 	       << " GW state in monitor data-base : "
 	       << pending_map.created_gws[group_key][gw_id].availability
 	       << dendl;
+      if (pending_map.created_gws[group_key][gw_id].availability ==
+          gw_availability_t::GW_UNAVAILABLE) {
+        pending_map.created_gws[group_key][gw_id].availability =
+          gw_availability_t::GW_CREATED; // prevent sending empty map to this GW after restart
+      }
       if (pending_map.created_gws[group_key][gw_id].availability ==
 	  gw_availability_t::GW_AVAILABLE) {
 	dout(1) << " Warning :GW marked as Available in the NVmeofGwMon "
@@ -1138,11 +1153,9 @@ bool NVMeofGwMon::prepare_beacon(MonOpRequestRef op)
 	   false) &&
 	  (avail == gw_availability_t::GW_AVAILABLE ||
 	   avail == gw_availability_t::GW_UNAVAILABLE )) {
-	ack_map.created_gws[group_key][gw_id] =
-	  pending_map.created_gws[group_key][gw_id];
 	ack_map.epoch = get_ack_map_epoch(true, group_key);
-	dout(1) << " Force gw to exit: first beacon in state " << avail
-		<< " GW " << gw_id << dendl;
+	dout(1) << "Send empty map. Force gw to exit: first beacon in state "
+		<< avail << " GW " << gw_id << dendl;
 	auto msg = make_message<MNVMeofGwMap>(ack_map);
 	mon.send_reply(op, msg.detach());
 	goto false_return;

@@ -2638,10 +2638,6 @@ void RGWGetObj::execute(optional_yield y)
     goto done_err;
   total_len = (ofs <= end ? end + 1 - ofs : 0);
 
-  ofs_x = ofs;
-  end_x = end;
-  filter->fixup_range(ofs_x, end_x);
-
   /* Check whether the object has expired. Swift API documentation
    * stands that we should return 404 Not Found in such case. */
   if (need_object_expiration() && s->object->is_expired()) {
@@ -2659,11 +2655,14 @@ void RGWGetObj::execute(optional_yield y)
                                     attr_iter != attrs.end() ? &(attr_iter->second) : nullptr);
   if (decrypt != nullptr) {
     filter = decrypt.get();
-    filter->fixup_range(ofs_x, end_x);
   }
   if (op_ret < 0) {
     goto done_err;
   }
+
+  ofs_x = ofs;
+  end_x = end;
+  filter->fixup_range(ofs_x, end_x);
 
 
   if (!get_data || ofs > end) {
@@ -4112,9 +4111,9 @@ int RGWPutObj::init_processing(optional_yield y) {
 
   // reject public canned acls
   if (s->bucket_access_conf && s->bucket_access_conf->block_public_acls() &&
-      (s->canned_acl.compare("public-read") ||
-       s->canned_acl.compare("public-read-write") ||
-       s->canned_acl.compare("authenticated-read"))) {
+      (s->canned_acl == "public-read" ||
+       s->canned_acl == "public-read-write" ||
+       s->canned_acl == "authenticated-read")) {
     return -EACCES;
   }
 
@@ -4684,8 +4683,8 @@ void RGWPutObj::execute(optional_yield y)
 
   if (compressor && compressor->is_compressed()) {
     bufferlist tmp;
-    RGWCompressionInfo cs_info;      
-    assert(plugin != nullptr);  
+    RGWCompressionInfo cs_info;
+    assert(plugin != nullptr);
     // plugin exists when the compressor does
     // coverity[dereference:SUPPRESS]
     cs_info.compression_type = plugin->get_type_name();
@@ -5726,6 +5725,173 @@ void RGWDeleteObj::execute(optional_yield y)
   }
 }
 
+class RGWCopyObjDPF : public rgw::sal::DataProcessorFactory {
+  rgw::sal::Driver* driver;
+  req_state* s;
+  uint64_t &obj_size;
+  std::map<std::string, std::string>& crypt_http_responses;
+  DataProcessorFilter cb;
+  RGWGetObj_Filter* filter{&cb};
+  bool need_decompress{false};
+  RGWCompressionInfo decompress_info;
+  boost::optional<RGWGetObj_Decompress> decompress;
+  std::unique_ptr<RGWGetObj_Filter> decrypt;
+  std::unique_ptr<rgw::sal::DataProcessor> encrypt;
+  std::optional<RGWPutObj_Compress> compressor;
+  CompressorRef compressor_plugin;
+  off_t ofs_x{0};
+  off_t end_x = obj_size;
+
+public:
+  RGWCopyObjDPF(rgw::sal::Driver* _driver,
+                req_state* _s,
+                uint64_t& _obj_size,
+                std::map<std::string, std::string>& _crypt_http_responses)
+    : driver(_driver),
+      s(_s),
+      obj_size(_obj_size),
+      crypt_http_responses(_crypt_http_responses)
+  {}
+  ~RGWCopyObjDPF() override {}
+
+  int get_encrypt_filter(std::unique_ptr<rgw::sal::DataProcessor> *filter,
+                         rgw::sal::DataProcessor *cb,
+                         rgw::sal::Attrs& attrs)
+  {
+    std::unique_ptr<BlockCrypt> block_crypt;
+    int res = rgw_s3_prepare_encrypt(s, s->yield, attrs, &block_crypt,
+                                     crypt_http_responses);
+    if (res == 0 && block_crypt != nullptr) {
+      filter->reset(new RGWPutObj_BlockEncrypt(s, s->cct, cb, std::move(block_crypt), s->yield));
+    }
+    return res;
+  }
+
+  int set_writer(rgw::sal::DataProcessor* writer,
+                 rgw::sal::Attrs& attrs,
+                 const DoutPrefixProvider *dpp,
+                 optional_yield y) override
+  {
+    /* RGWGetObj_Filter */
+    // decompress
+    int ret = rgw_compression_info_from_attrset(s->src_object->get_attrs(), need_decompress, decompress_info);
+    if (ret < 0) {
+      return ret;
+    }
+
+    bool src_encrypted = s->src_object->get_attrs().count(RGW_ATTR_CRYPT_MODE);
+    if (need_decompress) {
+      obj_size = decompress_info.orig_size;
+      s->src_object->set_obj_size(obj_size);
+      static constexpr bool partial_content = false;
+      decompress.emplace(s->cct, &decompress_info, partial_content, filter);
+      filter = &*decompress;
+      end_x = obj_size;
+    }
+
+    // decrypt
+    if (src_encrypted) {
+      auto attr_iter = s->src_object->get_attrs().find(RGW_ATTR_MANIFEST);
+      static constexpr bool copy_source = true;
+      ret = get_decrypt_filter(&decrypt, filter, s, s->src_object->get_attrs(),
+                               attr_iter != s->src_object->get_attrs().end() ? &attr_iter->second : nullptr,
+                               nullptr, copy_source);
+      if (ret < 0) {
+        return ret;
+      }
+      if (decrypt != nullptr) {
+        filter = decrypt.get();
+      }
+    }
+
+    filter->fixup_range(ofs_x, end_x);
+
+    /* rgw::sal::DataProcessor */
+    // encrypt
+    rgw::sal::DataProcessor* processor = writer;
+
+    ret = get_encrypt_filter(&encrypt, processor, attrs);
+    if (ret < 0) {
+      return ret;
+    }
+    if (encrypt != nullptr) {
+      processor = &*encrypt;
+    }
+
+    // compression
+    attrs.erase(RGW_ATTR_COMPRESSION); // remove any existing compression info from source object
+    // a zonegroup feature is required to combine compression and encryption
+    const RGWZoneGroup& zonegroup = s->penv.site->get_zonegroup();
+    const bool compress_encrypted = zonegroup.supports(rgw::zone_features::compress_encrypted);
+    const auto& compression_type = driver->get_compression_type(s->dest_placement);
+    if (compression_type != "none" &&
+        (encrypt == nullptr || compress_encrypted)) {
+      compressor_plugin = get_compressor_plugin(s, compression_type);
+      if (!compressor_plugin) {
+        ldpp_dout(s, 1) << "Cannot load plugin for compression type "
+            << compression_type << dendl;
+      } else {
+        compressor.emplace(s->cct, compressor_plugin, processor);
+        processor = &*compressor;
+        // always send incompressible hint when rgw is itself doing compression
+        s->object->set_compressed();
+      }
+    }
+
+    cb.set_processor(processor);
+
+    return 0;
+  }
+
+  bool need_copy_data() override {
+    // if source object is encrypted, we need to copy data
+    if (s->src_object->get_attrs().count(RGW_ATTR_CRYPT_MODE)) {
+      return true;
+    }
+
+    // check if it's requested to be encrypted
+    static const string crypt_attrs[] = {
+      "x-amz-server-side-encryption-customer-algorithm", // SSE-C
+      "x-amz-server-side-encryption", // SSE-S3, SSE-KMS
+    };
+    for (const auto& attr : crypt_attrs) {
+      if (s->info.crypt_attribute_map.find(attr) !=
+          s->info.crypt_attribute_map.end()) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  RGWGetObj_Filter* get_filter() override {
+    return filter;
+  }
+
+  void finalize_attrs(rgw::sal::Attrs& attrs) override {
+    if (compressor && compressor->is_compressed()) {
+      bufferlist tmp;
+      RGWCompressionInfo cs_info;
+      assert(compressor_plugin != nullptr);
+      // plugin exists when the compressor does
+      // coverity[dereference:SUPPRESS]
+      cs_info.compression_type = compressor_plugin->get_type_name();
+      cs_info.orig_size = obj_size;
+      cs_info.compressor_message = compressor->get_compressor_message();
+      cs_info.blocks = std::move(compressor->get_compression_blocks());
+
+      encode(cs_info, tmp);
+      attrs[RGW_ATTR_COMPRESSION] = tmp;
+
+      ldpp_dout(s, 20) << "storing " << RGW_ATTR_COMPRESSION
+          << " with type=" << cs_info.compression_type
+          << ", orig_size=" << cs_info.orig_size
+          << ", compressor_message=" << cs_info.compressor_message
+          << ", blocks=" << cs_info.blocks.size() << dendl;
+    }
+  }
+};
+
 bool RGWCopyObj::parse_copy_location(const std::string_view& url_src,
 				     string& bucket_name,
 				     rgw_obj_key& key,
@@ -6053,6 +6219,8 @@ void RGWCopyObj::execute(optional_yield y)
     return;
   }
 
+  RGWCopyObjDPF copy_obj_dpf(driver, s, obj_size, crypt_http_responses);
+
   op_ret = s->src_object->copy_object(s->owner,
 	   s->user->get_id(),
 	   &s->info,
@@ -6078,6 +6246,7 @@ void RGWCopyObj::execute(optional_yield y)
 	   &s->req_id, /* use req_id as tag */
 	   &etag,
 	   copy_obj_progress_cb, (void *)this,
+	   &copy_obj_dpf,
 	   this,
 	   s->yield);
 
@@ -7297,7 +7466,40 @@ bool RGWCompleteMultipart::check_previously_completed(const RGWMultiCompleteUplo
                                   << oetag << ", re-calculated etag:" << final_etag_str << dendl;
     return false;
   }
-  ldpp_dout(this, 5) << __func__ << "() object etag and re-calculated etag match, etag: " << oetag << dendl;
+  ldpp_dout(this, 5) << __func__
+                     << "() object etag and re-calculated etag match, etag: "
+                     << oetag << dendl;
+  etag = oetag;
+
+  /* assign cksum and armored_cksum */
+  auto iter = sattrs.find(RGW_ATTR_CKSUM);
+  if (iter != sattrs.end()) {
+    auto bliter = iter->second.cbegin();
+    try {
+      rgw::cksum::Cksum tcksum;
+      tcksum.decode(bliter);
+      cksum = std::move(tcksum);
+
+      /* extract a multipart etag's part-count suffix, or "" if
+       * (impossibly) it's not present */
+      auto extract_part_count = [](std::string& etag) -> std::string {
+        std::string str{""};
+        auto pos = etag.find("-");
+        if (pos != std::string::npos) {
+          str = etag.substr(pos, etag.length()-pos);
+        }
+          return str;
+      };
+
+      armored_cksum = cksum->to_armor();
+      if (cksum->composite()) {
+        *armored_cksum += extract_part_count(etag);
+      }
+    } catch (buffer::error& err) {
+      ldpp_dout(this, 0) << "ERROR: could not decode stored cksum, caught buffer::error" << dendl;
+    }
+  }
+
   return true;
 }
 
@@ -7611,9 +7813,9 @@ void RGWDeleteMultiObj::handle_individual_object(const RGWMultiDelObject& object
                           rgw::notify::ObjectRemovedDelete;
   std::unique_ptr<rgw::sal::Notification> res
           = driver->get_notification(obj.get(), s->src_object.get(), s, event_type, y);
-  op_ret = res->publish_reserve(dpp);
-  if (op_ret < 0) {
-    send_partial_response(o, false, "", op_ret);
+  int r = res->publish_reserve(dpp);
+  if (r < 0) {
+    send_partial_response(o, false, "", r);
     return;
   }
 
@@ -7629,10 +7831,10 @@ void RGWDeleteMultiObj::handle_individual_object(const RGWMultiDelObject& object
   del_op->params.if_match = object.get_if_match();
   del_op->params.size_match = object.get_size_match();
 
-  op_ret = del_op->delete_obj(dpp, y,
-                              rgw::sal::FLAG_LOG_OP | (skip_olh_obj_update ? rgw::sal::FLAG_SKIP_UPDATE_OLH : 0));
-  if (op_ret == -ENOENT) {
-    op_ret = 0;
+  r = del_op->delete_obj(dpp, y,
+                         rgw::sal::FLAG_LOG_OP | (skip_olh_obj_update ? rgw::sal::FLAG_SKIP_UPDATE_OLH : 0));
+  if (r == -ENOENT) {
+    r = 0;
   }
 
   if (auto ret = rgw::bucketlogging::log_record(driver, rgw::bucketlogging::LoggingType::Any, obj.get(), s, canonical_name(), etag, obj_size, this, y, true, false); ret < 0) {
@@ -7640,7 +7842,7 @@ void RGWDeleteMultiObj::handle_individual_object(const RGWMultiDelObject& object
     ldpp_dout(this, 5) << "WARNING: multi DELETE operation ignores bucket logging failure: " << ret << dendl;
   }
 
-  if (op_ret == 0) {
+  if (r == 0) {
     // send request to notification manager
     int ret = res->publish_commit(dpp, obj_size, ceph::real_clock::now(), etag, version_id);
     if (ret < 0) {
@@ -7649,7 +7851,7 @@ void RGWDeleteMultiObj::handle_individual_object(const RGWMultiDelObject& object
     }
   }
   
-  send_partial_response(o, del_op->result.delete_marker, del_op->result.version_id, op_ret);
+  send_partial_response(o, del_op->result.delete_marker, del_op->result.version_id, r);
 }
 
 void RGWDeleteMultiObj::handle_versioned_objects(const std::vector<RGWMultiDelObject>& objects,
@@ -9637,4 +9839,52 @@ void rgw_slo_entry::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("path", path, obj);
   JSONDecoder::decode_json("etag", etag, obj);
   JSONDecoder::decode_json("size_bytes", size_bytes, obj);
-};
+}
+
+int get_decrypt_filter(
+  std::unique_ptr<RGWGetObj_Filter>* filter,
+  RGWGetObj_Filter* cb,
+  req_state* s,
+  std::map<std::string, bufferlist>& attrs,
+  bufferlist* manifest_bl,
+  std::map<std::string, std::string>* crypt_http_responses,
+  bool copy_source)
+{
+  std::unique_ptr<BlockCrypt> block_crypt;
+  int res = rgw_s3_prepare_decrypt(s, s->yield, attrs, &block_crypt,
+                                   crypt_http_responses, copy_source);
+  if (res < 0) {
+    return res;
+  }
+  if (block_crypt == nullptr) {
+    return 0;
+  }
+
+  // in case of a multipart upload, we need to know the part lengths to
+  // correctly decrypt across part boundaries
+  std::vector<size_t> parts_len;
+
+  // for replicated objects, the original part lengths are preserved in an xattr
+  if (auto i = attrs.find(RGW_ATTR_CRYPT_PARTS); i != attrs.end()) {
+    try {
+      auto p = i->second.cbegin();
+      using ceph::decode;
+      decode(parts_len, p);
+    } catch (const buffer::error&) {
+      ldpp_dout(s, 1) << "failed to decode RGW_ATTR_CRYPT_PARTS" << dendl;
+      return -EIO;
+    }
+  } else if (manifest_bl) {
+    // otherwise, we read the part lengths from the manifest
+    res = RGWGetObj_BlockDecrypt::read_manifest_parts(s, *manifest_bl,
+                                                      parts_len);
+    if (res < 0) {
+      return res;
+    }
+  }
+
+  *filter = std::make_unique<RGWGetObj_BlockDecrypt>(
+      s, s->cct, cb, std::move(block_crypt),
+      std::move(parts_len), s->yield);
+  return 0;
+}

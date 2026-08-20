@@ -12,8 +12,6 @@ MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
 rpc_py="$rootdir/scripts/rpc.py"
-bpf_sh="$rootdir/scripts/bpftrace.sh"
-
 bdevperf_rpc_sock=/var/tmp/bdevperf.sock
 
 # NQN prefix to use for subsystem NQNs
@@ -23,6 +21,10 @@ cleanup() {
 	process_shm --id $NVMF_APP_SHM_ID || true
 	cat "$testdir/try.txt"
 	rm -f "$testdir/try.txt"
+	if [[ -f $testdir/trace.txt ]]; then
+		cat "$testdir/trace.txt"
+		rm -f "$testdir/trace.txt"
+	fi
 	killprocess $bdevperf_pid
 	nvmftestfini
 }
@@ -40,7 +42,7 @@ $rpc_py nvmf_subsystem_add_ns $NQN Malloc0
 $rpc_py nvmf_subsystem_add_listener $NQN -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 $rpc_py nvmf_subsystem_add_listener $NQN -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_SECOND_PORT
 
-"$rootdir/build/examples/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 90 &> "$testdir/try.txt" &
+run_app_bg "$SPDK_EXAMPLE_DIR/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 90 &> "$testdir/try.txt"
 bdevperf_pid=$!
 
 trap 'cleanup; exit 1' SIGINT SIGTERM EXIT
@@ -59,16 +61,37 @@ function set_ANA_state() {
 	$rpc_py nvmf_subsystem_listener_set_ana_state $NQN -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_SECOND_PORT -n $2
 }
 
+function _confirm_io_on_port() {
+	local port trace
+
+	mapfile -t trace < "$testdir/trace.txt"
+	# Drop the Attaching probes ... prefix
+	trace=("${trace[@]:1}")
+
+	for port; do
+		[[ ${trace[*]} == *"@path[$NVMF_FIRST_TARGET_IP, $port]:"* ]] || return 1
+	done
+
+	# Special handling of the "inaccessible inaccessible" setup
+	if (($# == 0)); then
+		# no io on any port
+		((${#trace[@]} == 0)) || return 1
+	fi
+
+	return 0
+}
+
 # check for io on the expected ANA state port
 function confirm_io_on_port() {
-	$bpf_sh $nvmfapp_pid "$rootdir/scripts/bpf/nvmf_path.bt" &> "$testdir/trace.txt" &
+	local state=$1 actual_port=$2
+
+	bpftrace_setup $nvmfapp_pid "$rootdir/scripts/bpf/nvmf_path.bt" &> "$testdir/trace.txt"
 	dtrace_pid=$!
-	sleep 6
-	active_port=$($rpc_py nvmf_subsystem_get_listeners $NQN | jq -r '.[] | select (.ana_states[0].ana_state=="'$1'") | .address.trsvcid')
-	cat "$testdir/trace.txt"
-	port=$(cut < "$testdir/trace.txt" -d ']' -f1 | awk '$1=="@path['$NVMF_FIRST_TARGET_IP'," {print $2}' | sed -n '1p')
-	[[ "$active_port" == "$port" ]]
-	[[ "$port" == "$2" ]]
+
+	active_port=$($rpc_py nvmf_subsystem_get_listeners $NQN | jq -r '.[] | select (.ana_states[0].ana_state=="'$state'") | .address.trsvcid')
+
+	waitforcondition "_confirm_io_on_port $active_port $actual_port"
+
 	kill $dtrace_pid
 	rm -f "$testdir/trace.txt"
 }

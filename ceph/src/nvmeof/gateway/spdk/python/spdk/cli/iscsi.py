@@ -5,8 +5,10 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
-import sys
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+import argparse
+
+from spdk.rpc.cmd_parser import print_dict
+from spdk.rpc.helpers import DeprecateFalseAction, DeprecateTrueAction
 
 
 def add_parser(subparsers):
@@ -42,10 +44,9 @@ def add_parser(subparsers):
     p.add_argument('-b', '--node-base', help='Prefix of the name of iSCSI target node')
     p.add_argument('-o', '--nop-timeout', help='Timeout in seconds to nop-in request to the initiator', type=int)
     p.add_argument('-n', '--nop-in-interval', help='Time interval in secs between nop-in requests by the target', type=int)
-    p.add_argument('-d', '--disable-chap', help="""CHAP for discovery session should be disabled.
-    *** Mutually exclusive with --require-chap""", action='store_true')
-    p.add_argument('-r', '--require-chap', help="""CHAP for discovery session should be required.
-    *** Mutually exclusive with --disable-chap""", action='store_true')
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('-d', '--disable-chap', help="CHAP for discovery session should be disabled.", action='store_true')
+    g.add_argument('-r', '--require-chap', help="CHAP for discovery session should be required.", action='store_true')
     p.add_argument('-m', '--mutual-chap', help='CHAP for discovery session should be mutual', action='store_true')
     p.add_argument('-g', '--chap-group', help="""Authentication group ID for discovery session.
     *** Authentication group must be precreated ***""", type=int)
@@ -74,10 +75,9 @@ def add_parser(subparsers):
 
     p = subparsers.add_parser('iscsi_set_discovery_auth',
                               help="""Set CHAP authentication for discovery session.""")
-    p.add_argument('-d', '--disable-chap', help="""CHAP for discovery session should be disabled.
-    *** Mutually exclusive with --require-chap""", action='store_true')
-    p.add_argument('-r', '--require-chap', help="""CHAP for discovery session should be required.
-    *** Mutually exclusive with --disable-chap""", action='store_true')
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('-d', '--disable-chap', help="CHAP for discovery session should be disabled.", action='store_true')
+    g.add_argument('-r', '--require-chap', help="CHAP for discovery session should be required.", action='store_true')
     p.add_argument('-m', '--mutual-chap', help='CHAP for discovery session should be mutual', action='store_true')
     p.add_argument('-g', '--chap-group', help="""Authentication group ID for discovery session.
     *** Authentication group must be precreated ***""", type=int)
@@ -163,8 +163,14 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
 
     p = subparsers.add_parser('iscsi_enable_histogram',
                               help='Enable or disable histogram for specified iscsi target')
-    p.add_argument('-e', '--enable', default=True, dest='enable', action='store_true', help='Enable histograms on specified iscsi target')
-    p.add_argument('-d', '--disable', dest='enable', action='store_false', help='Disable histograms on specified iscsi target')
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('-e', '--enable', dest='enable', action=DeprecateTrueAction,
+                       help='Enable histograms on specified iscsi target', default=True)
+    group.add_argument('-d', '--disable', dest='enable', action=DeprecateFalseAction,
+                       help='Disable histograms on specified iscsi target')
+    group.add_argument('--histogram', dest='enable', action=argparse.BooleanOptionalAction,
+                       help='Enable or disable histogram for specified iscsi target')
     p.add_argument('name', help='iscsi target name')
     p.set_defaults(func=iscsi_enable_histogram)
 
@@ -178,12 +184,12 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
 
     def iscsi_create_target_node(args):
         luns = []
-        for u in args.bdev_name_id_pairs.strip().split(" "):
+        for u in args.luns.strip().split(" "):
             bdev_name, lun_id = u.split(":")
             luns.append({"bdev_name": bdev_name, "lun_id": int(lun_id)})
 
         pg_ig_maps = []
-        for u in args.pg_ig_mappings.strip().split(" "):
+        for u in args.pg_ig_maps.strip().split(" "):
             pg, ig = u.split(":")
             pg_ig_maps.append({"pg_tag": int(pg), "ig_tag": int(ig)})
 
@@ -203,13 +209,13 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p = subparsers.add_parser('iscsi_create_target_node', help='Add a target node')
     p.add_argument('name', help='Target node name (ASCII)')
     p.add_argument('alias_name', help='Target node alias name (ASCII)')
-    p.add_argument('bdev_name_id_pairs', help="""Whitespace-separated list of <bdev name:LUN ID> pairs enclosed
+    p.add_argument('luns', help="""Whitespace-separated list of <bdev name:LUN ID> pairs enclosed
     in quotes.  Format:  'bdev_name0:id0 bdev_name1:id1' etc
     Example: 'Malloc0:0 Malloc1:1 Malloc5:2'
     *** The bdevs must pre-exist ***
     *** LUN0 (id = 0) is required ***
     *** bdevs names cannot contain space or colon characters ***""")
-    p.add_argument('pg_ig_mappings', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
+    p.add_argument('pg_ig_maps', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
     Whitespace separated, quoted, mapping defined with colon
     separated list of "tags" (int > 0)
     Example: '1:1 2:2 2:1'
@@ -217,10 +223,9 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('queue_depth', help='Desired target queue depth', type=int)
     p.add_argument('-g', '--chap-group', help="""Authentication group ID for this target node.
     *** Authentication group must be precreated ***""", type=int)
-    p.add_argument('-d', '--disable-chap', help="""CHAP authentication should be disabled for this target node.
-    *** Mutually exclusive with --require-chap ***""", action='store_true')
-    p.add_argument('-r', '--require-chap', help="""CHAP authentication should be required for this target node.
-    *** Mutually exclusive with --disable-chap ***""", action='store_true')
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('-d', '--disable-chap', help="CHAP authentication should be disabled for this target node.", action='store_true')
+    g.add_argument('-r', '--require-chap', help="CHAP authentication should be required for this target node.", action='store_true')
     p.add_argument(
         '-m', '--mutual-chap', help='CHAP authentication should be mutual/bidirectional.', action='store_true')
     p.add_argument('-H', '--header-digest',
@@ -257,17 +262,16 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('name', help='Target node name (ASCII)')
     p.add_argument('-g', '--chap-group', help="""Authentication group ID for this target node.
     *** Authentication group must be precreated ***""", type=int)
-    p.add_argument('-d', '--disable-chap', help="""CHAP authentication should be disabled for this target node.
-    *** Mutually exclusive with --require-chap ***""", action='store_true')
-    p.add_argument('-r', '--require-chap', help="""CHAP authentication should be required for this target node.
-    *** Mutually exclusive with --disable-chap ***""", action='store_true')
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('-d', '--disable-chap', help="CHAP authentication should be disabled for this target node.", action='store_true')
+    g.add_argument('-r', '--require-chap', help="CHAP authentication should be required for this target node.", action='store_true')
     p.add_argument('-m', '--mutual-chap', help='CHAP authentication should be mutual/bidirectional.',
                    action='store_true')
     p.set_defaults(func=iscsi_target_node_set_auth)
 
     def iscsi_target_node_add_pg_ig_maps(args):
         pg_ig_maps = []
-        for u in args.pg_ig_mappings.strip().split(" "):
+        for u in args.pg_ig_maps.strip().split(" "):
             pg, ig = u.split(":")
             pg_ig_maps.append({"pg_tag": int(pg), "ig_tag": int(ig)})
         args.client.iscsi_target_node_add_pg_ig_maps(
@@ -277,7 +281,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p = subparsers.add_parser('iscsi_target_node_add_pg_ig_maps',
                               help='Add PG-IG maps to the target node')
     p.add_argument('name', help='Target node name (ASCII)')
-    p.add_argument('pg_ig_mappings', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
+    p.add_argument('pg_ig_maps', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
     Whitespace separated, quoted, mapping defined with colon
     separated list of "tags" (int > 0)
     Example: '1:1 2:2 2:1'
@@ -286,7 +290,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
 
     def iscsi_target_node_remove_pg_ig_maps(args):
         pg_ig_maps = []
-        for u in args.pg_ig_mappings.strip().split(" "):
+        for u in args.pg_ig_maps.strip().split(" "):
             pg, ig = u.split(":")
             pg_ig_maps.append({"pg_tag": int(pg), "ig_tag": int(ig)})
         args.client.iscsi_target_node_remove_pg_ig_maps(
@@ -295,7 +299,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p = subparsers.add_parser('iscsi_target_node_remove_pg_ig_maps',
                               help='Delete PG-IG maps from the target node')
     p.add_argument('name', help='Target node name (ASCII)')
-    p.add_argument('pg_ig_mappings', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
+    p.add_argument('pg_ig_maps', help="""List of (Portal_Group_Tag:Initiator_Group_Tag) mappings
     Whitespace separated, quoted, mapping defined with colon
     separated list of "tags" (int > 0)
     Example: '1:1 2:2 2:1'
@@ -332,17 +336,9 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
 
     def iscsi_create_portal_group(args):
         portals = []
-        for p in args.portal_list.strip().split(' '):
-            ip, separator, port_cpumask = p.rpartition(':')
-            split_port_cpumask = port_cpumask.split('@')
-            if len(split_port_cpumask) == 1:
-                port = port_cpumask
-                portals.append({'host': ip, 'port': port})
-            else:
-                port = split_port_cpumask[0]
-                cpumask = split_port_cpumask[1]
-                portals.append({'host': ip, 'port': port})
-                print("WARNING: Specifying a portal group with a CPU mask is no longer supported. Ignoring it.")
+        for p in args.portals.strip().split(' '):
+            ip, port = p.split(':')
+            portals.append({'host': ip, 'port': port})
         args.client.iscsi_create_portal_group(
             portals=portals,
             tag=args.tag,
@@ -353,7 +349,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
                               help='Add a portal group')
     p.add_argument(
         'tag', help='Portal group tag (unique, integer > 0)', type=int)
-    p.add_argument('portal_list', help="""List of portals in host:port format, separated by whitespace
+    p.add_argument('portals', help="""List of portals in host:port format, separated by whitespace
     Example: '192.168.100.100:3260 192.168.100.100:3261 192.168.100.100:3262'""")
     p.add_argument('-p', '--private', help="""Public (false) or private (true) portal group.
     Private portal groups do not have their portals returned by a discovery session. A public
@@ -374,38 +370,24 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.set_defaults(func=iscsi_start_portal_group)
 
     def iscsi_create_initiator_group(args):
-        initiators = []
-        netmasks = []
-        for i in args.initiator_list.strip().split(' '):
-            initiators.append(i)
-        for n in args.netmask_list.strip().split(' '):
-            netmasks.append(n)
         args.client.iscsi_create_initiator_group(
             tag=args.tag,
-            initiators=initiators,
-            netmasks=netmasks)
+            initiators=args.initiators.strip().split(),
+            netmasks=args.netmasks.strip().split())
 
     p = subparsers.add_parser('iscsi_create_initiator_group',
                               help='Add an initiator group')
     p.add_argument(
         'tag', help='Initiator group tag (unique, integer > 0)', type=int)
-    p.add_argument('initiator_list', help="""Whitespace-separated list of initiator hostnames or IP addresses,
+    p.add_argument('initiators', help="""Whitespace-separated list of initiator hostnames or IP addresses,
     enclosed in quotes.  Example: 'ANY' or 'iqn.2016-06.io.spdk:host1 iqn.2016-06.io.spdk:host2'""")
-    p.add_argument('netmask_list', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
+    p.add_argument('netmasks', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
     Example: '255.255.0.0 255.248.0.0' etc""")
     p.set_defaults(func=iscsi_create_initiator_group)
 
     def iscsi_initiator_group_add_initiators(args):
-        initiators = None
-        netmasks = None
-        if args.initiator_list:
-            initiators = []
-            for i in args.initiator_list.strip().split(' '):
-                initiators.append(i)
-        if args.netmask_list:
-            netmasks = []
-            for n in args.netmask_list.strip().split(' '):
-                netmasks.append(n)
+        initiators = args.initiators.strip().split() if args.initiators else None
+        netmasks = args.netmasks.strip().split() if args.netmasks else None
         args.client.iscsi_initiator_group_add_initiators(
             tag=args.tag,
             initiators=initiators,
@@ -415,24 +397,16 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
                               help='Add initiators to an existing initiator group')
     p.add_argument(
         'tag', help='Initiator group tag (unique, integer > 0)', type=int)
-    p.add_argument('-n', dest='initiator_list', help="""Whitespace-separated list of initiator hostnames or IP addresses,
+    p.add_argument('-n', dest='initiators', help="""Whitespace-separated list of initiator hostnames or IP addresses,
     enclosed in quotes.  This parameter can be omitted.  Example: 'ANY' or
     'iqn.2016-06.io.spdk:host1 iqn.2016-06.io.spdk:host2'""")
-    p.add_argument('-m', dest='netmask_list', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
+    p.add_argument('-m', dest='netmasks', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
     This parameter can be omitted.  Example: '255.255.0.0 255.248.0.0' etc""")
     p.set_defaults(func=iscsi_initiator_group_add_initiators)
 
     def iscsi_initiator_group_remove_initiators(args):
-        initiators = None
-        netmasks = None
-        if args.initiator_list:
-            initiators = []
-            for i in args.initiator_list.strip().split(' '):
-                initiators.append(i)
-        if args.netmask_list:
-            netmasks = []
-            for n in args.netmask_list.strip().split(' '):
-                netmasks.append(n)
+        initiators = args.initiators.strip().split() if args.initiators else None
+        netmasks = args.netmasks.strip().split() if args.netmasks else None
         args.client.iscsi_initiator_group_remove_initiators(
             tag=args.tag,
             initiators=initiators,
@@ -442,10 +416,10 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
                               help='Delete initiators from an existing initiator group')
     p.add_argument(
         'tag', help='Initiator group tag (unique, integer > 0)', type=int)
-    p.add_argument('-n', dest='initiator_list', help="""Whitespace-separated list of initiator hostnames or IP addresses,
+    p.add_argument('-n', dest='initiators', help="""Whitespace-separated list of initiator hostnames or IP addresses,
     enclosed in quotes.  This parameter can be omitted.  Example: 'ANY' or
     'iqn.2016-06.io.spdk:host1 iqn.2016-06.io.spdk:host2'""")
-    p.add_argument('-m', dest='netmask_list', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
+    p.add_argument('-m', dest='netmasks', help="""Whitespace-separated list of initiator netmasks enclosed in quotes.
     This parameter can be omitted.  Example: '255.255.0.0 255.248.0.0' etc""")
     p.set_defaults(func=iscsi_initiator_group_remove_initiators)
 
@@ -489,10 +463,9 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('tag', help='Portal group tag (unique, integer > 0)', type=int)
     p.add_argument('-g', '--chap-group', help="""Authentication group ID for this portal group.
     *** Authentication group must be precreated ***""", type=int)
-    p.add_argument('-d', '--disable-chap', help="""CHAP authentication should be disabled for this portal group.
-    *** Mutually exclusive with --require-chap ***""", action='store_true')
-    p.add_argument('-r', '--require-chap', help="""CHAP authentication should be required for this portal group.
-    *** Mutually exclusive with --disable-chap ***""", action='store_true')
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('-d', '--disable-chap', help="CHAP authentication should be disabled for this portal group.", action='store_true')
+    g.add_argument('-r', '--require-chap', help="CHAP authentication should be required for this portal group.", action='store_true')
     p.add_argument('-m', '--mutual-chap', help='CHAP authentication should be mutual/bidirectional.',
                    action='store_true')
     p.set_defaults(func=iscsi_portal_group_set_auth)

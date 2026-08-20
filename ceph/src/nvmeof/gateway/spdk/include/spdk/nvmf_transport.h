@@ -1,6 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2020 Intel Corporation. All rights reserved.
  *   Copyright (c) 2019, 2021 Mellanox Technologies LTD. All rights reserved.
+ *   Copyright (c) 2025, Oracle and/or its affiliates.
  */
 
 /** \file
@@ -90,7 +91,8 @@ struct spdk_nvmf_request {
 			uint8_t dif_enabled		: 1;
 			uint8_t first_fused		: 1;
 			uint8_t reservation_queued	: 1;
-			uint8_t rsvd			: 4;
+			uint8_t reservation_waiting	: 1; /* a reservation is waiting on this request */
+			uint8_t rsvd			: 3;
 		};
 	};
 	uint8_t				zcopy_phase; /* type enum spdk_nvmf_zcopy_phase */
@@ -315,8 +317,8 @@ struct spdk_nvmf_transport_ops {
 	/**
 	 * Destroy the transport
 	 */
-	int (*destroy)(struct spdk_nvmf_transport *transport,
-		       spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg);
+	void (*destroy)(struct spdk_nvmf_transport *transport,
+			spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg);
 
 	/**
 	  * Instruct the transport to accept new connections at the address
@@ -414,13 +416,13 @@ struct spdk_nvmf_transport_ops {
 	 * Free the request without sending a response
 	 * to the originator. Release memory tied to this request.
 	 */
-	int (*req_free)(struct spdk_nvmf_request *req);
+	void (*req_free)(struct spdk_nvmf_request *req);
 
 	/*
 	 * Signal request completion, which sends a response
 	 * to the originator.
 	 */
-	int (*req_complete)(struct spdk_nvmf_request *req);
+	void (*req_complete)(struct spdk_nvmf_request *req);
 
 	/**
 	 * Callback for the iobuf based queuing of requests awaiting free buffers.
@@ -556,7 +558,7 @@ struct spdk_nvmf_registers {
 	uint64_t			asq;
 	uint64_t			acq;
 	uint32_t			nssr;
-	uint32_t			reserved;
+	union spdk_nvme_crto_register	crto;
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_registers) == 48, "Incorrect size");
 

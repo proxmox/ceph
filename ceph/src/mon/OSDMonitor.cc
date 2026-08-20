@@ -24,10 +24,12 @@
 
 #include "mon/OSDMonitor.h"
 #include "mon/Monitor.h"
+#include "mon/MonMap.h"
 #include "mon/MDSMonitor.h"
 #include "mon/MgrStatMonitor.h"
 #include "mon/AuthMonitor.h"
 #include "mon/KVMonitor.h"
+#include "mon/Paxos.h"
 
 #include "mon/MonitorDBStore.h"
 #include "mon/Session.h"
@@ -741,7 +743,6 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
     mapping_job.reset();
   }
 
-  load_health();
 
   /*
    * We will possibly have a stashed latest that *we* wrote, and we will
@@ -2072,9 +2073,8 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
   }
 
   // health
-  health_check_map_t next;
+  auto& next = get_health_checks_pending_writeable();
   tmp.check_health(cct, &next);
-  encode_health(next, t);
 }
 
 int OSDMonitor::load_metadata(int osd, map<string, string>& m, ostream *err)
@@ -14655,7 +14655,7 @@ bool OSDMonitor::enforce_pool_op_caps(MonOpRequestRef op)
         pool_name = &osdmap.get_pool_name(m->pool);
       }
 
-      if (!is_unmanaged_snap_op_permitted(cct, mon.key_server,
+      if (!is_unmanaged_snap_op_permitted(cct, mon,
                                           session->entity_name, session->caps,
 					  session->get_peer_socket_addr(),
                                           pool_name)) {
@@ -15270,6 +15270,26 @@ int OSDMonitor::_prepare_remove_pool(
     pending_inc.crush.clear();
     newcrush.encode(pending_inc.crush, mon.get_quorum_con_features());
   }
+
+  // remove any crush rules for this pool
+  const pg_pool_t *pi = osdmap.get_pg_pool(pool);
+  if (pi->is_erasure() && newcrush.rule_exists(pi->get_crush_rule())) {
+    int ruleno = pi->get_crush_rule();
+    ceph_assert(ruleno >= 0);
+
+    auto rule_in_use = false;
+    for (const auto &_pool : osdmap.pools) {
+      if (_pool.second.get_crush_rule() == ruleno && pool != _pool.first)
+        rule_in_use = true;
+    }
+    if (!rule_in_use) {
+      dout(10) << __func__ << " removing crush rule for pool " << pool << dendl;
+      newcrush.remove_rule(ruleno);
+      pending_inc.crush.clear();
+      newcrush.encode(pending_inc.crush, mon.get_quorum_con_features());
+    }
+  }
+
   return 0;
 }
 

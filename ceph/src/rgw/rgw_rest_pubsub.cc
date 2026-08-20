@@ -6,6 +6,7 @@
 #include <optional>
 #include <regex>
 #include "include/function2.hpp"
+#include "rgw_account.h"
 #include "rgw_iam_policy.h"
 #include "rgw_rest_pubsub.h"
 #include "rgw_pubsub_push.h"
@@ -77,6 +78,17 @@ bool validate_and_update_endpoint_secret(rgw_pubsub_dest& dest, CephContext *cct
       return false;
     }
   }
+
+  // check for mTLS key password - also a secret that requires secure transport
+  auto ssl_key_password = args.get_optional("ssl-key-password");
+  if (ssl_key_password.has_value() && !ssl_key_password->empty()) {
+    dest.stored_secret = true;
+    if (!verify_transport_security(cct, *ri.env)) {
+      message = "Topic contains secrets that must be transmitted over a secure transport";
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -451,9 +463,13 @@ private:
 
 public:
   int verify_permission(optional_yield) override {
-    // check account permissions up front
-    if (s->auth.identity->get_account() &&
-        !verify_user_permission(this, s, {}, rgw::IAM::snsListTopics)) {
+    // account permissions are checked up front. for non-account users,
+    // execute() instead checks permissions against each topic
+    if (!s->auth.identity->get_account()) {
+      return 0;
+    }
+    const auto arn = rgw::account::root_arn(s->auth.identity->get_account()->id);
+    if (!verify_user_permission(this, s, arn, rgw::IAM::snsListTopics)) {
       return -ERR_AUTHORIZATION;
     }
 
@@ -789,7 +805,8 @@ class RGWPSSetTopicAttributesOp : public RGWOp {
       static constexpr std::initializer_list<const char*> args = {
           "verify-ssl",    "use-ssl",         "ca-location", "amqp-ack-level",
           "amqp-exchange", "kafka-ack-level", "mechanism",   "cloudevents",
-          "user-name",     "password"};
+          "user-name",     "password",
+          "ssl-certificate-location", "ssl-key-location", "ssl-key-password"};
       if (std::find(args.begin(), args.end(), attribute_name) != args.end()) {
         replace_str(attribute_name, s->info.args.get("AttributeValue"));
         return 0;

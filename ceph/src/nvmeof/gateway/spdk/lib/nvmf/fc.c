@@ -1867,7 +1867,7 @@ nvmf_fc_send_ersp_required(struct spdk_nvmf_fc_request *fc_req,
 	return false;
 }
 
-static int
+static void
 nvmf_fc_request_complete(struct spdk_nvmf_request *req)
 {
 	int rc = 0;
@@ -1900,7 +1900,6 @@ nvmf_fc_request_complete(struct spdk_nvmf_request *req)
 		SPDK_ERRLOG("Error in request complete.\n");
 		_nvmf_fc_request_free(fc_req);
 	}
-	return 0;
 }
 
 struct spdk_nvmf_tgt *
@@ -2012,7 +2011,7 @@ nvmf_fc_destroy_done_cb(void *cb_arg)
 	}
 }
 
-static int
+static void
 nvmf_fc_destroy(struct spdk_nvmf_transport *transport,
 		spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg)
 {
@@ -2032,8 +2031,6 @@ nvmf_fc_destroy(struct spdk_nvmf_transport *transport,
 		/* low level FC driver clean up */
 		nvmf_fc_lld_fini(nvmf_fc_destroy_done_cb, cb_arg);
 	}
-
-	return 0;
 }
 
 static int
@@ -2193,7 +2190,7 @@ nvmf_fc_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 	return (int) count;
 }
 
-static int
+static void
 nvmf_fc_request_free(struct spdk_nvmf_request *req)
 {
 	struct spdk_nvmf_fc_request *fc_req = nvmf_fc_get_fc_req(req);
@@ -2204,8 +2201,6 @@ nvmf_fc_request_free(struct spdk_nvmf_request *req)
 	} else {
 		nvmf_fc_request_abort_complete(fc_req);
 	}
-
-	return 0;
 }
 
 static void

@@ -39,6 +39,7 @@ class GatewayState(ABC):
     SUBSYSTEM_NETWORK_DEL_PREFIX = "net-del-subsystem" + OMAP_KEY_DELIMITER
     SUBSYSTEM_KEY_PREFIX = "key-subsystem" + OMAP_KEY_DELIMITER
     HOST_PREFIX = "host" + OMAP_KEY_DELIMITER
+    CONNECTED_HOST_PREFIX = "connected-del-host" + OMAP_KEY_DELIMITER
     HOST_KEY_PREFIX = "key-host" + OMAP_KEY_DELIMITER
     LISTENER_PREFIX = "listener" + OMAP_KEY_DELIMITER
     NAMESPACE_QOS_PREFIX = "qos" + OMAP_KEY_DELIMITER
@@ -51,6 +52,7 @@ class GatewayState(ABC):
     NAMESPACE_AUTO_RESIZE_PREFIX = "ns-auto-resize" + OMAP_KEY_DELIMITER
     NAMESPACE_REFRESH_SIZE_PREFIX = "ns-refresh-size" + OMAP_KEY_DELIMITER
     KMIP_SERVER_ENDPOINT_PREFIX = "kmip-server-endpoint" + OMAP_KEY_DELIMITER
+    UPDATE_TRIGGER_PREFIX = "update-trigger"
 
     def is_key_element_valid(s: str) -> bool:
         if not isinstance(s, str):
@@ -137,6 +139,12 @@ class GatewayState(ABC):
 
     def build_host_key(subsystem_nqn: str, host_nqn: str) -> str:
         key = GatewayState.HOST_PREFIX + subsystem_nqn + GatewayState.OMAP_KEY_DELIMITER
+        if host_nqn is not None:
+            key += host_nqn
+        return key
+
+    def build_connected_host_key(subsystem_nqn: str, host_nqn: str) -> str:
+        key = GatewayState.CONNECTED_HOST_PREFIX + subsystem_nqn + GatewayState.OMAP_KEY_DELIMITER
         if host_nqn is not None:
             key += host_nqn
         return key
@@ -231,7 +239,7 @@ class GatewayState(ABC):
 
         # Delete all keys related to the namespace
         state = self.get_state()
-        for key in state.keys():
+        for key in list(state.keys()):
             # Separate if to several statements to keep flake8 happy
             if key.startswith(GatewayState.build_namespace_qos_key(subsystem_nqn, nsid)):
                 self._remove_key(key)
@@ -283,7 +291,7 @@ class GatewayState(ABC):
 
         # Delete all keys related to subsystem
         state = self.get_state()
-        for key in state.keys():
+        for key in list(state.keys()):
             # Separate if to several statements to keep flake8 happy
             if key.startswith(GatewayState.build_namespace_key(subsystem_nqn, None)):
                 self._remove_key(key)
@@ -306,6 +314,12 @@ class GatewayState(ABC):
         key = GatewayState.build_host_key(subsystem_nqn, host_nqn)
         self._add_key(key, val)
 
+        # No need for a connected-host indication for this host
+        state = self.get_state()
+        key = GatewayState.build_connected_host_key(subsystem_nqn, host_nqn)
+        if key in state:
+            self._remove_key(key)
+
     def remove_host(self, subsystem_nqn: str, host_nqn: str):
         """Removes a host from the state data store."""
         state = self.get_state()
@@ -315,9 +329,21 @@ class GatewayState(ABC):
 
         # Delete all keys related to the host
         state = self.get_state()
-        for key in state.keys():
+        for key in list(state.keys()):
             if key.startswith(GatewayState.build_host_key_key(subsystem_nqn, host_nqn)):
                 self._remove_key(key)
+
+    def add_connected_host(self, subsystem_nqn: str, host_nqn: str, val: str):
+        """Adds a connected host indication to the state data store."""
+        key = GatewayState.build_connected_host_key(subsystem_nqn, host_nqn)
+        self._add_key(key, val)
+
+    def remove_connected_host(self, subsystem_nqn: str, host_nqn: str):
+        """Removes a connected host indication from the state data store."""
+        state = self.get_state()
+        key = GatewayState.build_connected_host_key(subsystem_nqn, host_nqn)
+        if key in state:
+            self._remove_key(key)
 
     def add_kmip_server_endpoint(self,
                                  subsystem_nqn: str,
@@ -404,10 +430,10 @@ class OmapLock:
     EXCLUSIVE_LOCK_NAME = "exclusive"
     SHARED_LOCK_NAME = "shared"
 
-    changes_lock = threading.Lock()
+    changes_lock = threading.RLock()
     no_read_lock_warning_displayed = False
     ignore_errors_warning_displayed = False
-    is_exclusively_locked = False
+    exclusive_lock_timestamp = 0
     locked_by = {}
     lock_cookie = []
 
@@ -478,6 +504,19 @@ class OmapLock:
             False)
         if self.omap_file_disable_unlock:
             self.logger.warning("Will not unlock OMAP file for testing purposes")
+            self.omap_file_disable_exclusive_unlock = True
+        else:
+            self.omap_file_disable_exclusive_unlock = \
+                self.omap_state.config.getboolean_with_default("gateway",
+                                                               "omap_file_disable_exclusive_unlock",
+                                                               False)
+            if self.omap_file_disable_exclusive_unlock:
+                self.logger.warning("Will not unlock OMAP file exclusive locks "
+                                    "for testing purposes")
+
+    @classmethod
+    def is_exclusively_locked(cls) -> bool:
+        return cls.exclusive_lock_timestamp > 0
 
     def build_omap_lock_cookie(self, exclusive_lock=True, cookie_suffix=None) -> str:
         if cookie_suffix:
@@ -516,10 +555,16 @@ class OmapLock:
     # and in case the Omap is not current, will reload it and try again
     #
     def execute_omap_locking_function(self, grpc_func, omap_locking_func, request, context):
+        reload_count = 0
         for i in range(0, self.omap_file_update_reloads + 1):
             need_to_update = False
             try:
-                return grpc_func(omap_locking_func, request, context)
+                rc = grpc_func(omap_locking_func, request, context)
+                if reload_count > 0:
+                    self.logger.debug(f"Succeeded to execute {omap_locking_func.__name__} "
+                                      f"under OMAP file lock after {reload_count} reload "
+                                      f"attempt(s) of OMAP file")
+                return rc
             except OSError as err:
                 if err.errno == errno.EAGAIN:
                     need_to_update = True
@@ -533,19 +578,17 @@ class OmapLock:
             if self.omap_file_update_reloads > 0:
                 for j in range(self.omap_file_update_attempts):
                     update_ok = self.gateway_state.update()
+                    reload_count += 1
                     if update_ok:
                         break
                     time.sleep(0.5)
                 if update_ok:
                     if j > 3:
-                        self.logger.debug(f"Succeeded to run update() after {j} attempts")
+                        self.logger.debug(f"Succeeded to run update() after {j + 1} attempt(s)")
 
-        if need_to_update:
-            raise RuntimeError(f"Unable to execute function under OMAP file lock after reloading "
-                               f"{i} times, exiting")
-        elif i > 2:
-            self.logger.debug(f"Succeeded to execute {omap_locking_func.__name__} "
-                              f"under OMAP file lock after {i} reloads of OMAP file")
+        assert need_to_update
+        raise RuntimeError(f"Unable to execute function under OMAP file lock after reloading "
+                           f"{reload_count} times, exiting")
 
     def omap_lockers_count(self):
         lockers_info = None
@@ -604,6 +647,8 @@ class OmapLock:
 
         if lock_exclusive:
             lock_kind = OmapLock.EXCLUSIVE_LOCK_NAME
+            if self.did_the_exclusive_lock_expire():
+                raise RuntimeError("Can't lock OMAP, there is an expired exclusive lock")
         else:
             lock_kind = OmapLock.SHARED_LOCK_NAME
 
@@ -688,7 +733,7 @@ class OmapLock:
 
         with OmapLock.changes_lock:
             if lock_exclusive:
-                if OmapLock.is_exclusively_locked:
+                if OmapLock.is_exclusively_locked():
                     assert False, \
                         f"Got two exclusive locks, OMAP is locked by " \
                         f"{OmapLock.locked_by} with cookie: " \
@@ -710,7 +755,7 @@ class OmapLock:
             except KeyError:
                 OmapLock.locked_by[(threading.get_native_id(), lock_kind)] = 1
             if lock_exclusive:
-                OmapLock.is_exclusively_locked = True
+                OmapLock.exclusive_lock_timestamp = time.monotonic()
             OmapLock.lock_cookie.append(lock_cookie)
 
         if verify_versions:
@@ -740,10 +785,14 @@ class OmapLock:
                               f"{threading.get_native_id()}, "
                               f"id: {self.omap_state.id_text}, cookie: "
                               f"{lock_cookie}")
-            self.logger.error(f"No such lock, the {lock_kind} lock might have expired."
-                              f" Consider enlarging the OMAP lock duration field.")
-            if not self.omap_file_ignore_unlock_errors:
-                raise
+            if lock_kind == OmapLock.EXCLUSIVE_LOCK_NAME and self.did_the_exclusive_lock_expire():
+                self.logger.warning(f"No such lock, the {lock_kind} lock has expired."
+                                    f" Consider enlarging the OMAP lock duration field.")
+            else:
+                self.logger.error(f"No such lock, the {lock_kind} lock might have expired."
+                                  f" Consider enlarging the OMAP lock duration field.")
+                if not self.omap_file_ignore_unlock_errors:
+                    raise
         except Exception:
             self.logger.exception(f"Unable to {lock_kind} unlock OMAP file")
             if not self.omap_file_ignore_unlock_errors:
@@ -754,29 +803,55 @@ class OmapLock:
             self.logger.warning("OMAP file unlock was disabled, will not unlock file")
             return
 
+        if unlock_exclusive and self.omap_file_disable_exclusive_unlock:
+            self.logger.warning("OMAP file exclusive unlock was disabled, will not unlock file")
+            return
+
         if unlock_exclusive:
             lock_kind = OmapLock.EXCLUSIVE_LOCK_NAME
         else:
             lock_kind = OmapLock.SHARED_LOCK_NAME
 
+        raise_ex = None
         lock_cookie = self.build_omap_lock_cookie(unlock_exclusive, cookie_suffix)
         with OmapLock.changes_lock:
-            if self.omap_state.ioctx:
-                self.do_unlock_omap(lock_cookie, lock_kind)
-            else:
-                self.logger.warning("Trying to unlock OMAP when Rados connection is closed")
-                return
+            try:
+                if self.omap_state.ioctx:
+                    self.do_unlock_omap(lock_cookie, lock_kind)
+                else:
+                    self.logger.warning("Trying to unlock OMAP when Rados connection is closed")
+            except rados.ObjectNotFound as ex:
+                raise_ex = ex
 
             try:
                 OmapLock.locked_by[(threading.get_native_id(), lock_kind)] -= 1
-                if not OmapLock.locked_by[(threading.get_native_id(), lock_kind)]:
+                lock_cnt = OmapLock.locked_by[(threading.get_native_id(), lock_kind)]
+                if lock_cnt <= 0:
                     OmapLock.locked_by.pop((threading.get_native_id(), lock_kind), None)
+                    if lock_cnt < 0:
+                        errmsg = f"Mismatch in lock/unlock, got a negative " \
+                                 f"lock count for a {lock_kind} lock in thread " \
+                                 f"{threading.get_native_id()}"
+                        self.logger.error(errmsg)
+                        if raise_ex is None:
+                            raise_ex = RuntimeError(errmsg)
             except KeyError:
                 pass
 
-            OmapLock.lock_cookie.remove(lock_cookie)
+            if lock_cookie in OmapLock.lock_cookie:
+                OmapLock.lock_cookie.remove(lock_cookie)
+            else:
+                self.logger.warning(f"OMAP lock cookie {lock_cookie} is missing during "
+                                    f"unlock cleanup.")
+                self.logger.debug(f"OMAP lock cookie is missing during unlock cleanup, thread id: "
+                                  f"{threading.get_native_id()}, "
+                                  f"id: {self.omap_state.id_text}, cookie: "
+                                  f"{lock_cookie}")
             if unlock_exclusive:
-                OmapLock.is_exclusively_locked = False
+                OmapLock.exclusive_lock_timestamp = 0
+
+            if raise_ex is not None:
+                raise raise_ex
 
     def unlock_all_omap(self):
         with OmapLock.changes_lock:
@@ -794,17 +869,27 @@ class OmapLock:
         lock_cookie = self.build_omap_lock_cookie(True)
         thread_id = threading.get_native_id()
         with OmapLock.changes_lock:
-            if not OmapLock.is_exclusively_locked:
+            if not OmapLock.is_exclusively_locked():
                 return False
             if (thread_id, OmapLock.EXCLUSIVE_LOCK_NAME) not in OmapLock.locked_by:
                 return False
             return lock_cookie in OmapLock.lock_cookie
 
-    def reset_lock_markers():
+    def did_the_exclusive_lock_expire(self) -> bool:
+        if not self.omap_file_lock_duration:
+            return False
         with OmapLock.changes_lock:
-            OmapLock.is_exclusively_locked = False
-            OmapLock.locked_by = {}
-            OmapLock.lock_cookie = []
+            if not OmapLock.is_exclusively_locked():
+                return False
+            elapsed = time.monotonic() - OmapLock.exclusive_lock_timestamp
+            return elapsed >= self.omap_file_lock_duration
+
+    @classmethod
+    def reset_lock_markers(cls):
+        with cls.changes_lock:
+            cls.exclusive_lock_timestamp = 0
+            cls.locked_by = {}
+            cls.lock_cookie = []
 
 
 class OmapReadGuard:
@@ -891,6 +976,16 @@ class OmapGatewayState(GatewayState):
 
     OMAP_VERSION_KEY = "omap_version"
 
+    class UpdateTrigger():
+        """Used for trigerring an update even though there was no real change"""
+
+        value = 0
+
+        @staticmethod
+        def increase() -> int:
+            OmapGatewayState.UpdateTrigger.value += 1
+            return OmapGatewayState.UpdateTrigger.value
+
     def __init__(self, config, set_gateway_exit_message, id_text=""):
         self.config = config
         self.version = 1
@@ -898,6 +993,7 @@ class OmapGatewayState(GatewayState):
         self.ioctx = None
         self.watch = None
         self.omap_lock = None
+        self.update_trigger = OmapGatewayState.UpdateTrigger()
         gateway_group = self.config.get("gateway", "group")
         self.omap_name = f"nvmeof.{gateway_group}.state" if gateway_group else "nvmeof.state"
         self.notify_timeout = self.config.getint_with_default("gateway",
@@ -1121,6 +1217,12 @@ class OmapGatewayState(GatewayState):
         except Exception:
             self.logger.warning("Failed to notify.")
 
+    def trigger_update(self):
+        """Trigger an update even if nothing has changed"""
+
+        val = self.update_trigger.increase()
+        self._add_key(GatewayState.UPDATE_TRIGGER_PREFIX, f"value: {val}")
+
     def delete_state(self):
         """Deletes OMAP object contents."""
         if not self.ioctx:
@@ -1283,6 +1385,16 @@ class GatewayStateHandler:
         """Removes a host from the state data store."""
         self.omap.remove_host(subsystem_nqn, host_nqn)
         self.local.remove_host(subsystem_nqn, host_nqn)
+
+    def add_connected_host(self, subsystem_nqn: str, host_nqn: str, val: str):
+        """Adds a connected host indication to the state data store."""
+        self.omap.add_connected_host(subsystem_nqn, host_nqn, val)
+        self.local.add_connected_host(subsystem_nqn, host_nqn, val)
+
+    def remove_connected_host(self, subsystem_nqn: str, host_nqn: str):
+        """Removes a connected host indication from the state data store."""
+        self.omap.remove_connected_host(subsystem_nqn, host_nqn)
+        self.local.remove_connected_host(subsystem_nqn, host_nqn)
 
     def add_kmip_server_endpoint(self,
                                  subsystem_nqn: str,
@@ -1694,6 +1806,7 @@ class GatewayStateHandler:
             prefix_list = [
                 GatewayState.SUBSYSTEM_PREFIX,
                 GatewayState.HOST_PREFIX,
+                GatewayState.CONNECTED_HOST_PREFIX,
                 GatewayState.KMIP_SERVER_ENDPOINT_PREFIX,
                 GatewayState.NAMESPACE_PREFIX,
                 GatewayState.NAMESPACE_QOS_PREFIX,
@@ -1705,6 +1818,7 @@ class GatewayStateHandler:
                 GatewayState.SUBSYSTEM_NETWORK_MASK,
                 GatewayState.SUBSYSTEM_NETWORK_DEL_PREFIX,
                 GatewayState.SUBSYSTEM_NETWORK_ADD_PREFIX,
+                GatewayState.UPDATE_TRIGGER_PREFIX,
             ]
 
             if not self.omap.ioctx:
@@ -1750,6 +1864,11 @@ class GatewayStateHandler:
                                                                     omap_state_dict[key])
                 }
                 grouped_changed = self._group_by_prefix(changed, prefix_list)
+                keep_connection = {
+                    key: omap_state_dict[key]
+                    for key in added_keys
+                    if key.startswith(GatewayState.CONNECTED_HOST_PREFIX)
+                }
 
                 # Handle some special cases in which we don't need to delete and re-add
                 ns_lb_group_changed = []
@@ -2097,7 +2216,11 @@ class GatewayStateHandler:
 
                 # Find OMAP removals
                 removed_keys = local_state_keys - omap_state_keys
-                removed = {key: local_state_dict[key] for key in removed_keys}
+                removed = {key: local_state_dict[key]
+                           for key in removed_keys
+                           if not key.startswith(GatewayState.CONNECTED_HOST_PREFIX)
+                           }
+                removed.update(keep_connection)
                 grouped_removed = self._group_by_prefix(removed, prefix_list)
 
                 # Handle OMAP removals and remove outdated changed components

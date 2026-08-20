@@ -43,8 +43,6 @@ lsrc_x86_64  += \
 		mh_sha1/mh_sha1_block_avx512.asm \
 		mh_sha1/mh_sha1_avx512.c
 
-lsrc_x86_32  += $(lsrc_x86_64)
-
 lsrc_aarch64 += \
 		$(lsrc_mh_sha1_base) \
 		mh_sha1/aarch64/mh_sha1_multibinary.S \
@@ -57,6 +55,10 @@ lsrc_aarch64 += \
 		mh_sha1/aarch64/mh_sha1_block_ce.S \
 		mh_sha1/aarch64/mh_sha1_ce.c
 
+lsrc_riscv64 += \
+		$(lsrc_mh_sha1_base) \
+		mh_sha1/mh_sha1_base_aliases.c
+
 lsrc_base_aliases += \
 		$(lsrc_mh_sha1_base) \
 		mh_sha1/mh_sha1_base_aliases.c
@@ -64,12 +66,12 @@ lsrc_base_aliases += \
 other_src    += mh_sha1/mh_sha1_ref.c \
 		include/reg_sizes.asm \
 		include/multibinary.asm \
-		include/test.h \
-		mh_sha1/mh_sha1_internal.h
+		mh_sha1/mh_sha1_internal.h \
+		include/internal/test.h
 
 src_include += -I $(srcdir)/mh_sha1
 
-extern_hdrs +=	include/mh_sha1.h
+extern_hdrs += include/isa-l_crypto/mh_sha1.h
 
 check_tests += 	mh_sha1/mh_sha1_test
 check_tests += 	mh_sha1/mh_sha1_param_test

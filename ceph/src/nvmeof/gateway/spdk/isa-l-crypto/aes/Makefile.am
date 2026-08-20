@@ -31,7 +31,7 @@
 src_include += -I $(srcdir)/aes
 src_include += -I $(srcdir)/intel-ipsec-mb/lib
 
-extern_hdrs += include/aes_gcm.h include/aes_cbc.h include/aes_xts.h include/aes_keyexp.h include/isal_crypto_api.h
+extern_hdrs += include/isa-l_crypto/aes_gcm.h include/isa-l_crypto/aes_cbc.h include/isa-l_crypto/aes_xts.h include/isa-l_crypto/aes_keyexp.h include/isa-l_crypto/isal_crypto_api.h
 
 lsrc            += aes/gcm_pre.c
 lsrc            += aes/cbc_pre.c
@@ -79,8 +79,6 @@ lsrc_x86_64     += aes/XTS_AES_128_dec_vaes.asm
 lsrc_x86_64     += aes/XTS_AES_256_dec_expanded_key_vaes.asm
 lsrc_x86_64     += aes/XTS_AES_128_dec_expanded_key_vaes.asm
 
-lsrc_x86_32 	+= $(lsrc_x86_64)
-
 lsrc_aarch64 += aes/aarch64/gcm_multibinary_aarch64.S       \
                 aes/aarch64/keyexp_multibinary_aarch64.S    \
                 aes/aarch64/gcm_aarch64_dispatcher.c        \
@@ -114,7 +112,7 @@ lsrc_aarch64 += aes/aarch64/gcm_multibinary_aarch64.S       \
                 aes/aarch64/cbc_dec_aes.S
 
 other_src   += include/multibinary.asm
-other_src   += include/test.h include/types.h include/reg_sizes.asm
+other_src   += include/internal/test.h include/isa-l_crypto/types.h include/reg_sizes.asm
 other_src   += aes/gcm_defines.asm
 other_src   += aes/aes_common.asm
 other_src   += aes/clear_regs.asm
@@ -149,6 +147,7 @@ perf_tests  += aes/xts_128_enc_ossl_perf
 perf_tests  += aes/xts_256_enc_ossl_perf
 perf_tests  += aes/xts_128_enc_perf aes/xts_128_dec_perf aes/xts_128_dec_ossl_perf
 perf_tests  += aes/xts_256_enc_perf aes/xts_256_dec_perf aes/xts_256_dec_ossl_perf
+perf_tests  += aes/aes_perf
 
 examples += aes/gcm_simple_example
 
@@ -174,3 +173,5 @@ xts_256_dec_ossl_perf : LDLIBS += -lcrypto
 aes_xts_256_dec_ossl_perf_LDFLAGS = -lcrypto
 xts_256_rand_ossl_test: LDLIBS += -lcrypto
 aes_xts_256_rand_ossl_test_LDFLAGS = -lcrypto
+aes_perf: LDLIBS += -lcrypto
+aes_aes_perf_LDFLAGS = -lcrypto

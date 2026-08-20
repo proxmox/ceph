@@ -5,8 +5,7 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
-import sys
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+from spdk.rpc.cmd_parser import print_dict
 
 
 def add_parser(subparsers):
@@ -14,7 +13,7 @@ def add_parser(subparsers):
     def vmd_enable(args):
         print_dict(args.client.vmd_enable())
 
-    p = subparsers.add_parser('vmd_enable', aliases=['enable_vmd'], help='Enable VMD enumeration')
+    p = subparsers.add_parser('vmd_enable', help='Enable VMD enumeration')
     p.set_defaults(func=vmd_enable)
 
     def vmd_remove_device(args):

@@ -64,8 +64,6 @@ lsrc_x86_64 += 	sha1_mb/sha1_ni_x1.asm \
 		sha1_mb/sha1_mb_mgr_flush_sse_ni.asm \
 		sha1_mb/sha1_mb_mgr_flush_avx512_ni.asm
 
-lsrc_x86_32 += 	$(lsrc_x86_64)
-
 lsrc_aarch64 += sha1_mb/sha1_ctx_base.c \
 		sha1_mb/sha1_ref.c \
 		sha1_mb/aarch64/sha1_mb_multibinary.S \
@@ -79,7 +77,9 @@ lsrc_aarch64 += sha1_mb/sha1_ctx_base.c \
 		sha1_mb/aarch64/sha1_mb_mgr_asimd.c	\
 		sha1_mb/aarch64/sha1_mb_aarch64_dispatcher.c
 
-
+lsrc_riscv64 += sha1_mb/sha1_ctx_base_aliases.c	\
+		sha1_mb/sha1_ctx_base.c \
+		sha1_mb/sha1_ref.c
 
 lsrc_base_aliases += sha1_mb/sha1_ctx_base_aliases.c	\
 		sha1_mb/sha1_ctx_base.c \
@@ -87,8 +87,8 @@ lsrc_base_aliases += sha1_mb/sha1_ctx_base_aliases.c	\
 
 src_include += -I $(srcdir)/sha1_mb
 
-extern_hdrs +=  include/sha1_mb.h \
-		include/multi_buffer.h
+extern_hdrs += include/isa-l_crypto/sha1_mb.h \
+		include/isa-l_crypto/multi_buffer.h
 
 other_src += 	include/datastruct.asm \
 		include/multibinary.asm \
@@ -96,9 +96,9 @@ other_src += 	include/datastruct.asm \
 		sha1_mb/sha1_mb_mgr_datastruct.asm \
 		include/reg_sizes.asm \
 		sha1_mb/sha1_ref.c \
-		include/memcpy_inline.h \
 		include/memcpy.asm \
-		include/intrinreg.h
+		include/internal/memcpy_inline.h \
+		include/internal/intrinreg.h
 
 check_tests  += sha1_mb/sha1_mb_test \
 		sha1_mb/sha1_mb_rand_test \

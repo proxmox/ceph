@@ -30,10 +30,6 @@
 %ifndef _REG_SIZES_ASM_
 %define _REG_SIZES_ASM_
 
-%ifndef AS_FEATURE_LEVEL
-%define AS_FEATURE_LEVEL 4
-%endif
-
 %define EFLAGS_HAS_CPUID        (1<<21)
 %define FLAG_CPUID1_ECX_CLMUL   (1<<1)
 %define FLAG_CPUID1_EDX_SSE2    (1<<26)
@@ -66,6 +62,9 @@
 %define FLAG_CPUID7_ECX_BITALG         (1 << 12)
 %define FLAG_CPUID7_ECX_VPOPCNTDQ      (1 << 14)
 
+%define FLAG_CPUID7_EAX_SHA512NI       (1<<0)
+%define FLAG_CPUID7_EAX_SM3NI          (1<<1)
+
 %define FLAGS_CPUID7_EBX_AVX512_G1 (FLAG_CPUID7_EBX_AVX512F | FLAG_CPUID7_EBX_AVX512VL | FLAG_CPUID7_EBX_AVX512BW | FLAG_CPUID7_EBX_AVX512CD | FLAG_CPUID7_EBX_AVX512DQ)
 %define FLAGS_CPUID7_ECX_AVX512_G2 (FLAG_CPUID7_ECX_AVX512VBMI2 | FLAG_CPUID7_ECX_GFNI | FLAG_CPUID7_ECX_VAES | FLAG_CPUID7_ECX_VPCLMULQDQ | FLAG_CPUID7_ECX_VNNI | FLAG_CPUID7_ECX_BITALG | FLAG_CPUID7_ECX_VPOPCNTDQ)
 
@@ -74,7 +73,6 @@
 %define FLAG_XGETBV_EAX_XMM_YMM        0x6
 %define FLAG_XGETBV_EAX_ZMM_OPM        0xe0
 
-%define FLAG_CPUID1_EAX_AVOTON     0x000406d0
 %define FLAG_CPUID1_EAX_STEP_MASK  0xfffffff0
 
 ; define d and w variants for registers
@@ -348,25 +346,14 @@
 
 %ifdef INTEL_CET_ENABLED
  %ifdef __NASM_VER__
-  %if AS_FEATURE_LEVEL >= 10
-   %ifidn __OUTPUT_FORMAT__,elf32
-section .note.gnu.property  note  alloc noexec align=4
-DD 0x00000004,0x0000000c,0x00000005,0x00554e47
-DD 0xc0000002,0x00000004,0x00000003
-   %endif
    %ifidn __OUTPUT_FORMAT__,elf64
 section .note.gnu.property  note  alloc noexec align=8
 DD 0x00000004,0x00000010,0x00000005,0x00554e47
 DD 0xc0000002,0x00000004,0x00000003,0x00000000
    %endif
-  %endif
  %endif
 %endif
 
-%ifidn __OUTPUT_FORMAT__,elf32
-section .note.GNU-stack noalloc noexec nowrite progbits
-section .text
-%endif
 %ifidn __OUTPUT_FORMAT__,elf64
  %define __x86_64__
 section .note.GNU-stack noalloc noexec nowrite progbits

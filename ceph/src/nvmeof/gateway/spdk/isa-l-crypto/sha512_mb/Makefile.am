@@ -32,14 +32,12 @@ lsrc +=		sha512_mb/sha512_mb.c
 lsrc_x86_64 += 	sha512_mb/sha512_ctx_sse.c \
 		sha512_mb/sha512_ctx_avx.c \
 		sha512_mb/sha512_ctx_avx2.c \
-		sha512_mb/sha512_ctx_sb_sse4.c \
+		sha512_mb/sha512_ctx_avx2_ni.c \
 		sha512_mb/sha512_ctx_base.c
 
 lsrc_x86_64 += 	sha512_mb/sha512_mb_mgr_init_sse.c \
 		sha512_mb/sha512_mb_mgr_init_avx2.c \
 		sha512_mb/sha512_sb_mgr_init_sse4.c
-
-lsrc_x86_32 += 	$(lsrc_x86_64)
 
 lsrc_x86_64 += 	sha512_mb/sha512_mb_mgr_submit_sse.asm \
 		sha512_mb/sha512_mb_mgr_submit_avx.asm \
@@ -47,6 +45,9 @@ lsrc_x86_64 += 	sha512_mb/sha512_mb_mgr_submit_sse.asm \
 		sha512_mb/sha512_mb_mgr_flush_sse.asm \
 		sha512_mb/sha512_mb_mgr_flush_avx.asm \
 		sha512_mb/sha512_mb_mgr_flush_avx2.asm \
+		sha512_mb/sha512_mb_mgr_submit_ni_avx2.asm \
+		sha512_mb/sha512_mb_mgr_flush_ni_avx2.asm \
+		sha512_mb/sha512_x2_ni_avx2.asm \
 		sha512_mb/sha512_mb_x2_sse.asm \
 		sha512_mb/sha512_mb_x2_avx.asm \
 		sha512_mb/sha512_mb_x4_avx2.asm \
@@ -61,8 +62,6 @@ lsrc_x86_64 += 	sha512_mb/sha512_ctx_avx512.c \
 		sha512_mb/sha512_mb_mgr_flush_avx512.asm \
 		sha512_mb/sha512_mb_x8_avx512.asm
 
-lsrc_x86_32 += 	$(lsrc_x86_64)
-
 lsrc_aarch64 += sha512_mb/sha512_ctx_base.c			\
 		sha512_mb/aarch64/sha512_mb_multibinary.S 	\
 		sha512_mb/aarch64/sha512_mb_aarch64_dispatcher.c  \
@@ -71,22 +70,25 @@ lsrc_aarch64 += sha512_mb/sha512_ctx_base.c			\
 		sha512_mb/aarch64/sha512_mb_x1_ce.S	\
 		sha512_mb/aarch64/sha512_mb_x2_ce.S
 
+lsrc_riscv64 += sha512_mb/sha512_ctx_base.c	\
+		sha512_mb/sha512_ctx_base_aliases.c
+
 lsrc_base_aliases += sha512_mb/sha512_ctx_base.c	\
 		sha512_mb/sha512_ctx_base_aliases.c
 
 src_include += -I $(srcdir)/sha512_mb
 
-extern_hdrs +=  include/sha512_mb.h \
-		include/multi_buffer.h
+extern_hdrs += include/isa-l_crypto/sha512_mb.h \
+		include/isa-l_crypto/multi_buffer.h
 
 other_src += 	include/datastruct.asm \
 		sha512_mb/sha512_job.asm \
 		sha512_mb/sha512_mb_mgr_datastruct.asm \
 		include/reg_sizes.asm \
 		sha512_mb/sha512_ref.c \
-		include/memcpy_inline.h \
 		include/memcpy.asm \
-		include/intrinreg.h
+		include/internal/memcpy_inline.h \
+		include/internal/intrinreg.h
 
 check_tests +=	sha512_mb/sha512_mb_test \
 		sha512_mb/sha512_mb_rand_test \

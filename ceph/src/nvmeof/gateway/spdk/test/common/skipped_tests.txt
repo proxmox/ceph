@@ -202,7 +202,6 @@ test_save_ublk_config
 ublk
 ublk_recovery
 unittest_idxd_user
-valgrind
 vfio_llvm_fuzz
 vfio_user_nvme_fio
 vfio_user_nvme_restart_vm
@@ -223,3 +222,6 @@ vhost_shared
 xnvme_bdevperf
 xnvme_fio_plugin
 xnvme_rpc
+
+# Temporarily disabled as part of no-huge rafactor
+nvmf_bdevio_no_huge

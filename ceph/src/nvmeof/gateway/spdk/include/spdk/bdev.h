@@ -123,6 +123,7 @@ enum spdk_bdev_io_type {
 	SPDK_BDEV_IO_TYPE_COPY,
 	SPDK_BDEV_IO_TYPE_NVME_IOV_MD,
 	SPDK_BDEV_IO_TYPE_NVME_NSSR,
+	SPDK_BDEV_IO_TYPE_WRITE_UNCORRECTABLE,
 	SPDK_BDEV_IO_TYPE_IO_CANCEL,
 	SPDK_BDEV_NUM_IO_TYPES /* Keep last */
 };
@@ -328,6 +329,8 @@ enum spdk_bdev_reset_stat_mode {
 	SPDK_BDEV_RESET_STAT_ALL,
 	/** Reset only max and min stats */
 	SPDK_BDEV_RESET_STAT_MAXMIN,
+	/** Reset i/o error stats */
+	SPDK_BDEV_RESET_STAT_ERROR,
 	/** Do not reset stats at all */
 	SPDK_BDEV_RESET_STAT_NONE,
 };
@@ -382,6 +385,9 @@ typedef void (*spdk_bdev_io_timeout_cb)(void *cb_arg, struct spdk_bdev_io *bdev_
 /**
  * Initialize block device modules.
  *
+ * Calling this function from any thread is deprecated and will be disallowed in the 26.05 release.
+ * This function should be called from the SPDK app thread.
+ *
  * \param cb_fn Called when the initialization is complete.
  * \param cb_arg Argument passed to function cb_fn.
  */
@@ -389,6 +395,9 @@ void spdk_bdev_initialize(spdk_bdev_init_cb cb_fn, void *cb_arg);
 
 /**
  * Perform cleanup work to remove the registered block device modules.
+ *
+ * Calling this function from any thread is deprecated and will be disallowed in the 26.05 release.
+ * This function should be called from the SPDK app thread.
  *
  * \param cb_fn Called when the removal is complete.
  * \param cb_arg Argument passed to function cb_fn.
@@ -617,6 +626,23 @@ int spdk_for_each_bdev(void *ctx, spdk_for_each_bdev_fn fn);
  * callback returned otherwise.
  */
 int spdk_for_each_bdev_leaf(void *ctx, spdk_for_each_bdev_fn fn);
+
+/**
+ * Call the provided callback function on block devices with provided names.
+ *
+ * spdk_for_each_bdev_by_name() stops iteration if bdev with one of provided names does not exist,
+ * or if fn returns negated errno.
+ *
+ * \param ctx Context passed to the callback function.
+ * \param fn Callback function for each block device.
+ * \param names Array of bdev names to iterate, all of them should exist to finish iteration successfully.
+ * \param count Count of bdevs to iterate.
+ *
+ * \return 0 if operation is successful, or suitable errno value one of the
+ * callback returned or -ENODEV if bdev with passed name is not present.
+ */
+int spdk_for_each_bdev_by_name(void *ctx, spdk_for_each_bdev_fn fn, const char **names,
+			       size_t count);
 
 /**
  * Get the bdev associated with a bdev descriptor.
@@ -1837,6 +1863,30 @@ int spdk_bdev_write_zeroes(struct spdk_bdev_desc *desc, struct spdk_io_channel *
 int spdk_bdev_write_zeroes_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 				  uint64_t offset_blocks, uint64_t num_blocks,
 				  spdk_bdev_io_completion_cb cb, void *cb_arg);
+
+/**
+ * Submit a write uncorrectable request to the bdev on the given channel. This command writes logical
+ * bad block to the device.
+ *
+ * \ingroup bdev_io_submit_functions
+ *
+ * \param desc Block device descriptor.
+ * \param ch I/O channel. Obtained by calling spdk_bdev_get_io_channel().
+ * \param offset_blocks The offset, in blocks, from the start of the block device.
+ * \param num_blocks The number of blocks to write bad block.
+ * \param cb Called when the request is complete.
+ * \param cb_arg Argument passed to cb.
+ *
+ * \return 0 on success. On success, the callback will always
+ * be called (even if the request ultimately failed). Return
+ * negated errno on failure, in which case the callback will not be called.
+ *   * -EINVAL - offset_blocks and/or num_blocks are out of range
+ *   * -ENOMEM - spdk_bdev_io buffer cannot be allocated
+ *   * -EBADF - desc not open for writing
+ *   * -ENOTSUP - the bdev does not support the command.
+ */
+int spdk_bdev_write_uncorrectable_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		uint64_t offset_blocks, uint64_t num_blocks, spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 /**
  * Submit an unmap request to the block device. Unmap is sometimes also called trim or

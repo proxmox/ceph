@@ -60,6 +60,7 @@ DEFINE_STUB(spdk_nvme_qpair_authenticate, int, (struct spdk_nvme_qpair *qpair,
 		spdk_nvme_authenticate_cb cb_fn, void *cb_ctx), 0);
 DEFINE_STUB(nvme_transport_ctrlr_enable_interrupts, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
 DEFINE_STUB(nvme_qpair_state_string, const char *, (enum nvme_qpair_state state), NULL);
+DEFINE_STUB_V(nvme_fabric_qpair_auth_cleanup, (struct spdk_nvme_qpair *qpair, int status));
 
 int
 nvme_get_default_hostnqn(char *buf, int len)
@@ -280,6 +281,9 @@ nvme_transport_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_
 void
 nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
+	if (qpair != NULL) {
+		qpair->state = NVME_QPAIR_DISCONNECTED;
+	}
 }
 
 int
@@ -2174,7 +2178,7 @@ test_spdk_nvme_ctrlr_doorbell_buffer_config(void)
 	struct spdk_nvme_ctrlr ctrlr = {};
 	int ret = -1;
 
-	ctrlr.cdata.oacs.doorbell_buffer_config = 1;
+	ctrlr.cdata.oacs.dbcs = 1;
 	ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
 	ctrlr.page_size = 0x1000;
 	MOCK_CLEAR(spdk_malloc);
@@ -2362,8 +2366,8 @@ test_nvme_ctrlr_init_delay(void)
 static void
 test_spdk_nvme_ctrlr_set_trid(void)
 {
-	struct spdk_nvme_ctrlr ctrlr = {{0}};
-	struct spdk_nvme_transport_id new_trid = {{0}};
+	struct spdk_nvme_ctrlr ctrlr = {};
+	struct spdk_nvme_transport_id new_trid = {};
 
 	CU_ASSERT(pthread_mutex_init(&ctrlr.ctrlr_lock, NULL) == 0);
 
@@ -3266,8 +3270,8 @@ test_nvme_ctrlr_set_supported_log_pages(void)
 
 	/* ana supported */
 	memset(&ctrlr, 0, sizeof(ctrlr));
-	ctrlr.cdata.cmic.ana_reporting = true;
-	ctrlr.cdata.lpa.celp = 1;
+	ctrlr.cdata.cmic.anars = true;
+	ctrlr.cdata.lpa.cses = 1;
 	ctrlr.cdata.nanagrpid = 1;
 	ctrlr.active_ns_count = 1;
 
@@ -3431,7 +3435,7 @@ test_nvme_ctrlr_ana_resize(void)
 	ctrlr.vs.bits.mnr = 4;
 	ctrlr.vs.bits.ter = 0;
 	ctrlr.cdata.nn = 4096;
-	ctrlr.cdata.cmic.ana_reporting = true;
+	ctrlr.cdata.cmic.anars = true;
 	ctrlr.cdata.nanagrpid = 1;
 
 	ctrlr.state = NVME_CTRLR_STATE_CONFIGURE_AER;

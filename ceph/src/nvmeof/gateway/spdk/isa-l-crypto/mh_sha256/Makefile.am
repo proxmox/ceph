@@ -44,19 +44,27 @@ lsrc_mh_sha256 += mh_sha256/mh_sha256_block_avx512.asm \
 lsrc_x86_64    += $(lsrc_sha256) \
 		$(lsrc_mh_sha256)
 
-lsrc_x86_32    += $(lsrc_x86_64)
-
 other_src   += 	mh_sha256/mh_sha256_ref.c \
 		include/reg_sizes.asm \
 		include/multibinary.asm \
-		include/test.h \
-		mh_sha256/mh_sha256_internal.h
+		mh_sha256/mh_sha256_internal.h \
+		include/internal/test.h
 
 lsrc_aarch64 += $(lsrc_sha256)	\
 		mh_sha256/aarch64/mh_sha256_multibinary.S \
 		mh_sha256/aarch64/mh_sha256_aarch64_dispatcher.c \
 		mh_sha256/aarch64/mh_sha256_block_ce.S \
 		mh_sha256/aarch64/mh_sha256_ce.c \
+		mh_sha256/mh_sha256.c \
+		mh_sha256/mh_sha256_finalize_base.c \
+		mh_sha256/mh_sha256_update_base.c \
+		mh_sha256/mh_sha256_block_base.c
+
+lsrc_riscv64 += $(lsrc_sha256)	\
+		mh_sha256/riscv64/mh_sha256_multibinary.S \
+		mh_sha256/riscv64/mh_sha256_riscv64_dispatcher.c \
+		mh_sha256/riscv64/mh_sha256_block_rvv.S \
+		mh_sha256/riscv64/mh_sha256_block.c \
 		mh_sha256/mh_sha256.c \
 		mh_sha256/mh_sha256_finalize_base.c \
 		mh_sha256/mh_sha256_update_base.c \
@@ -71,7 +79,7 @@ lsrc_base_aliases += $(lsrc_sha256)	\
 
 src_include += -I $(srcdir)/mh_sha256
 
-extern_hdrs +=	include/mh_sha256.h
+extern_hdrs += include/isa-l_crypto/mh_sha256.h
 
 check_tests += 	mh_sha256/mh_sha256_test
 check_tests += 	mh_sha256/mh_sha256_param_test

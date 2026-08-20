@@ -4,12 +4,18 @@
 #  All rights reserved.
 #
 
-import os
-import json
 import argparse
+import json
+import os
+import re
+import sys
+from functools import partial
 from pathlib import Path
+from typing import Any, Dict, NoReturn
+
+import rpc
+from jinja2 import Environment, FileSystemLoader, Template
 from tabulate import tabulate
-from jinja2 import Environment, FileSystemLoader
 
 # Get directory of this script
 base_dir = Path(__file__).resolve().parent.parent
@@ -30,8 +36,79 @@ def lint_json_examples() -> None:
                 raise
 
 
+def lint_c_code(schema: Dict[str, Any]) -> None:
+    schema_methods = set(method["name"] for method in schema['methods'])
+    schema_objects = {obj["name"]: obj for obj in schema['objects']}
+    schema_decoders = {method["name"]:method["decoder"] for method in schema['methods'] if "decoder" in method}
+    schema_aliases = {method["name"]:method["alias"] for method in schema['methods'] if "alias" in method}
+    exception_methods = {"nvmf_create_target", "nvmf_delete_target", "nvmf_get_targets"}
+    # TODO: those are embeeded objects decoders and will be resolved soon
+    exceptions_decoders = {f"rpc_{name}_decoders" for name in schema_objects}
+    c_code_methods = dict()
+    c_code_aliases = dict()
+    for folder in ("module", "lib"):
+        for path in (base_dir / folder).rglob("*rpc.c"):
+            data = path.read_text()
+            methods = re.findall(r'SPDK_RPC_REGISTER\("([A-Za-z0-9_]+)"\s*,\s*([A-Za-z0-9_]+)\s*,', data, re.MULTILINE)
+            for name, func in methods:
+                if func != f"rpc_{name}":
+                    raise ValueError(f"In file {path}: RPC name '{name}' does not match function name '{func}'")
+                if name not in schema_methods | exception_methods:
+                    raise ValueError(f"In file {path}: RPC name '{name}' does not appear in schema. Update schema or exception list")
+            aliases = re.findall(r'SPDK_RPC_REGISTER_ALIAS_DEPRECATED\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)', data)
+            c_code_aliases.update(aliases)
+            decoders = re.findall(r"static\s+const\s+struct\s+spdk_json_object_decoder\s+(.+?)\[\]\s+=\s+{(.+?)};",
+                                  data, re.MULTILINE | re.DOTALL)
+            struct_names = {schema_decoders.get(name, f"rpc_{name}_decoders") for name, _ in methods}
+            decoder_names = {name for name, _ in decoders}
+            invalid = decoder_names - exceptions_decoders - struct_names
+            if invalid:
+                raise ValueError(f"In file {path}: RPC names {invalid} do not match available decoders: {struct_names}."
+                                "Update decoder names or exception list.")
+            for name, fields in decoders:
+                c_code_methods[name] = re.findall(r'\{\s*"(\w+)",\s*(offsetof\(.+?\)|0),\s*(\w+)', fields, re.MULTILINE | re.DOTALL)
+                if not c_code_methods[name]:
+                    raise ValueError(f"In file {path}: could not parse fields for decoder '{name}' fields: '{fields}'. Fix decoder code.")
+    if c_code_aliases != schema_aliases:
+        raise ValueError(f"Aliases {c_code_aliases} do not match schema aliases {schema_aliases}. Update schema aliases or code c.")
+    types = {'spdk_json_decode_bool': 'boolean', 'spdk_json_decode_string': 'string',
+             'spdk_json_decode_uint8': 'number', 'spdk_json_decode_uint16': 'number',
+             'spdk_json_decode_int32': 'number', 'spdk_json_decode_uint32': 'number',
+             'spdk_json_decode_uint64':'number', 'spdk_json_decode_uuid': 'string',
+             }
+    for method in schema['methods']:
+        decoder_name = schema_decoders.get(method['name'], f"rpc_{method['name']}_decoders")
+        schema_params = set(parameter["name"] for parameter in method['params'])
+        # if there are no params, there will be no decoder
+        if not schema_params and decoder_name not in c_code_methods:
+            continue
+        if not c_code_methods.get(decoder_name, {}):
+            raise ValueError(f"Decoder of '{method['name']}' named '{decoder_name}' was not found. Update decoder names or exception list.")
+        cli_params = set(n for n, o, t in c_code_methods[decoder_name])
+        missing_in_cli = schema_params - cli_params
+        missing_in_schema = cli_params - schema_params
+        if missing_in_cli:
+            # TODO: handle this case later and fix issues raised by it
+            cli_exceptions = {'framework_set_scheduler', 'nvmf_create_transport', 'vhost_create_blk_controller', 'nvmf_subsystem_add_host'}
+            if method['name'] not in cli_exceptions:
+                raise ValueError(f"Params of '{method['name']}' defined in schema but missing in CLI: {sorted(missing_in_cli)}")
+        if missing_in_schema:
+            raise ValueError(f"Params of '{method['name']}' defined in CLI but missing in schema: {sorted(missing_in_schema)}")
+        for parameter in method['params']:
+            code_type = [ctype for name, _, ctype in c_code_methods[decoder_name] if name == parameter['name']]
+            if not code_type:
+                # TODO: handle this case later and fix issues raised by it
+                continue
+            new_type = types.get(code_type[0])
+            if not new_type:
+                # TODO: handle this case later and fix issues raised by it
+                continue
+            if new_type != parameter['type']:
+                raise ValueError(f"For method '{method['name']}', parameter '{parameter['name']}': 'type' field is mismatched")
+
+
 def lint_py_cli(schema: Dict[str, Any]) -> None:
-    types = {str: 'string', None: 'string', int: 'number', bool: 'boolean'}
+    types = {str: 'string', None: 'string', int: 'number', bool: 'boolean', str.split: 'array'}
     exceptions = {'load_config', 'load_subsystem_config', 'save_config', 'save_subsystem_config'}
     parser, subparsers = rpc.create_parser()
     schema_methods = set(method["name"] for method in schema['methods'])
@@ -51,27 +128,41 @@ def lint_py_cli(schema: Dict[str, Any]) -> None:
         subparser = subparsers.choices[method['name']]
         groups = subparser._mutually_exclusive_groups
         actions = {a.dest: a for a in subparser._actions}
-        for parameter in method['params']:
-            if parameter['name'] in ['num_blocks']:
-                # TODO: handle this case later and fix issues raised by it
-                continue
-            params = schema_objects[parameter['class']]['fields'] if 'class' in parameter else [parameter]
-            for param in params:
+        # Those are not part of the schema, just part of the python cli
+        p_schema_exceptions = {'help', 'total_size', 'format_lspci'}
+        p_cli_exceptions = {'num_blocks'}
+        p_params = [schema_objects[parameter['class']]['fields'] if 'class' in parameter else [parameter] for parameter in method['params']]
+        p_params_set = set([p['name'] for sub in p_params for p in sub])
+        p_missing_in_cli = p_params_set - set(actions) - p_cli_exceptions
+        p_missing_in_schema = set(actions) - p_params_set - p_schema_exceptions
+        if p_missing_in_cli:
+            raise ValueError(f"For method {method['name']}: Params defined in schema but missing in CLI: {sorted(p_missing_in_cli)}")
+        if p_missing_in_schema:
+            raise ValueError(f"For method {method['name']}: Params found in CLI but not defined in schema: {sorted(p_missing_in_schema)}")
+        for parameters_list in p_params:
+            for param in parameters_list:
+                if param['name'] in p_cli_exceptions:
+                    # TODO: handle this case later and fix issues raised by it
+                    continue
                 action = actions.get(param['name'])
                 if action is None:
                     raise ValueError(f"For method {method['name']}: parameter '{param['name']}': is defined in schema but not found in CLI")
                 required = next((g.required for g in groups
                                 if any(a.dest == action.dest for a in g._group_actions)),
                                 action.required)
-                if param['required'] != required:
+                if param.get('required', False) != required:
                     raise ValueError(f"For method {method['name']}: parameter '{param['name']}': 'required' field is mismatched")
+                # Check that schema has only those valid types:
+                if param['type'] not in types.values():
+                    raise ValueError(f"Invalid schema type '{param['type']}' for '{param['name']}' in '{method['name']}' rpc")
                 if type(action) in [argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction]:
                     newtype = 'boolean'
+                elif isinstance(action.type, partial):
+                    newtype = types.get(action.type.func)
                 else:
                     newtype = types.get(action.type)
                 if not newtype:
-                    # TODO: handle this case later and fix issues raised by it
-                    continue
+                    raise ValueError(f"Invalid schema type '{param['type']}' for '{param['name']}' in '{method['name']}' rpc")
                 if param['type'] != newtype and action.metavar is None and param['type'] != "array":
                     raise ValueError(f"For method {method['name']}: parameter '{param['name']}': 'type' field is mismatched")
 
@@ -80,15 +171,16 @@ def generate_docs(schema: Dict[str, Any]) -> str:
     env = Environment(loader=FileSystemLoader(base_dir / "doc"),
                       keep_trailing_newline=True,
                       comment_start_string='<!--',
-                      comment_end_string='-->'
+                      comment_end_string='-->',
                       )
     schema_template = env.get_template('jsonrpc.md.jinja2')
     transformation = dict()
+    transformation["all_methods"] = [method['name'] for method in schema['methods']]
     for method in schema['methods']:
         params = [
             dict(
                 Name=el["name"],
-                Optional="Required" if el["required"] else "Optional",
+                Optional="Required" if el.get("required", False) else "Optional",
                 Type=el["type"],
                 Description=el["description"],
             )
@@ -99,17 +191,31 @@ def generate_docs(schema: Dict[str, Any]) -> str:
             if params
             else "This method has no parameters."
         )
-    result = schema_template.render(transformation)
-    print(result)
+    for obj in schema['objects']:
+        fields = [
+            dict(
+                Name=el["name"],
+                Optional="Required" if el.get("required", False) else "Optional",
+                Type=el["type"],
+                Description=el["description"],
+            )
+            for el in obj["fields"]
+        ]
+        transformation[f"{obj['name']}_object"] = (
+            tabulate(fields, headers="keys", tablefmt="presto").replace("-+-", " | ")
+            if fields
+            else "This method has no parameters."
+        )
+    return str(schema_template.render(transformation))
 
 
-def generate_rpcs(schema):
+def generate_rpcs(schema: Dict[str, Any]) -> NoReturn:
     raise NotImplementedError("Auto generating python/c code for rpc is not yet implemented")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="RPC functions and documentation generator"
+        description="RPC functions and documentation generator",
     )
     parser.add_argument(
         "-s",
@@ -137,16 +243,26 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    try:
+        lint_json_examples()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     if not os.path.exists(args.schema):
         raise FileNotFoundError(f'Cannot access {args.schema}: No such file or directory')
 
     with open(args.schema, "r") as file:
         schema = json.load(file)
 
-    if not (args.doc or args.rpc):
-        parser.error("No action requested, add -d for doc or -r for rpcs generation")
+    try:
+        lint_py_cli(schema)
+        lint_c_code(schema)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if args.doc:
-        generate_docs(schema)
+        print(generate_docs(schema))
     if args.rpc:
         generate_rpcs(schema)

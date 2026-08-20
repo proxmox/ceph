@@ -518,7 +518,9 @@ function nvmfappstart() {
 }
 
 function nvmftestfini() {
-	nvmfcleanup || :
+	if [[ "$SPDK_TEST_SKIP_NVMF_KERNEL_TESTS" -eq 0 ]]; then
+		nvmfcleanup || :
+	fi
 	if [ -n "$nvmfpid" ]; then
 		killprocess $nvmfpid
 	fi
@@ -686,7 +688,12 @@ configure_kernel_target() {
 		block_in_use "${block##*/}" || nvme="/dev/${block##*/}"
 	done
 
-	[[ -b $nvme ]]
+	if [[ ! -b $nvme ]]; then
+		echo "INFO: Using ram disk for kernel target"
+		[[ ! -e /sys/module/brd ]] && modprobe brd rd_size=262144 max_part=1 rd_nr=1
+		nvme="/dev/ram0"
+		[[ ! -e $nvme ]]
+	fi
 
 	mkdir "$kernel_subsystem"
 	mkdir "$kernel_namespace"
@@ -791,6 +798,9 @@ get_main_ns_ip() {
 uuid2nguid() {
 	tr -d - <<< "${1^^}"
 }
+
+get_pci_dir() { readlink -e "/sys/class/net/$1/device"; }
+get_rdma_device_name() { ls "$(get_pci_dir $1)/infiniband"; }
 
 ipts() { iptables "$@" -m comment --comment "SPDK_NVMF:$*"; }
 iptr() { iptables-save | grep -v SPDK_NVMF | iptables-restore; }

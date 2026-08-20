@@ -54,11 +54,13 @@ lsrc_aarch64 += sm3_mb/sm3_ctx_base.c \
 	sm3_mb/aarch64/sm3_mb_asimd_x1.S	\
 	sm3_mb/aarch64/sm3_mb_asimd_x4.S
 
+lsrc_riscv64 += sm3_mb/sm3_ctx_base.c \
+	sm3_mb/sm3_ctx_base_aliases.c
 
 src_include += -I $(srcdir)/sm3_mb
 
-extern_hdrs +=	include/sm3_mb.h \
-		include/multi_buffer.h
+extern_hdrs += include/isa-l_crypto/sm3_mb.h \
+		include/isa-l_crypto/multi_buffer.h
 
 lsrc_x86_64 +=	sm3_mb/sm3_ctx_avx512.c \
 		sm3_mb/sm3_mb_mgr_submit_avx512.asm \
@@ -70,15 +72,20 @@ lsrc_x86_64 += sm3_mb/sm3_ctx_avx2.c \
 		sm3_mb/sm3_mb_mgr_flush_avx2.asm \
 		sm3_mb/sm3_mb_x8_avx2.asm
 
+lsrc_x86_64 += sm3_mb/sm3_ctx_avx2_ni.c \
+		sm3_mb/sm3_mb_mgr_submit_avx2_ni.asm \
+		sm3_mb/sm3_mb_mgr_flush_avx2_ni.asm \
+		sm3_mb/sm3_mb_x1_avx2_ni.asm
+
 other_src +=	include/datastruct.asm \
 		include/multibinary.asm \
 		include/reg_sizes.asm \
-		include/memcpy_inline.h \
 		include/memcpy.asm \
-		include/intrinreg.h \
 		sm3_mb/sm3_job.asm \
 		sm3_mb/sm3_mb_mgr_datastruct.asm \
-		sm3_mb/sm3_test_helper.c
+		sm3_mb/sm3_test_helper.c \
+		include/internal/memcpy_inline.h \
+		include/internal/intrinreg.h
 
 check_tests  +=	sm3_mb/sm3_ref_test \
 		sm3_mb/sm3_mb_param_test

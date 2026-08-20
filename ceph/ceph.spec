@@ -196,7 +196,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	20.2.2
+Version:	20.2.4
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -212,7 +212,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-20.2.2.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-20.2.4.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x riscv64
@@ -1382,7 +1382,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-20.2.2
+%autosetup -p1 -n ceph-20.2.4
 
 %build
 
@@ -2005,6 +2005,7 @@ fi
 %{_datadir}/ceph/mgr/telemetry
 %{_datadir}/ceph/mgr/test_orchestrator
 %{_datadir}/ceph/mgr/volumes
+%{_datadir}/ceph/mgr/nvmeof
 
 %files mgr-rook
 %{_datadir}/ceph/mgr/rook
@@ -2142,7 +2143,7 @@ fi
 
 %files -n ceph-exporter
 %{_bindir}/ceph-exporter
-%{_unitdir}/ceph-exporter.service
+%{_unitdir}/ceph-exporter@.service
 
 %files -n rbd-fuse
 %{_bindir}/rbd-fuse

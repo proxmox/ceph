@@ -33,8 +33,6 @@ lsrc_x86_64         += rolling_hash/rolling_hash2_until_04.asm
 lsrc_x86_64         += rolling_hash/rolling_hash2_until_00.asm
 lsrc_x86_64         += rolling_hash/rolling_hash2_multibinary.asm
 
-lsrc_x86_32         += $(lsrc_x86_64)
-
 lsrc_base_aliases   += 	rolling_hash/rolling_hashx_base.c	\
 			rolling_hash/rolling_hash2.c	\
 			rolling_hash/rolling_hash2_base_aliases.c
@@ -46,11 +44,16 @@ lsrc_aarch64	    += 	rolling_hash/rolling_hashx_base.c	\
 			rolling_hash/aarch64/rolling_hash2_aarch64_dispatcher.c \
 			rolling_hash/aarch64/rolling_hash2_run_until_unroll.S
 
+lsrc_riscv64   += 	rolling_hash/rolling_hashx_base.c	\
+			rolling_hash/rolling_hash2.c	\
+			rolling_hash/rolling_hash2_base_aliases.c
+
 src_include  += -I $(srcdir)/rolling_hash
-extern_hdrs  += include/rolling_hashx.h
+extern_hdrs += include/isa-l_crypto/rolling_hashx.h
 
 other_src    += rolling_hash/rolling_hash2_table.h
-other_src    += include/test.h include/types.h
+other_src    += include/isa-l_crypto/types.h
+other_src    += include/internal/test.h
 
 check_tests  += rolling_hash/rolling_hash2_test \
 		rolling_hash/rolling_hash2_param_test

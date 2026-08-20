@@ -43,8 +43,6 @@ lsrc_stitch  += mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_avx512.c \
 lsrc_x86_64  += $(lsrc_murmur) \
 		$(lsrc_stitch)
 
-lsrc_x86_32  += $(lsrc_x86_64)
-
 lsrc_aarch64 += $(lsrc_murmur)	\
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_finalize_base.c \
@@ -56,6 +54,12 @@ lsrc_aarch64 += $(lsrc_murmur)	\
 		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_block_asimd.S \
 		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_multibinary.S
 
+lsrc_riscv64 += $(lsrc_murmur)	\
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_finalize_base.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_update_base.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_base_aliases.c
+
 lsrc_base_aliases += $(lsrc_murmur)	\
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_finalize_base.c \
@@ -64,14 +68,14 @@ lsrc_base_aliases += $(lsrc_murmur)	\
 
 other_src += 	include/reg_sizes.asm \
 		include/multibinary.asm \
-		include/test.h \
 		mh_sha1/mh_sha1_internal.h \
 		mh_sha1_murmur3_x64_128/murmur3_x64_128.c \
-		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_internal.h
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_internal.h \
+		include/internal/test.h
 
 src_include += -I $(srcdir)/mh_sha1_murmur3_x64_128
 
-extern_hdrs +=	include/mh_sha1_murmur3_x64_128.h
+extern_hdrs += include/isa-l_crypto/mh_sha1_murmur3_x64_128.h
 
 check_tests +=  mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_param_test
 

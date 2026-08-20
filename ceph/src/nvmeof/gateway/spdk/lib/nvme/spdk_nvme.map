@@ -135,7 +135,6 @@
 	spdk_nvme_poll_group_all_connected;
 	spdk_nvme_poll_group_get_ctx;
 	spdk_nvme_poll_group_wait;
-	spdk_nvme_poll_group_get_fd;
 	spdk_nvme_poll_group_get_fd_group;
 	spdk_nvme_poll_group_set_interrupt_callback;
 
@@ -153,6 +152,7 @@
 	spdk_nvme_ns_get_md_size;
 	spdk_nvme_ns_get_format_index;
 	spdk_nvme_ns_supports_extended_lba;
+	spdk_nvme_ns_supports_write_uncorrectable;
 	spdk_nvme_ns_supports_compare;
 	spdk_nvme_ns_get_dealloc_logical_block_read_value;
 	spdk_nvme_ns_get_optimal_io_boundary;
@@ -193,7 +193,6 @@
 	spdk_nvme_ns_cmd_read_ext;
 	spdk_nvme_ns_cmd_verify;
 
-	spdk_nvme_qpair_get_optimal_poll_group;
 	spdk_nvme_qpair_process_completions;
 	spdk_nvme_qpair_get_failure_reason;
 	spdk_nvme_qpair_add_cmd_error_injection;

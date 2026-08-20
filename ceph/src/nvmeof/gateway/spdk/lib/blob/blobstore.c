@@ -2871,7 +2871,6 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	ctx->blob = blob;
 	ctx->io_unit = cluster_start_io_unit;
 	ctx->new_cluster_page = ch->new_cluster_page;
-	memset(ctx->new_cluster_page, 0, blob->bs->md_page_size);
 
 	/* Check if the cluster that we intend to do CoW for is valid for
 	 * the backing dev. For zeroes backing dev, it'll be always valid.
@@ -4577,10 +4576,6 @@ bs_load_replay_md_parse_page(struct spdk_bs_load_ctx *ctx, struct spdk_blob_md_p
 				 * in the used cluster map.
 				 */
 				if (cluster_idx != 0) {
-					if (cluster_idx < desc_extent->start_cluster_idx &&
-					    cluster_idx >= desc_extent->start_cluster_idx + cluster_count) {
-						return -EINVAL;
-					}
 					spdk_bit_array_set(ctx->used_clusters, cluster_idx);
 					if (bs->num_free_clusters == 0) {
 						return -ENOSPC;
@@ -5355,7 +5350,9 @@ bs_dump_print_md_page(struct spdk_bs_load_ctx *ctx)
 
 			desc_extent = (struct spdk_blob_md_descriptor_extent_page *)desc;
 
-			for (i = 0; i < desc_extent->length / sizeof(desc_extent->cluster_idx[0]); i++) {
+			for (i = 0;
+			     i < (desc_extent->length - sizeof(desc_extent->start_cluster_idx)) / sizeof(
+				     desc_extent->cluster_idx[0]); i++) {
 				if (desc_extent->cluster_idx[i] != 0) {
 					fprintf(ctx->fp, "Allocated Extent - Start: %" PRIu32,
 						desc_extent->cluster_idx[i]);
@@ -5840,7 +5837,11 @@ bs_unload_finish(struct spdk_bs_load_ctx *ctx, int bserrno)
 	spdk_free(ctx->super);
 	free(ctx);
 
-	if (bserrno != 0) {
+	/*
+	 * Exception for EIO is made for hot-remove cases where the underlying
+	 * block device is no longer available.
+	 */
+	if (bserrno != 0 && bserrno != -EIO) {
 		bs_sequence_finish(seq, bserrno);
 		return;
 	}
@@ -6127,6 +6128,24 @@ uint64_t
 spdk_bs_get_page_size(struct spdk_blob_store *bs)
 {
 	return bs->md_page_size;
+}
+
+uint64_t
+spdk_bs_get_max_growable_size(struct spdk_blob_store *bs)
+{
+	uint64_t max_used_cluster_mask, max_number_of_clusters;
+
+	/* Calculate maximum number of pages reserved for used_cluster_mask,
+	 * This is immutable.
+	 */
+	max_used_cluster_mask = spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
+				spdk_divide_round_up(bs->md_len, 8),
+				spdk_bs_get_page_size(bs));
+	/* In used_cluster_mask, It takes 1 bit to track a cluster. */
+	max_number_of_clusters = ((max_used_cluster_mask * spdk_bs_get_page_size(bs))
+				  - sizeof(struct spdk_bs_md_mask)) * 8;
+
+	return max_number_of_clusters * bs->cluster_sz;
 }
 
 uint64_t
@@ -8290,7 +8309,6 @@ delete_snapshot_update_extent_pages(void *cb_arg, int bserrno)
 		/* Clone and snapshot both contain partially filled matching extent pages.
 		 * Update the clone extent page in place with cluster map containing the mix of both. */
 		ctx->next_extent_page = i + 1;
-		memset(ctx->page, 0, SPDK_BS_PAGE_SIZE);
 
 		blob_write_extent_page(ctx->clone, *extent_page, i * SPDK_EXTENTS_PER_EP, ctx->page,
 				       delete_snapshot_update_extent_pages, ctx);
@@ -8915,6 +8933,7 @@ blob_write_extent_page(struct spdk_blob *blob, uint32_t extent, uint64_t cluster
 	ctx->bs = blob->bs;
 	ctx->extent = extent;
 	ctx->page = page;
+	memset(ctx->page, 0, blob->bs->md_page_size);
 
 	cpl.type = SPDK_BS_CPL_TYPE_BLOB_BASIC;
 	cpl.u.blob_basic.cb_fn = cb_fn;

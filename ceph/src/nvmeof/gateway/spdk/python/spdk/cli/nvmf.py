@@ -5,9 +5,12 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
+import argparse
 import sys
-from spdk.rpc.cmd_parser import strip_globals, apply_defaults, group_as
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+from functools import partial
+
+from spdk.rpc.cmd_parser import apply_defaults, group_as, print_dict, strip_globals
+from spdk.rpc.helpers import DeprecateFalseAction, DeprecateTrueAction
 
 
 def add_parser(subparsers):
@@ -21,16 +24,18 @@ def add_parser(subparsers):
     p.set_defaults(func=nvmf_set_max_subsystems)
 
     def nvmf_set_config(args):
-        admin_cmd_passthru = args.passthru_admin_cmds or []
-        if args.passthru_identify_ctrlr:
-            print('WARNING: -i|--passthru-identify-ctrlr is deprecated, please use -p|--passthru-admin-cmds identify_ctrlr.',
-                  file=sys.stderr)
-            admin_cmd_passthru.append('identify_ctrlr')
-        all_admin_cmd_passthru = ('identify_ctrlr', 'vendor_specific')
-        if 'all' in admin_cmd_passthru:
+        all_admin_cmd_passthru = ('identify_ctrlr', 'identify_uuid_list', 'get_log_page', 'get_set_features', 'sanitize',
+                                  'security_send_recv', 'fw_update', 'nvme_mi', 'vendor_specific')
+        invalid_admin_cmd_passthru = set(args.admin_cmd_passthru) - set(all_admin_cmd_passthru) - {'all'}
+        if invalid_admin_cmd_passthru:
+            print(f"Invalid passthru-admin-cmds: '{', '.join(invalid_admin_cmd_passthru)}'. See help for valid options.", file=sys.stderr)
+            exit(1)
+        if not args.admin_cmd_passthru:
+            admin_cmd_passthru = None
+        elif 'all' in args.admin_cmd_passthru:
             admin_cmd_passthru = {cmd: True for cmd in all_admin_cmd_passthru}
         else:
-            admin_cmd_passthru = {cmd: True for cmd in admin_cmd_passthru}
+            admin_cmd_passthru = {cmd: True for cmd in args.admin_cmd_passthru}
         args.client.nvmf_set_config(admin_cmd_passthru=admin_cmd_passthru,
                                     poll_groups_mask=args.poll_groups_mask,
                                     discovery_filter=args.discovery_filter,
@@ -38,23 +43,41 @@ def add_parser(subparsers):
                                     dhchap_dhgroups=args.dhchap_dhgroups)
 
     p = subparsers.add_parser('nvmf_set_config', help='Set NVMf target config')
-    p.add_argument('-i', '--passthru-identify-ctrlr', help="""Passthrough fields like serial number and model number
-    when the controller has a single namespace that is an NVMe bdev (deprecated)""", action='store_true')
-    p.add_argument('-p', '--passthru-admin-cmds', help="""Comma-separated list of admin commands to be passthru
+    p.add_argument('-p', '--passthru-admin-cmds', dest='admin_cmd_passthru', help="""Comma-separated list of admin commands to be passthru
                    when the controller has a single namespace that is an NVMe bdev.
-                   Available options are: all, identify_ctrlr, vendor_specific""", type=lambda d: d.split(','))
+                   Available options are: all, identify_ctrlr, identify_uuid_list, get_log_page, get_set_features, sanitize,
+                   security_send_recv, fw_update, nvme_mi, vendor_specific""",
+                   type=partial(str.split, sep=','), default=[])
     p.add_argument('-m', '--poll-groups-mask', help='Set cpumask for NVMf poll groups (optional)', type=str)
     p.add_argument('-d', '--discovery-filter', help="""Set discovery filter (optional), possible values are: `match_any` (default) or
          comma separated values: `transport`, `address`, `svcid`""", type=str)
     p.add_argument('--dhchap-digests', help='Comma-separated list of allowed DH-HMAC-CHAP digests',
-                   type=lambda d: d.split(','))
+                   type=partial(str.split, sep=','))
     p.add_argument('--dhchap-dhgroups', help='Comma-separated list of allowed DH-HMAC-CHAP DH groups',
-                   type=lambda d: d.split(','))
+                   type=partial(str.split, sep=','))
     p.set_defaults(func=nvmf_set_config)
+
+    oncs = ('nvmcmps', 'nvmdsmsv', 'nvmwzsv', 'reservs', 'nvmcpys')
+    help_oncs = ", ".join(("all",) + oncs)
+
+    fuses = ('fcws',)
+    help_fuses = ", ".join(("all",) + fuses)
 
     def nvmf_create_transport(args):
         params = strip_globals(vars(args))
         params = apply_defaults(params, no_srq=False, c2h_success=True)
+        if args.masked_oncs:
+            invalid_oncs = set(args.masked_oncs) - set(oncs) - {'all'}
+            if invalid_oncs:
+                print(f"Invalid oncs: '{', '.join(invalid_oncs)}'. Available options: {help_oncs}.", file=sys.stderr)
+                exit(1)
+            params['masked_oncs'] = oncs if 'all' in args.masked_oncs else args.masked_oncs
+        if args.masked_fuses:
+            invalid_fuses = set(args.masked_fuses) - set(fuses) - {'all'}
+            if invalid_fuses:
+                print(f"Invalid fuses: '{', '.join(invalid_fuses)}'. Available options: {help_fuses}.", file=sys.stderr)
+                exit(1)
+            params['masked_fuses'] = fuses if 'all' in args.masked_fuses else args.masked_fuses
         args.client.nvmf_create_transport(**params)
 
     p = subparsers.add_parser('nvmf_create_transport', help='Create NVMf transport')
@@ -94,6 +117,10 @@ def add_parser(subparsers):
     p.add_argument('--disable-command-passthru', help='Disallow command passthru', action='store_true')
     p.add_argument('--kas', help="Keep alive support", type=int)
     p.add_argument('--min-kato', help="The minimum keep alive timeout in milliseconds", type=int)
+    p.add_argument('--masked-oncs', help=f"Comma-separated list of ONCS features to mask (disable). Available options: {help_oncs}",
+                   type=partial(str.split, sep=','))
+    p.add_argument('--masked-fuses', help=f"Comma-separated list of FUSES features to mask (disable). Available options: {help_fuses}",
+                   type=partial(str.split, sep=','))
     p.set_defaults(func=nvmf_create_transport)
 
     def nvmf_get_transports(args):
@@ -142,8 +169,8 @@ def add_parser(subparsers):
                                        ana_reporting=args.ana_reporting,
                                        min_cntlid=args.min_cntlid,
                                        max_cntlid=args.max_cntlid,
-                                       max_discard_size_kib=args.max_discard_size,
-                                       max_write_zeroes_size_kib=args.max_write_zeroes_size,
+                                       max_discard_size_kib=args.max_discard_size_kib,
+                                       max_write_zeroes_size_kib=args.max_write_zeroes_size_kib,
                                        passthrough=args.passthrough,
                                        enable_nssr=args.enable_nssr)
 
@@ -160,22 +187,22 @@ def add_parser(subparsers):
     p.add_argument("-m", "--max-namespaces", help="Maximum number of namespaces allowed",
                    type=int)
     p.add_argument("-r", "--ana-reporting", action='store_true', help="Enable ANA reporting feature")
-    p.add_argument("-i", "--min_cntlid", help="Minimum controller ID", type=int)
-    p.add_argument("-I", "--max_cntlid", help="Maximum controller ID", type=int)
-    p.add_argument("--max-discard-size", help="Maximum discard size (Kib)", type=int)
-    p.add_argument("--max-write-zeroes-size", help="Maximum write_zeroes size (Kib)", type=int)
+    p.add_argument("-i", "--min-cntlid", help="Minimum controller ID", type=int)
+    p.add_argument("-I", "--max-cntlid", help="Maximum controller ID", type=int)
+    p.add_argument("--max-discard-size", dest='max_discard_size_kib', help="Maximum discard size (Kib)", type=int)
+    p.add_argument("--max-write-zeroes-size", dest='max_write_zeroes_size_kib', help="Maximum write_zeroes size (Kib)", type=int)
     p.add_argument("-p", "--passthrough", action='store_true', help="""Use NVMe passthrough for all I/O commands and namespace-directed
                    admin commands""")
-    p.add_argument("-n", "--enable_nssr", action='store_true', help="""Enable NSSR (NVMe subsystem reset) support""")
+    p.add_argument("-n", "--enable-nssr", action='store_true', help="""Enable NSSR (NVMe subsystem reset) support""")
     p.set_defaults(func=nvmf_create_subsystem)
 
     def nvmf_delete_subsystem(args):
         args.client.nvmf_delete_subsystem(
-                                       nqn=args.subsystem_nqn,
+                                       nqn=args.nqn,
                                        tgt_name=args.tgt_name)
 
     p = subparsers.add_parser('nvmf_delete_subsystem', help='Delete a nvmf subsystem')
-    p.add_argument('subsystem_nqn',
+    p.add_argument('nqn',
                    help='subsystem nqn to be deleted. Example: nqn.2016-06.io.spdk:cnode1.')
     p.add_argument('-t', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
     p.set_defaults(func=nvmf_delete_subsystem)
@@ -194,7 +221,7 @@ def add_parser(subparsers):
     p.add_argument('-a', '--traddr', help='NVMe-oF transport address: e.g., an ip address', required=True)
     p.add_argument('-p', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
     p.add_argument('-f', '--adrfam', help='NVMe-oF transport adrfam: e.g., ipv4, ipv6, ib, fc, intra_host')
-    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number (required for RDMA or TCP)')
+    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number (required for TCP and RDMA transport types)')
     p.add_argument('-k', '--secure-channel', help='Immediately establish a secure channel', action="store_true")
     p.add_argument('-n', '--ana-state', help='ANA state to set: optimized, non_optimized, or inaccessible', type=str)
     p.add_argument('-S', '--sock-impl', help='The socket implementation to use for the listener (ex. posix)', type=str)
@@ -228,7 +255,7 @@ def add_parser(subparsers):
     p.add_argument('-a', '--traddr', help='NVMe-oF transport address: e.g., an ip address', required=True)
     p.add_argument('-p', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
     p.add_argument('-f', '--adrfam', help='NVMe-oF transport adrfam: e.g., ipv4, ipv6, ib, fc, intra_host')
-    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number')
+    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number (required for TCP and RDMA transport types)')
     p.add_argument('-g', '--anagrpid', help='ANA group ID (optional)', type=int)
     p.set_defaults(func=nvmf_subsystem_listener_set_ana_state)
 
@@ -245,7 +272,7 @@ def add_parser(subparsers):
     p.add_argument('-a', '--traddr', help='NVMe-oF transport address: e.g., an ip address', required=True)
     p.add_argument('-p', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
     p.add_argument('-f', '--adrfam', help='NVMe-oF transport adrfam: e.g., ipv4, ipv6, ib, fc, intra_host')
-    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number (required for RDMA or TCP)')
+    p.add_argument('-s', '--trsvcid', help='NVMe-oF transport service id: e.g., a port number (required for TCP and RDMA transport types)')
     p.add_argument('-k', '--secure-channel', help='The connection to that discovery subsystem requires a secure channel',
                    action="store_true")
     p.add_argument('-n', '--subnqn', help='Subsystem NQN')
@@ -388,12 +415,15 @@ def add_parser(subparsers):
         args.client.nvmf_subsystem_remove_host(
                                             nqn=args.nqn,
                                             host=args.host,
+                                            keep_connections=args.keep_connections,
                                             tgt_name=args.tgt_name)
 
     p = subparsers.add_parser('nvmf_subsystem_remove_host', help='Remove a host from an NVMe-oF subsystem')
     p.add_argument('nqn', help='NVMe-oF subsystem NQN')
     p.add_argument('host', help='Host NQN to remove')
     p.add_argument('-t', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
+    p.add_argument('--keep-connections', action='store_true',
+                   help='Do not disconnect existing connections from this host (optional)')
     p.set_defaults(func=nvmf_subsystem_remove_host)
 
     def nvmf_subsystem_set_keys(args):
@@ -415,13 +445,16 @@ def add_parser(subparsers):
     def nvmf_subsystem_allow_any_host(args):
         args.client.nvmf_subsystem_allow_any_host(
                                                nqn=args.nqn,
-                                               allow_any_host=False if args.disable else True,
+                                               allow_any_host=args.allow_any_host,
                                                tgt_name=args.tgt_name)
 
     p = subparsers.add_parser('nvmf_subsystem_allow_any_host', help='Allow any host to connect to the subsystem')
     p.add_argument('nqn', help='NVMe-oF subsystem NQN')
-    p.add_argument('-e', '--enable', action='store_true', help='Enable allowing any host')
-    p.add_argument('-d', '--disable', action='store_true', help='Disable allowing any host')
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('-e', '--enable', dest='allow_any_host', action=DeprecateTrueAction, help='Enable allowing any host')
+    group.add_argument('-d', '--disable', dest='allow_any_host', action=DeprecateFalseAction, help='Disable allowing any host')
+    group.add_argument('--allow-any-host', action=argparse.BooleanOptionalAction, help='Enable or disable allowing any host')
     p.add_argument('-t', '--tgt-name', help='The name of the parent NVMe-oF target (optional)', type=str)
     p.set_defaults(func=nvmf_subsystem_allow_any_host)
 

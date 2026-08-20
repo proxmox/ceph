@@ -2,12 +2,11 @@
 #  Copyright (C) 2018 Intel Corporation.
 #  All rights reserved.
 
-from .ui_node import UINode, UIBdevs, UILvolStores, UIVhosts
-from .ui_node_nvmf import UINVMf
+from ..rpc import config
+from ..rpc.cmd_parser import apply_defaults, group_as, remove_null, strip_globals
+from .ui_node import UIBdevs, UILvolStores, UINode, UIVhosts
 from .ui_node_iscsi import UIISCSI
-from .. import rpc
-from ..rpc.cmd_parser import strip_globals, apply_defaults, group_as, remove_null
-from functools import wraps
+from .ui_node_nvmf import UINVMf
 
 
 class UIRoot(UINode):
@@ -86,19 +85,19 @@ class UIRoot(UINode):
 
     def ui_command_load_config(self, filename):
         with open(filename, "r") as fd:
-            rpc.load_config(self.client, fd)
+            config.load_config(self.client, fd)
 
     def ui_command_load_subsystem_config(self, filename):
         with open(filename, "r") as fd:
-            rpc.load_subsystem_config(self.client, fd)
+            config.load_subsystem_config(self.client, fd)
 
     def ui_command_save_config(self, filename, indent=2):
         with open(filename, "w") as fd:
-            rpc.save_config(self.client, fd, indent)
+            config.save_config(self.client, fd, indent)
 
     def ui_command_save_subsystem_config(self, filename, subsystem, indent=2):
         with open(filename, "w") as fd:
-            rpc.save_subsystem_config(self.client, fd, indent, subsystem)
+            config.save_subsystem_config(self.client, fd, indent, subsystem)
 
     def rpc_get_methods(self, current=False):
         return self.client.rpc_get_methods(current=current)
@@ -188,6 +187,7 @@ class UIRoot(UINode):
     @verbose
     def create_error_bdev(self, **kwargs):
         response = self.client.bdev_error_create(**kwargs)
+        return response
 
     @verbose
     def bdev_error_delete(self, **kwargs):

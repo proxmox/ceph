@@ -420,7 +420,7 @@ struct nvmf_vfio_user_transport {
 /*
  * function prototypes
  */
-static int nvmf_vfio_user_req_free(struct spdk_nvmf_request *req);
+static void nvmf_vfio_user_req_free(struct spdk_nvmf_request *req);
 
 static struct nvmf_vfio_user_req *get_nvmf_vfio_user_req(struct nvmf_vfio_user_sq *sq);
 
@@ -1078,7 +1078,7 @@ nvmf_vfio_user_destroy_endpoint(struct nvmf_vfio_user_endpoint *endpoint)
 }
 
 /* called when process exits */
-static int
+static void
 nvmf_vfio_user_destroy(struct spdk_nvmf_transport *transport,
 		       spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg)
 {
@@ -1103,8 +1103,6 @@ nvmf_vfio_user_destroy(struct spdk_nvmf_transport *transport,
 	if (cb_fn) {
 		cb_fn(cb_arg);
 	}
-
-	return 0;
 }
 
 static const struct spdk_json_object_decoder vfio_user_transport_opts_decoder[] = {
@@ -1134,6 +1132,8 @@ static const struct spdk_json_object_decoder vfio_user_transport_opts_decoder[] 
 		spdk_json_decode_bool, true
 	},
 };
+
+SPDK_LOG_DEPRECATION_REGISTER(disable_compare, "", "v26.05", SPDK_LOG_DEPRECATION_EVERY_24H);
 
 static struct spdk_nvmf_transport *
 nvmf_vfio_user_create(struct spdk_nvmf_transport_opts *opts)
@@ -1174,6 +1174,10 @@ nvmf_vfio_user_create(struct spdk_nvmf_transport_opts *opts)
 					    vu_transport)) {
 		SPDK_ERRLOG("spdk_json_decode_object_relaxed failed\n");
 		goto cleanup;
+	}
+
+	if (vu_transport->transport_opts.disable_compare) {
+		SPDK_LOG_DEPRECATED(disable_compare);
 	}
 
 	/*
@@ -3769,11 +3773,13 @@ nvmf_vfio_user_cdata_init(struct spdk_nvmf_transport *transport,
 	cdata->ieee[2] = 0x50;
 	memset(&cdata->sgls, 0, sizeof(struct spdk_nvme_cdata_sgls));
 	cdata->sgls.supported = SPDK_NVME_SGLS_SUPPORTED_DWORD_ALIGNED;
-	cdata->oncs.compare = !vu_transport->transport_opts.disable_compare;
+	cdata->oncs.nvmcmps = !vu_transport->transport_opts.disable_compare &&
+			      vu_transport->transport.opts.oncs.nvmcmps;
 	/* libvfio-user can only support 1 connection for now */
-	cdata->oncs.reservations = 0;
-	cdata->oacs.doorbell_buffer_config = !vu_transport->transport_opts.disable_shadow_doorbells;
-	cdata->fuses.compare_and_write = !vu_transport->transport_opts.disable_compare;
+	cdata->oncs.reservs = 0;
+	cdata->oacs.dbcs = !vu_transport->transport_opts.disable_shadow_doorbells;
+	cdata->fuses.fcws = !vu_transport->transport_opts.disable_compare &&
+			    vu_transport->transport.opts.oncs.nvmcmps && vu_transport->transport.opts.fuses.fcws;
 }
 
 static int
@@ -4456,7 +4462,7 @@ _nvmf_vfio_user_req_free(struct nvmf_vfio_user_sq *sq, struct nvmf_vfio_user_req
 	TAILQ_INSERT_TAIL(&sq->free_reqs, vu_req, link);
 }
 
-static int
+static void
 nvmf_vfio_user_req_free(struct spdk_nvmf_request *req)
 {
 	struct nvmf_vfio_user_sq *sq;
@@ -4468,11 +4474,9 @@ nvmf_vfio_user_req_free(struct spdk_nvmf_request *req)
 	sq = SPDK_CONTAINEROF(req->qpair, struct nvmf_vfio_user_sq, qpair);
 
 	_nvmf_vfio_user_req_free(sq, vu_req);
-
-	return 0;
 }
 
-static int
+static void
 nvmf_vfio_user_req_complete(struct spdk_nvmf_request *req)
 {
 	struct nvmf_vfio_user_sq *sq;
@@ -4490,8 +4494,6 @@ nvmf_vfio_user_req_complete(struct spdk_nvmf_request *req)
 	}
 
 	_nvmf_vfio_user_req_free(sq, vu_req);
-
-	return 0;
 }
 
 static void

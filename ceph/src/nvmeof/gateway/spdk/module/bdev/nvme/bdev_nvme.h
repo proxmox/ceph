@@ -18,9 +18,6 @@
 
 TAILQ_HEAD(nvme_bdev_ctrlrs, nvme_bdev_ctrlr);
 extern struct nvme_bdev_ctrlrs g_nvme_bdev_ctrlrs;
-extern pthread_mutex_t g_bdev_nvme_mutex;
-extern bool g_bdev_nvme_module_finish;
-extern struct spdk_thread *g_bdev_nvme_init_thread;
 
 #define NVME_MAX_CONTROLLERS 1024
 
@@ -59,13 +56,6 @@ struct nvme_ns {
 	struct nvme_async_probe_ctx	*probe_ctx;
 	TAILQ_ENTRY(nvme_ns)		tailq;
 	RB_ENTRY(nvme_ns)		node;
-
-	/**
-	 * record io path stat before destroyed. Allocation of stat is
-	 * decided by option io_path_stat of RPC
-	 * bdev_nvme_set_options
-	 */
-	struct spdk_bdev_io_stat	*stat;
 };
 
 struct nvme_bdev_io;
@@ -108,12 +98,12 @@ struct nvme_ctrlr {
 
 	struct spdk_bdev_nvme_ctrlr_opts	opts;
 
+	/* This list can only be accessed from the app thread. */
 	RB_HEAD(nvme_ns_tree, nvme_ns)		namespaces;
 
 	struct spdk_opal_dev			*opal_dev;
 
 	struct spdk_poller			*adminq_timer_poller;
-	struct spdk_thread			*thread;
 	struct spdk_interrupt			*intr;
 
 	bdev_nvme_ctrlr_op_cb			ctrlr_op_cb_fn;
@@ -168,6 +158,12 @@ struct nvme_bdev {
 	enum spdk_bdev_nvme_multipath_policy	mp_policy;
 	enum spdk_bdev_nvme_multipath_selector	mp_selector;
 	uint32_t				rr_min_io;
+
+	/* This list is modified on the app thread only but can be accessed on other threads:
+	 * - Modifications must use the mutex.
+	 * - Access on the app thread does not require locking.
+	 * - Access on other threads must use the mutex.
+	 */
 	TAILQ_HEAD(, nvme_ns)			nvme_ns_list;
 	bool					opal;
 	TAILQ_ENTRY(nvme_bdev)			tailq;
@@ -284,7 +280,7 @@ struct nvme_ns *nvme_ctrlr_get_first_active_ns(struct nvme_ctrlr *nvme_ctrlr);
 struct nvme_ns *nvme_ctrlr_get_next_active_ns(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ns *ns);
 
 struct spdk_nvme_qpair *bdev_nvme_get_io_qpair(struct spdk_io_channel *ctrlr_io_ch);
-int bdev_nvme_set_hotplug(bool enabled, uint64_t period_us, spdk_msg_fn cb, void *cb_ctx);
+int bdev_nvme_set_hotplug(bool enabled, uint64_t period_us);
 
 int bdev_nvme_start_discovery(struct spdk_nvme_transport_id *trid, const char *base_name,
 			      struct spdk_nvme_ctrlr_opts *drv_opts, struct spdk_bdev_nvme_ctrlr_opts *bdev_opts,

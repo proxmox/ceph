@@ -24,20 +24,20 @@ free_rpc_nvme_cuse_register(struct rpc_nvme_cuse_register *req)
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_nvme_cuse_register_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_nvme_cuse_register_decoders[] = {
 	{"name", offsetof(struct rpc_nvme_cuse_register, name), spdk_json_decode_string},
 };
 
 static void
-rpc_nvme_cuse_register(struct spdk_jsonrpc_request *request,
-		       const struct spdk_json_val *params)
+rpc_bdev_nvme_cuse_register(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
 {
 	struct rpc_nvme_cuse_register req = {};
 	struct nvme_ctrlr *bdev_ctrlr = NULL;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_nvme_cuse_register_decoders,
-				    SPDK_COUNTOF(rpc_nvme_cuse_register_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_nvme_cuse_register_decoders,
+				    SPDK_COUNTOF(rpc_bdev_nvme_cuse_register_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -64,7 +64,7 @@ rpc_nvme_cuse_register(struct spdk_jsonrpc_request *request,
 cleanup:
 	free_rpc_nvme_cuse_register(&req);
 }
-SPDK_RPC_REGISTER("bdev_nvme_cuse_register", rpc_nvme_cuse_register, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_nvme_cuse_register", rpc_bdev_nvme_cuse_register, SPDK_RPC_RUNTIME)
 
 struct rpc_nvme_cuse_unregister {
 	char *name;
@@ -76,20 +76,20 @@ free_rpc_nvme_cuse_unregister(struct rpc_nvme_cuse_unregister *req)
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_nvme_cuse_unregister_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_nvme_cuse_unregister_decoders[] = {
 	{"name", offsetof(struct rpc_nvme_cuse_unregister, name), spdk_json_decode_string, true},
 };
 
 static void
-rpc_nvme_cuse_unregister(struct spdk_jsonrpc_request *request,
-			 const struct spdk_json_val *params)
+rpc_bdev_nvme_cuse_unregister(struct spdk_jsonrpc_request *request,
+			      const struct spdk_json_val *params)
 {
 	struct rpc_nvme_cuse_unregister req = {};
 	struct nvme_ctrlr *bdev_ctrlr = NULL;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_nvme_cuse_unregister_decoders,
-				    SPDK_COUNTOF(rpc_nvme_cuse_unregister_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_nvme_cuse_unregister_decoders,
+				    SPDK_COUNTOF(rpc_bdev_nvme_cuse_unregister_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -115,4 +115,4 @@ rpc_nvme_cuse_unregister(struct spdk_jsonrpc_request *request,
 cleanup:
 	free_rpc_nvme_cuse_unregister(&req);
 }
-SPDK_RPC_REGISTER("bdev_nvme_cuse_unregister", rpc_nvme_cuse_unregister, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_nvme_cuse_unregister", rpc_bdev_nvme_cuse_unregister, SPDK_RPC_RUNTIME)

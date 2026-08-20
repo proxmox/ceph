@@ -5,9 +5,12 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
+import argparse
 import sys
-from spdk.rpc.cmd_parser import strip_globals
-from spdk.rpc.client import print_dict, print_json, print_array  # noqa
+from functools import partial
+
+from spdk.rpc.cmd_parser import print_array, print_dict, print_json, strip_globals
+from spdk.rpc.helpers import DeprecateFalseAction, DeprecateTrueAction
 
 
 def add_parser(subparsers):
@@ -49,12 +52,16 @@ def add_parser(subparsers):
                               help="""Set options of bdev subsystem""")
     p.add_argument('-p', '--bdev-io-pool-size', help='Number of bdev_io structures in shared buffer pool', type=int)
     p.add_argument('-c', '--bdev-io-cache-size', help='Maximum number of bdev_io structures cached per thread', type=int)
+    # TODO: this group is deprecated, remove in next version
     group = p.add_mutually_exclusive_group()
-    group.add_argument('-e', '--enable-auto-examine', dest='bdev_auto_examine', help='Allow to auto examine', action='store_true')
-    group.add_argument('-d', '--disable-auto-examine', dest='bdev_auto_examine', help='Not allow to auto examine', action='store_false')
+    group.add_argument('-e', '--enable-auto-examine', dest='bdev_auto_examine', action=DeprecateTrueAction,
+                       help='Allow to auto examine', default=True)
+    group.add_argument('-d', '--disable-auto-examine', dest='bdev_auto_examine', action=DeprecateFalseAction,
+                       help='Not allow to auto examine')
+    group.add_argument('--auto-examine', dest='bdev_auto_examine', action=argparse.BooleanOptionalAction,
+                       help='Enable or disable auto examine')
     p.add_argument('--iobuf-small-cache-size', help='Size of the small iobuf per thread cache', type=int)
     p.add_argument('--iobuf-large-cache-size', help='Size of the large iobuf per thread cache', type=int)
-    p.set_defaults(bdev_auto_examine=True)
     p.set_defaults(func=bdev_set_options)
 
     def bdev_examine(args):
@@ -62,7 +69,7 @@ def add_parser(subparsers):
 
     p = subparsers.add_parser('bdev_examine',
                               help="""examine a bdev if it exists, or will examine it after it is created""")
-    p.add_argument('-b', '--name', help='Name or alias of the bdev')
+    p.add_argument('-b', '--name', help='Name or alias of the bdev', required=True)
     p.set_defaults(func=bdev_examine)
 
     def bdev_wait_for_examine(args):
@@ -112,7 +119,7 @@ def add_parser(subparsers):
         '--cache-line-size',
         help='OCF cache line size. The unit is KiB',
         type=int,
-        choices=[4, 8, 16, 32, 64]
+        choices=[4, 8, 16, 32, 64],
     )
     p.add_argument('cache_bdev_name', help='Name of underlying cache bdev')
     p.add_argument('core_bdev_name', help='Name of underlying core bdev')
@@ -197,7 +204,8 @@ def add_parser(subparsers):
                                                md_interleave=args.md_interleave,
                                                dif_type=args.dif_type,
                                                dif_is_head_of_md=args.dif_is_head_of_md,
-                                               dif_pi_format=args.dif_pi_format))
+                                               dif_pi_format=args.dif_pi_format,
+                                               numa_id=args.numa_id))
     p = subparsers.add_parser('bdev_malloc_create', help='Create a bdev with malloc backend')
     p.add_argument('-b', '--name', help="Name of the bdev")
     p.add_argument('-u', '--uuid', help="UUID of the bdev (optional)")
@@ -219,6 +227,9 @@ def add_parser(subparsers):
     p.add_argument('-f', '--dif-pi-format', type=int, choices=[0, 1, 2],
                    help='Protection infromation format. Parameter --dif-type needs to be set together.'
                         '0=16b Guard PI, 1=32b Guard PI, 2=64b Guard PI. Default=0.')
+    p.add_argument('-n', '--numa-id', type=int,
+                   help='NUMA node ID where memory is allocated, if -1 then any NUMA node ID can be used. '
+                        'Default is -1.')
     p.set_defaults(func=bdev_malloc_create)
 
     def bdev_malloc_delete(args):
@@ -282,12 +293,12 @@ def add_parser(subparsers):
     def bdev_null_resize(args):
         print_json(args.client.bdev_null_resize(
                                              name=args.name,
-                                             new_size=int(args.new_size)))
+                                             new_size=args.new_size))
 
     p = subparsers.add_parser('bdev_null_resize',
                               help='Resize a null bdev')
     p.add_argument('name', help='null bdev name')
-    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB')
+    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB', type=int)
     p.set_defaults(func=bdev_null_resize)
 
     def bdev_aio_create(args):
@@ -297,7 +308,8 @@ def add_parser(subparsers):
                                             block_size=args.block_size,
                                             readonly=args.readonly,
                                             fallocate=args.fallocate,
-                                            uuid=args.uuid))
+                                            uuid=args.uuid,
+                                            nowait=args.nowait))
 
     p = subparsers.add_parser('bdev_aio_create', help='Add a bdev with aio backend')
     p.add_argument('filename', help='Path to device or file (ex: /dev/sda)')
@@ -306,6 +318,11 @@ def add_parser(subparsers):
     p.add_argument("-r", "--readonly", action='store_true', help='Set this bdev as read-only')
     p.add_argument("--fallocate", action='store_true', help='Support unmap/writezeros by fallocate')
     p.add_argument('-u', '--uuid', help="UUID of the bdev (optional)")
+    p.add_argument('--no-wait', dest='nowait', action='store_true',
+                   help="""Enable the RWF_NOWAIT flag for block devices.
+                        If the flag is not defined, or if the specified device is not a block device, creation
+                        will fail. Note that this feature is not advertised by the kernel to userspace. Use
+                        with caution, and only if the device is known to work correctly with your kernel.""")
     p.set_defaults(func=bdev_aio_create)
 
     def bdev_aio_rescan(args):
@@ -457,15 +474,19 @@ def add_parser(subparsers):
     p.add_argument('--rdma-cm-event-timeout-ms',
                    help='Time to wait for RDMA CM event. Only applicable for RDMA transports.', type=int)
     p.add_argument('--dhchap-digests', help='Comma-separated list of allowed DH-HMAC-CHAP digests',
-                   type=lambda d: d.split(','))
+                   type=partial(str.split, sep=','))
     p.add_argument('--dhchap-dhgroups', help='Comma-separated list of allowed DH-HMAC-CHAP DH groups',
-                   type=lambda d: d.split(','))
-    p.add_argument('--enable-rdma-umr-per-io',
-                   help='''Enable scatter-gather RDMA Memory Region per IO if supported by the system.''',
-                   action='store_true', dest='rdma_umr_per_io')
-    p.add_argument('--disable-rdma-umr-per-io',
-                   help='''Disable scatter-gather RDMA Memory Region per IO.''',
-                   action='store_false', dest='rdma_umr_per_io')
+                   type=partial(str.split, sep=','))
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group()
+    group.add_argument('--enable-rdma-umr-per-io',
+                       help='''Enable scatter-gather RDMA Memory Region per IO if supported by the system.''',
+                       action=DeprecateTrueAction, dest='rdma_umr_per_io')
+    group.add_argument('--disable-rdma-umr-per-io',
+                       help='''Disable scatter-gather RDMA Memory Region per IO.''',
+                       action=DeprecateFalseAction, dest='rdma_umr_per_io')
+    group.add_argument('--rdma-umr-per-io', action=argparse.BooleanOptionalAction,
+                       help='Enable or disable scatter-gather RDMA Memory Region per IO if supported by the system.')
     p.add_argument('--tcp-connect-timeout-ms',
                    help='Time to wait until TCP connection is done. Default: 0 (no timeout).', type=int)
     p.add_argument('--enable-flush', help='Pass flush to NVMe when volatile write cache is present',
@@ -477,8 +498,11 @@ def add_parser(subparsers):
         args.client.bdev_nvme_set_hotplug(enable=args.enable, period_us=args.period_us)
 
     p = subparsers.add_parser('bdev_nvme_set_hotplug', help='Set hotplug options for bdev nvme type.')
-    p.add_argument('-d', '--disable', dest='enable', default=False, action='store_false', help="Disable hotplug (default)")
-    p.add_argument('-e', '--enable', dest='enable', action='store_true', help="Enable hotplug")
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('-d', '--disable', dest='enable', action=DeprecateFalseAction, help="Disable hotplug (default)", default=False)
+    group.add_argument('-e', '--enable', dest='enable', action=DeprecateTrueAction, help="Enable hotplug")
+    group.add_argument('--hotplug', dest='enable', action=argparse.BooleanOptionalAction, help='Enable or disable hotplug')
     p.add_argument('-r', '--period-us',
                    help='How often the hotplug is processed for insert and remove events', type=int)
     p.set_defaults(func=bdev_nvme_set_hotplug)
@@ -566,7 +590,7 @@ def add_parser(subparsers):
                    name of a key attached to the keyring or a path to a file containing the key.  The
                    latter method is deprecated.""")
     p.add_argument('-m', '--max-bdevs', type=int,
-                   help='The size of the name array for newly created bdevs. Default is 128',)
+                   help='The size of the name array for newly created bdevs. Default is 128')
     p.add_argument('--dhchap-key', help='DH-HMAC-CHAP key name')
     p.add_argument('--dhchap-ctrlr-key', help='DH-HMAC-CHAP controller key name')
     p.add_argument('-U', '--allow-unrecognized-csi', help="""Allow attaching namespaces with unrecognized command set identifiers.
@@ -818,7 +842,7 @@ def add_parser(subparsers):
                 config_param[parts[0]] = parts[1]
         print_json(args.client.bdev_rbd_register_cluster(
                                                       name=args.name,
-                                                      user_id=args.user,
+                                                      user_id=args.user_id,
                                                       config_param=config_param,
                                                       config_file=args.config_file,
                                                       key_file=args.key_file,
@@ -827,7 +851,7 @@ def add_parser(subparsers):
     p = subparsers.add_parser('bdev_rbd_register_cluster',
                               help='Add a Rados cluster with ceph rbd backend')
     p.add_argument('name', help="Name of the Rados cluster only known to rbd bdev")
-    p.add_argument('--user', help="Ceph user name (i.e. admin, not client.admin)")
+    p.add_argument('--user', dest='user_id', help="Ceph user name (i.e. admin, not client.admin)")
     p.add_argument('--config-param', action='append', metavar='key=value',
                    help="adds a key=value configuration option for rados_conf_set (default: rely on config file)")
     p.add_argument('--config-file', help="The file path of the Rados configuration file")
@@ -862,7 +886,7 @@ def add_parser(subparsers):
                 config[parts[0]] = parts[1]
         print_json(args.client.bdev_rbd_create(
                                             name=args.name,
-                                            user_id=args.user,
+                                            user_id=args.user_id,
                                             config=config,
                                             pool_name=args.pool_name,
                                             rbd_name=args.rbd_name,
@@ -876,7 +900,7 @@ def add_parser(subparsers):
 
     p = subparsers.add_parser('bdev_rbd_create', help='Add a bdev with ceph rbd backend')
     p.add_argument('-b', '--name', help="Name of the bdev")
-    p.add_argument('--user', help="Ceph user name (i.e. admin, not client.admin)")
+    p.add_argument('--user', dest='user_id', help="Ceph user name (i.e. admin, not client.admin)")
     p.add_argument('--config', action='append', metavar='key=value',
                    help="adds a key=value configuration option for rados_conf_set (default: rely on config file)")
     p.add_argument('pool_name', help='rbd pool name')
@@ -885,7 +909,7 @@ def add_parser(subparsers):
     p.add_argument('block_size', help='rbd block size', type=int)
     p.add_argument('-c', '--cluster-name', help="cluster name to identify the Rados cluster")
     p.add_argument('-u', '--uuid', help="UUID of the bdev")
-    p.add_argument("-r", "--readonly", dest='read_only', action='store_true', help='Set this bdev as read-only')
+    p.add_argument('-r', '--readonly', dest='read_only', action='store_true', help='Set this bdev as read-only')
     p.add_argument('-e', '--encryption-format', nargs='+', help="Encryption format(s) of the bdev")
     p.add_argument('-p', '--passphrase', nargs='+', help="Pass phrase(s) for encrypted bdevs")
     p.set_defaults(func=bdev_rbd_create)
@@ -900,12 +924,12 @@ def add_parser(subparsers):
     def bdev_rbd_resize(args):
         print_json(args.client.bdev_rbd_resize(
                                             name=args.name,
-                                            new_size=int(args.new_size)))
+                                            new_size=args.new_size))
 
     p = subparsers.add_parser('bdev_rbd_resize',
                               help='Resize a rbd bdev')
     p.add_argument('name', help='rbd bdev name')
-    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB')
+    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB', type=int)
     p.set_defaults(func=bdev_rbd_resize)
 
     def bdev_delay_create(args):
@@ -914,9 +938,9 @@ def add_parser(subparsers):
                                               name=args.name,
                                               uuid=args.uuid,
                                               avg_read_latency=args.avg_read_latency,
-                                              p99_read_latency=args.nine_nine_read_latency,
+                                              p99_read_latency=args.p99_read_latency,
                                               avg_write_latency=args.avg_write_latency,
-                                              p99_write_latency=args.nine_nine_write_latency))
+                                              p99_write_latency=args.p99_write_latency))
 
     p = subparsers.add_parser('bdev_delay_create',
                               help='Add a delay bdev on existing bdev')
@@ -925,11 +949,11 @@ def add_parser(subparsers):
     p.add_argument('-u', '--uuid', help='UUID of the bdev (optional)')
     p.add_argument('-r', '--avg-read-latency',
                    help="Average latency to apply before completing read ops (in microseconds)", required=True, type=int)
-    p.add_argument('-t', '--nine-nine-read-latency',
+    p.add_argument('-t', '--nine-nine-read-latency', dest='p99_read_latency',
                    help="latency to apply to 1 in 100 read ops (in microseconds)", required=True, type=int)
     p.add_argument('-w', '--avg-write-latency',
                    help="Average latency to apply before completing write ops (in microseconds)", required=True, type=int)
-    p.add_argument('-n', '--nine-nine-write-latency',
+    p.add_argument('-n', '--nine-nine-write-latency', dest='p99_write_latency',
                    help="latency to apply to 1 in 100 write ops (in microseconds)", required=True, type=int)
     p.set_defaults(func=bdev_delay_create)
 
@@ -1016,30 +1040,38 @@ def add_parser(subparsers):
     p.set_defaults(func=bdev_passthru_delete)
 
     def bdev_get_bdevs(args):
-        print_dict(args.client.bdev_get_bdevs(name=args.name, timeout=args.timeout_ms))
+        print_dict(args.client.bdev_get_bdevs(name=args.name, timeout=args.timeout))
 
     p = subparsers.add_parser('bdev_get_bdevs',
                               help='Display current blockdev list or required blockdev')
     p.add_argument('-b', '--name', help="Name of the Blockdev. Example: Nvme0n1")
-    p.add_argument('-t', '--timeout-ms', help="""Time in ms to wait for the bdev to appear (only used
+    p.add_argument('-t', '--timeout-ms', dest='timeout', help="""Time in ms to wait for the bdev to appear (only used
     with the -b|--name option). The default timeout is 0, meaning the RPC returns immediately
     whether the bdev exists or not.""",
                    type=int)
     p.set_defaults(func=bdev_get_bdevs)
 
     def bdev_get_iostat(args):
+        names = None
+        if args.names:
+            names = []
+            for i in args.names.strip().split(','):
+                names.append(i)
         print_dict(args.client.bdev_get_iostat(
                                             name=args.name,
                                             per_channel=args.per_channel,
-                                            reset_mode=args.reset_mode))
+                                            reset_mode=args.reset_mode,
+                                            names=names))
 
     p = subparsers.add_parser('bdev_get_iostat',
                               help='Display current I/O statistics of all the blockdevs or specified blockdev.')
-    p.add_argument('-b', '--name', help="Name of the Blockdev. Example: Nvme0n1")
     p.add_argument('-c', '--per-channel', default=False, dest='per_channel', help='Display per channel IO stats for specified device',
                    action='store_true')
-    p.add_argument('--reset-mode', help="Mode to reset I/O statistics after getting", choices=['all', 'maxmin', 'none'])
+    p.add_argument('--reset-mode', help="Mode to reset I/O statistics after getting", choices=['all', 'maxmin', 'error', 'none'])
     p.set_defaults(func=bdev_get_iostat)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument('-b', '--name', help="Name of the Blockdev. Example: Nvme0n1")
+    group.add_argument('--names', help='Bdev names to obtain I/O statistics from, comma-separated list in quotes')
 
     def bdev_reset_iostat(args):
         args.client.bdev_reset_iostat(name=args.name, mode=args.mode)
@@ -1047,7 +1079,7 @@ def add_parser(subparsers):
     p = subparsers.add_parser('bdev_reset_iostat',
                               help='Reset I/O statistics of all the blockdevs or specified blockdev.')
     p.add_argument('-b', '--name', help="Name of the Blockdev. Example: Nvme0n1")
-    p.add_argument('-m', '--mode', help="Mode to reset I/O statistics", choices=['all', 'maxmin', 'none'])
+    p.add_argument('-m', '--mode', help="Mode to reset I/O statistics", choices=['all', 'maxmin', 'error', 'none'])
     p.set_defaults(func=bdev_reset_iostat)
 
     def bdev_enable_histogram(args):
@@ -1056,8 +1088,14 @@ def add_parser(subparsers):
 
     p = subparsers.add_parser('bdev_enable_histogram',
                               help='Enable or disable histogram for specified bdev')
-    p.add_argument('-e', '--enable', default=True, dest='enable', action='store_true', help='Enable histograms on specified device')
-    p.add_argument('-d', '--disable', dest='enable', action='store_false', help='Disable histograms on specified device')
+    # TODO: this group is deprecated, remove in next version
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('-e', '--enable',  dest='enable', action=DeprecateTrueAction,
+                       help='Enable histograms on specified device', default=True)
+    group.add_argument('-d', '--disable', dest='enable', action=DeprecateFalseAction,
+                       help='Disable histograms on specified device')
+    group.add_argument('--histogram', dest='enable', action=argparse.BooleanOptionalAction,
+                       help='Enable or disable histograms on specified device')
     p.add_argument('-o', '--opc', help='Enable histogram for specified io type. Defaults to all io types if not specified.'
                    ' Refer to bdev_get_bdevs RPC for the list of io types.')
     p.add_argument('--granularity', help='Histogram bucket granularity.', type=int)
@@ -1290,6 +1328,7 @@ def add_parser(subparsers):
     p.set_defaults(func=bdev_ftl_create)
 
     def bdev_ftl_load(args):
+        print("bdev_ftl_load RPC is deprecated, use bdev_ftl_create instead", file=sys.stderr)
         print_dict(args.client.bdev_ftl_load(
                                           name=args.name,
                                           base_bdev=args.base_bdev,
@@ -1317,6 +1356,7 @@ def add_parser(subparsers):
     p.set_defaults(func=bdev_ftl_load)
 
     def bdev_ftl_unload(args):
+        print("bdev_ftl_unload RPC is deprecated, use bdev_ftl_delete instead", file=sys.stderr)
         print_dict(args.client.bdev_ftl_unload(name=args.name, fast_shutdown=args.fast_shutdown))
 
     p = subparsers.add_parser('bdev_ftl_unload', help='Unload FTL bdev')
@@ -1359,12 +1399,12 @@ def add_parser(subparsers):
 
     def bdev_ftl_set_property(args):
         print_dict(args.client.bdev_ftl_set_property(name=args.name,
-                   ftl_property=args.property,
+                   ftl_property=args.ftl_property,
                    value=args.value))
 
     p = subparsers.add_parser('bdev_ftl_set_property', help='Set FTL property')
     p.add_argument('-b', '--name', help="Name of the bdev", required=True)
-    p.add_argument('-p', '--property', help="Name of the property to be set", required=True)
+    p.add_argument('-p', '--property', dest='ftl_property', help="Name of the property to be set", required=True)
     p.add_argument('-v', '--value', help="Value of the property", required=True)
     p.set_defaults(func=bdev_ftl_set_property)
 
@@ -1375,8 +1415,8 @@ def add_parser(subparsers):
                                      password=args.password)
 
     p = subparsers.add_parser('bdev_nvme_opal_init', help='take ownership and activate')
-    p.add_argument('-b', '--nvme-ctrlr-name', help='nvme ctrlr name')
-    p.add_argument('-p', '--password', help='password for admin')
+    p.add_argument('-b', '--nvme-ctrlr-name', help='nvme ctrlr name', required=True)
+    p.add_argument('-p', '--password', help='password for admin', required=True)
     p.set_defaults(func=bdev_nvme_opal_init)
 
     def bdev_nvme_opal_revert(args):
@@ -1384,8 +1424,8 @@ def add_parser(subparsers):
                                        nvme_ctrlr_name=args.nvme_ctrlr_name,
                                        password=args.password)
     p = subparsers.add_parser('bdev_nvme_opal_revert', help='Revert to default factory settings')
-    p.add_argument('-b', '--nvme-ctrlr-name', help='nvme ctrlr name')
-    p.add_argument('-p', '--password', help='password')
+    p.add_argument('-b', '--nvme-ctrlr-name', help='nvme ctrlr name', required=True)
+    p.add_argument('-p', '--password', help='password', required=True)
     p.set_defaults(func=bdev_nvme_opal_revert)
 
     def bdev_opal_create(args):
@@ -1412,8 +1452,8 @@ def add_parser(subparsers):
                                                password=args.password))
 
     p = subparsers.add_parser('bdev_opal_get_info', help='get opal locking range info for this bdev')
-    p.add_argument('-b', '--bdev-name', help='opal bdev')
-    p.add_argument('-p', '--password', help='password')
+    p.add_argument('-b', '--bdev-name', help='opal bdev', required=True)
+    p.add_argument('-p', '--password', help='password', required=True)
     p.set_defaults(func=bdev_opal_get_info)
 
     def bdev_opal_delete(args):
@@ -1458,25 +1498,26 @@ def add_parser(subparsers):
     # bdev_nvme_send_cmd
     def bdev_nvme_send_cmd(args):
         print_dict(args.client.bdev_nvme_send_cmd(
-                                               name=args.nvme_name,
+                                               name=args.name,
                                                cmd_type=args.cmd_type,
                                                data_direction=args.data_direction,
                                                cmdbuf=args.cmdbuf,
                                                data=args.data,
                                                metadata=args.metadata,
-                                               data_len=args.data_length,
-                                               metadata_len=args.metadata_length,
+                                               data_len=args.data_len,
+                                               metadata_len=args.metadata_len,
                                                timeout_ms=args.timeout_ms))
 
     p = subparsers.add_parser('bdev_nvme_send_cmd', help='NVMe passthrough cmd.')
-    p.add_argument('-n', '--nvme-name', help="""Name of the operating NVMe controller""")
-    p.add_argument('-t', '--cmd-type', help="""Type of nvme cmd. Valid values are: admin, io""")
-    p.add_argument('-r', '--data-direction', help="""Direction of data transfer. Valid values are: c2h, h2c""")
-    p.add_argument('-c', '--cmdbuf', help="""NVMe command encoded by base64 urlsafe""")
+    p.add_argument('-n', '--nvme-name', dest='name', help="""Name of the operating NVMe controller""", required=True)
+    p.add_argument('-t', '--cmd-type', help="""Type of nvme cmd. Valid values are: admin, io""", required=True)
+    p.add_argument('-r', '--data-direction', help="""Direction of data transfer. Valid values are: c2h, h2c""", required=True)
+    p.add_argument('-c', '--cmdbuf', help="""NVMe command encoded by base64 urlsafe""", required=True)
     p.add_argument('-d', '--data', help="""Data transferring to controller from host, encoded by base64 urlsafe""")
     p.add_argument('-m', '--metadata', help="""Metadata transferring to controller from host, encoded by base64 urlsafe""")
-    p.add_argument('-D', '--data-length', help="""Data length required to transfer from controller to host""", type=int)
-    p.add_argument('-M', '--metadata-length', help="""Metadata length required to transfer from controller to host""", type=int)
+    p.add_argument('-D', '--data-length', dest='data_len', help="""Data length required to transfer from controller to host""", type=int)
+    p.add_argument('-M', '--metadata-length', dest='metadata_len',
+                   help="""Metadata length required to transfer from controller to host""", type=int)
     p.add_argument('-T', '--timeout-ms',
                    help="""Command execution timeout value, in milliseconds,  if 0, don't track timeout""", type=int)
     p.set_defaults(func=bdev_nvme_send_cmd)
@@ -1484,7 +1525,7 @@ def add_parser(subparsers):
     # bdev_nvme_add_error_injection
     def bdev_nvme_add_error_injection(args):
         print_dict(args.client.bdev_nvme_add_error_injection(
-                                                          name=args.nvme_name,
+                                                          name=args.name,
                                                           cmd_type=args.cmd_type,
                                                           opc=args.opc,
                                                           do_not_submit=args.do_not_submit,
@@ -1494,7 +1535,7 @@ def add_parser(subparsers):
                                                           sc=args.sc))
     p = subparsers.add_parser('bdev_nvme_add_error_injection',
                               help='Add a NVMe command error injection.')
-    p.add_argument('-n', '--nvme-name', help="""Name of the operating NVMe controller""", required=True)
+    p.add_argument('-n', '--nvme-name', dest='name', help="""Name of the operating NVMe controller""", required=True)
     p.add_argument('-t', '--cmd-type', help="""Type of NVMe command. Valid values are: admin, io""", required=True)
     p.add_argument('-o', '--opc', help="""Opcode of the NVMe command.""", required=True, type=int)
     p.add_argument('-s', '--do-not-submit',
@@ -1509,12 +1550,12 @@ def add_parser(subparsers):
     # bdev_nvme_remove_error_injection
     def bdev_nvme_remove_error_injection(args):
         print_dict(args.client.bdev_nvme_remove_error_injection(
-                                                             name=args.nvme_name,
+                                                             name=args.name,
                                                              cmd_type=args.cmd_type,
                                                              opc=args.opc))
     p = subparsers.add_parser('bdev_nvme_remove_error_injection',
                               help='Removes a NVMe command error injection.')
-    p.add_argument('-n', '--nvme-name', help="""Name of the operating NVMe controller""", required=True)
+    p.add_argument('-n', '--nvme-name', dest='name', help="""Name of the operating NVMe controller""", required=True)
     p.add_argument('-t', '--cmd-type', help="""Type of nvme cmd. Valid values are: admin, io""", required=True)
     p.add_argument('-o', '--opc', help="""Opcode of the nvme cmd.""", required=True, type=int)
     p.set_defaults(func=bdev_nvme_remove_error_injection)
@@ -1553,10 +1594,10 @@ def add_parser(subparsers):
     def bdev_daos_resize(args):
         print_json(args.client.bdev_daos_resize(
                                              name=args.name,
-                                             new_size=int(args.new_size)))
+                                             new_size=args.new_size))
 
     p = subparsers.add_parser('bdev_daos_resize',
                               help='Resize a DAOS bdev')
     p.add_argument('name', help='DAOS bdev name')
-    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB')
+    p.add_argument('new_size', help='new bdev size for resize operation. The unit is MiB', type=int)
     p.set_defaults(func=bdev_daos_resize)

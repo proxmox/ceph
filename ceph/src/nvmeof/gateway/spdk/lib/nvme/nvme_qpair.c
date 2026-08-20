@@ -1008,6 +1008,8 @@ nvme_qpair_deinit(struct spdk_nvme_qpair *qpair)
 {
 	struct nvme_error_cmd *cmd, *entry;
 
+	assert(!qpair->fabric_poll_status);
+
 	nvme_qpair_abort_queued_reqs(qpair);
 	_nvme_qpair_complete_abort_queued_reqs(qpair);
 	nvme_qpair_complete_error_reqs(qpair);
@@ -1104,7 +1106,7 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 	}
 
 	/* assign submit_tick before submitting req to specific transport */
-	if (spdk_unlikely(ctrlr->timeout_enabled)) {
+	if (ctrlr->timeout_enabled) {
 		if (req->submit_tick == 0) { /* req submitted for the first time */
 			req->submit_tick = spdk_get_ticks();
 			req->timed_out = false;

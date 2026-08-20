@@ -4,14 +4,15 @@
 #  All rights reserved.
 
 
-import shutil
-import subprocess
 import argparse
+import glob
 import itertools
 import os
-import sys
-import glob
 import re
+import shutil
+import subprocess
+import sys
+
 import pandas as pd
 
 
@@ -68,7 +69,7 @@ def generateCoverageReport(output_dir, repo_dir):
         '--rc', 'genhtml_branch_coverage=1',
         '--rc', 'genhtml_function_coverage=1',
         '--rc', 'genhtml_legend=1',
-        '--rc', 'geninfo_all_blocks=1'
+        '--rc', 'geninfo_all_blocks=1',
     ]
 
     # HACK: This is a workaround for some odd CI assumptions

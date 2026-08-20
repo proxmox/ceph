@@ -20,6 +20,7 @@ DEPDIRS-rte_vhost :=
 DEPDIRS-env_dpdk := log util
 
 DEPDIRS-ioat := log
+DEPDIRS-ae4dma := log util
 DEPDIRS-idxd := log util
 DEPDIRS-sock := log $(JSON_LIBS) trace util
 DEPDIRS-util := log
@@ -106,6 +107,7 @@ DEPDIRS-blob_bdev := log thread bdev
 
 # module/accel
 DEPDIRS-accel_ioat := log ioat thread $(JSON_LIBS) accel
+DEPDIRS-accel_ae4dma := log ae4dma thread $(JSON_LIBS) accel
 DEPDIRS-accel_dsa := log util idxd thread $(JSON_LIBS) accel trace
 DEPDIRS-accel_iaa := log util idxd thread $(JSON_LIBS) accel trace
 DEPDIRS-accel_dpdk_cryptodev := log thread $(JSON_LIBS) accel util
@@ -116,12 +118,16 @@ ifeq ($(CONFIG_RDMA_PROV),mlx5_dv)
 DEPDIRS-accel_mlx5 := accel thread log mlx5 rdma_utils util
 endif
 
+ifeq ($(CONFIG_CUDA),y)
+DEPDIRS-accel_cuda := accel thread log jsonrpc rpc
+endif
+
 # module/env_dpdk
 DEPDIRS-env_dpdk_rpc := $(JSON_LIBS)
 
 # module/sock
-DEPDIRS-sock_posix := log sock util thread trace
-DEPDIRS-sock_uring := log sock util thread trace
+DEPDIRS-sock_posix := log sock util trace
+DEPDIRS-sock_uring := log sock util trace
 
 # module/scheduler
 DEPDIRS-scheduler_dynamic := event log thread util json
@@ -187,7 +193,7 @@ DEPDIRS-event_scsi := init scsi event_bdev
 DEPDIRS-event_iscsi := init iscsi event_scheduler event_scsi event_sock
 DEPDIRS-event_vhost_blk := init vhost
 DEPDIRS-event_vhost_scsi := init vhost event_scheduler event_scsi
-DEPDIRS-event_sock := init sock log
+DEPDIRS-event_sock := init sock log util thread
 DEPDIRS-event_vfu_tgt := init vfu_tgt
 DEPDIRS-event_iobuf := init log thread util $(JSON_LIBS)
 DEPDIRS-event_keyring := init json keyring

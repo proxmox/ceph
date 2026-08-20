@@ -151,7 +151,7 @@ struct rpc_get_subsystem {
 	char *tgt_name;
 };
 
-static const struct spdk_json_object_decoder rpc_get_subsystem_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_get_subsystems_decoders[] = {
 	{"nqn", offsetof(struct rpc_get_subsystem, nqn), spdk_json_decode_string, true},
 	{"tgt_name", offsetof(struct rpc_get_subsystem, tgt_name), spdk_json_decode_string, true},
 };
@@ -174,14 +174,13 @@ dump_nvmf_subsystem(struct spdk_json_write_ctx *w, struct spdk_nvmf_subsystem *s
 
 	spdk_json_write_named_array_begin(w, "listen_addresses");
 
-	for (listener = spdk_nvmf_subsystem_get_first_listener(subsystem); listener != NULL;
-	     listener = spdk_nvmf_subsystem_get_next_listener(subsystem, listener)) {
-		const struct spdk_nvme_transport_id *trid;
-
-		trid = spdk_nvmf_subsystem_listener_get_trid(listener);
+	TAILQ_FOREACH(listener, &subsystem->listeners, link) {
+		if (!nvmf_subsystem_listener_is_active(listener)) {
+			continue;
+		}
 
 		spdk_json_write_object_begin(w);
-		nvmf_transport_listen_dump_trid(trid, w);
+		nvmf_transport_listen_dump_trid(listener->trid, w);
 		spdk_json_write_object_end(w);
 	}
 	spdk_json_write_array_end(w);
@@ -220,6 +219,8 @@ dump_nvmf_subsystem(struct spdk_json_write_ctx *w, struct spdk_nvmf_subsystem *s
 		if (max_namespaces != 0) {
 			spdk_json_write_named_uint32(w, "max_namespaces", max_namespaces);
 		}
+
+		spdk_json_write_named_bool(w, "passthrough", subsystem->passthrough);
 
 		spdk_json_write_named_uint32(w, "min_cntlid", spdk_nvmf_subsystem_get_min_cntlid(subsystem));
 		spdk_json_write_named_uint32(w, "max_cntlid", spdk_nvmf_subsystem_get_max_cntlid(subsystem));
@@ -271,8 +272,8 @@ rpc_nvmf_get_subsystems(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_get_subsystem_decoders,
-					    SPDK_COUNTOF(rpc_get_subsystem_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_get_subsystems_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_get_subsystems_decoders),
 					    &req)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -625,7 +626,7 @@ struct rpc_subsystem_create {
 	bool enable_nssr;
 };
 
-static const struct spdk_json_object_decoder rpc_subsystem_create_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_create_subsystem_decoders[] = {
 	{"nqn", offsetof(struct rpc_subsystem_create, nqn), spdk_json_decode_string},
 	{"serial_number", offsetof(struct rpc_subsystem_create, serial_number), spdk_json_decode_string, true},
 	{"model_number", offsetof(struct rpc_subsystem_create, model_number), spdk_json_decode_string, true},
@@ -676,8 +677,8 @@ rpc_nvmf_create_subsystem(struct spdk_jsonrpc_request *request,
 	req->min_cntlid = NVMF_MIN_CNTLID;
 	req->max_cntlid = NVMF_MAX_CNTLID;
 
-	if (spdk_json_decode_object(params, rpc_subsystem_create_decoders,
-				    SPDK_COUNTOF(rpc_subsystem_create_decoders),
+	if (spdk_json_decode_object(params, rpc_nvmf_create_subsystem_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_create_subsystem_decoders),
 				    req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -812,7 +813,7 @@ rpc_nvmf_subsystem_stopped(struct spdk_nvmf_subsystem *subsystem,
 	spdk_jsonrpc_send_bool_response(request, true);
 }
 
-static const struct spdk_json_object_decoder rpc_delete_subsystem_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_delete_subsystem_decoders[] = {
 	{"nqn", offsetof(struct rpc_delete_subsystem, nqn), spdk_json_decode_string},
 	{"tgt_name", offsetof(struct rpc_delete_subsystem, tgt_name), spdk_json_decode_string, true},
 };
@@ -826,8 +827,8 @@ rpc_nvmf_delete_subsystem(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_delete_subsystem_decoders,
-				    SPDK_COUNTOF(rpc_delete_subsystem_decoders),
+	if (spdk_json_decode_object(params, rpc_nvmf_delete_subsystem_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_delete_subsystem_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
@@ -881,7 +882,7 @@ struct rpc_listen_address {
 	char *trsvcid;
 };
 
-static const struct spdk_json_object_decoder rpc_listen_address_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_listen_address_decoders[] = {
 	{"trtype", offsetof(struct rpc_listen_address, trtype), spdk_json_decode_string, true},
 	{"adrfam", offsetof(struct rpc_listen_address, adrfam), spdk_json_decode_string, true},
 	{"traddr", offsetof(struct rpc_listen_address, traddr), spdk_json_decode_string},
@@ -893,8 +894,8 @@ decode_rpc_listen_address(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_listen_address *req = (struct rpc_listen_address *)out;
 
-	return spdk_json_decode_object(val, rpc_listen_address_decoders,
-				       SPDK_COUNTOF(rpc_listen_address_decoders), req);
+	return spdk_json_decode_object(val, rpc_nvmf_listen_address_decoders,
+				       SPDK_COUNTOF(rpc_nvmf_listen_address_decoders), req);
 }
 
 static void
@@ -937,7 +938,7 @@ struct nvmf_rpc_listener_ctx {
 	struct spdk_nvmf_listener_opts	listener_opts;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_listener_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_add_listener_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_listener_ctx, nqn), spdk_json_decode_string},
 	{"listen_address", offsetof(struct nvmf_rpc_listener_ctx, address), decode_rpc_listen_address},
 	{"tgt_name", offsetof(struct nvmf_rpc_listener_ctx, tgt_name), spdk_json_decode_string, true},
@@ -1171,8 +1172,8 @@ rpc_nvmf_subsystem_add_listener(struct spdk_jsonrpc_request *request,
 
 	spdk_nvmf_subsystem_listener_opts_init(&ctx->listener_opts, sizeof(ctx->listener_opts));
 
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_listener_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_listener_decoder),
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_subsystem_add_listener_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_subsystem_add_listener_decoders),
 					    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object_relaxed failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -1239,6 +1240,12 @@ rpc_nvmf_subsystem_add_listener(struct spdk_jsonrpc_request *request,
 SPDK_RPC_REGISTER("nvmf_subsystem_add_listener", rpc_nvmf_subsystem_add_listener,
 		  SPDK_RPC_RUNTIME);
 
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_remove_listener_decoders[] = {
+	{"nqn", offsetof(struct nvmf_rpc_listener_ctx, nqn), spdk_json_decode_string},
+	{"listen_address", offsetof(struct nvmf_rpc_listener_ctx, address), decode_rpc_listen_address},
+	{"tgt_name", offsetof(struct nvmf_rpc_listener_ctx, tgt_name), spdk_json_decode_string, true},
+};
+
 static void
 rpc_nvmf_subsystem_remove_listener(struct spdk_jsonrpc_request *request,
 				   const struct spdk_json_val *params)
@@ -1256,8 +1263,8 @@ rpc_nvmf_subsystem_remove_listener(struct spdk_jsonrpc_request *request,
 
 	ctx->request = request;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_listener_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_listener_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_remove_listener_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_remove_listener_decoders),
 				    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -1320,7 +1327,7 @@ struct nvmf_rpc_referral_ctx {
 	char				*subnqn;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_referral_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_discovery_add_referral_decoders[] = {
 	{"address", offsetof(struct nvmf_rpc_referral_ctx, address), decode_rpc_listen_address},
 	{"tgt_name", offsetof(struct nvmf_rpc_referral_ctx, tgt_name), spdk_json_decode_string, true},
 	{"secure_channel", offsetof(struct nvmf_rpc_referral_ctx, secure_channel), spdk_json_decode_bool, true},
@@ -1336,8 +1343,8 @@ nvmf_rpc_referral_ctx_free(struct nvmf_rpc_referral_ctx *ctx)
 }
 
 static void
-rpc_nvmf_add_referral(struct spdk_jsonrpc_request *request,
-		      const struct spdk_json_val *params)
+rpc_nvmf_discovery_add_referral(struct spdk_jsonrpc_request *request,
+				const struct spdk_json_val *params)
 {
 	struct nvmf_rpc_referral_ctx ctx = {};
 	struct spdk_nvme_transport_id trid = {};
@@ -1345,8 +1352,8 @@ rpc_nvmf_add_referral(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_referral_opts opts = {};
 	int rc;
 
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_referral_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_referral_decoder),
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_discovery_add_referral_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_discovery_add_referral_decoders),
 					    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object_relaxed failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -1390,9 +1397,10 @@ rpc_nvmf_add_referral(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	opts.size = SPDK_SIZEOF(&opts, secure_channel);
+	opts.size = SPDK_SIZEOF(&opts, allow_any_host);
 	opts.trid = trid;
 	opts.secure_channel = ctx.secure_channel;
+	opts.allow_any_host = true;
 
 	rc = spdk_nvmf_tgt_add_referral(tgt, &opts);
 	if (rc != 0) {
@@ -1407,12 +1415,17 @@ rpc_nvmf_add_referral(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_send_bool_response(request, true);
 }
 
-SPDK_RPC_REGISTER("nvmf_discovery_add_referral", rpc_nvmf_add_referral,
-		  SPDK_RPC_RUNTIME);
+SPDK_RPC_REGISTER("nvmf_discovery_add_referral", rpc_nvmf_discovery_add_referral, SPDK_RPC_RUNTIME);
+
+static const struct spdk_json_object_decoder rpc_nvmf_discovery_remove_referral_decoders[] = {
+	{"address", offsetof(struct nvmf_rpc_referral_ctx, address), decode_rpc_listen_address},
+	{"tgt_name", offsetof(struct nvmf_rpc_referral_ctx, tgt_name), spdk_json_decode_string, true},
+	{"subnqn", offsetof(struct nvmf_rpc_referral_ctx, subnqn), spdk_json_decode_string, true},
+};
 
 static void
-rpc_nvmf_remove_referral(struct spdk_jsonrpc_request *request,
-			 const struct spdk_json_val *params)
+rpc_nvmf_discovery_remove_referral(struct spdk_jsonrpc_request *request,
+				   const struct spdk_json_val *params)
 {
 	struct nvmf_rpc_referral_ctx ctx = {};
 	struct spdk_nvme_transport_id trid = {};
@@ -1420,8 +1433,8 @@ rpc_nvmf_remove_referral(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 	int rc;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_referral_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_referral_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_discovery_remove_referral_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_discovery_remove_referral_decoders),
 				    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -1471,7 +1484,7 @@ rpc_nvmf_remove_referral(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_send_bool_response(request, true);
 }
 
-SPDK_RPC_REGISTER("nvmf_discovery_remove_referral", rpc_nvmf_remove_referral,
+SPDK_RPC_REGISTER("nvmf_discovery_remove_referral", rpc_nvmf_discovery_remove_referral,
 		  SPDK_RPC_RUNTIME);
 
 static void
@@ -1494,7 +1507,7 @@ struct rpc_get_referrals_ctx {
 	char *tgt_name;
 };
 
-static const struct spdk_json_object_decoder rpc_get_referrals_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_discovery_get_referrals_decoders[] = {
 	{"tgt_name", offsetof(struct rpc_get_referrals_ctx, tgt_name), spdk_json_decode_string, true},
 };
 
@@ -1506,8 +1519,8 @@ free_rpc_get_referrals_ctx(struct rpc_get_referrals_ctx *ctx)
 }
 
 static void
-rpc_nvmf_get_referrals(struct spdk_jsonrpc_request *request,
-		       const struct spdk_json_val *params)
+rpc_nvmf_discovery_get_referrals(struct spdk_jsonrpc_request *request,
+				 const struct spdk_json_val *params)
 {
 	struct rpc_get_referrals_ctx *ctx;
 	struct spdk_nvmf_tgt *tgt;
@@ -1522,8 +1535,8 @@ rpc_nvmf_get_referrals(struct spdk_jsonrpc_request *request,
 	}
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_get_referrals_decoders,
-					    SPDK_COUNTOF(rpc_get_referrals_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_discovery_get_referrals_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_discovery_get_referrals_decoders),
 					    ctx)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -1556,10 +1569,11 @@ rpc_nvmf_get_referrals(struct spdk_jsonrpc_request *request,
 
 	free_rpc_get_referrals_ctx(ctx);
 }
-SPDK_RPC_REGISTER("nvmf_discovery_get_referrals", rpc_nvmf_get_referrals,
+SPDK_RPC_REGISTER("nvmf_discovery_get_referrals", rpc_nvmf_discovery_get_referrals,
 		  SPDK_RPC_RUNTIME);
 
-static const struct spdk_json_object_decoder nvmf_rpc_set_ana_state_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_listener_set_ana_state_decoders[] =
+{
 	{"nqn", offsetof(struct nvmf_rpc_listener_ctx, nqn), spdk_json_decode_string},
 	{"listen_address", offsetof(struct nvmf_rpc_listener_ctx, address), decode_rpc_listen_address},
 	{"ana_state", offsetof(struct nvmf_rpc_listener_ctx, ana_state_str), spdk_json_decode_string},
@@ -1604,8 +1618,8 @@ rpc_nvmf_subsystem_listener_set_ana_state(struct spdk_jsonrpc_request *request,
 
 	ctx->request = request;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_set_ana_state_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_set_ana_state_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_listener_set_ana_state_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_listener_set_ana_state_decoders),
 				    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -1674,7 +1688,7 @@ struct nvmf_rpc_ns_params {
 	bool hide_metadata;
 };
 
-static const struct spdk_json_object_decoder rpc_ns_params_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_namespace_decoders[] = {
 	{"nsid", offsetof(struct nvmf_rpc_ns_params, nsid), spdk_json_decode_uint32, true},
 	{"bdev_name", offsetof(struct nvmf_rpc_ns_params, bdev_name), spdk_json_decode_string},
 	{"ptpl_file", offsetof(struct nvmf_rpc_ns_params, ptpl_file), spdk_json_decode_string, true},
@@ -1691,8 +1705,8 @@ decode_rpc_ns_params(const struct spdk_json_val *val, void *out)
 {
 	struct nvmf_rpc_ns_params *ns_params = out;
 
-	return spdk_json_decode_object(val, rpc_ns_params_decoders,
-				       SPDK_COUNTOF(rpc_ns_params_decoders),
+	return spdk_json_decode_object(val, rpc_nvmf_namespace_decoders,
+				       SPDK_COUNTOF(rpc_nvmf_namespace_decoders),
 				       ns_params);
 }
 
@@ -1706,7 +1720,7 @@ struct nvmf_rpc_ns_ctx {
 	bool response_sent;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_subsystem_ns_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_add_ns_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_ns_ctx, nqn), spdk_json_decode_string},
 	{"namespace", offsetof(struct nvmf_rpc_ns_ctx, ns_params), decode_rpc_ns_params},
 	{"tgt_name", offsetof(struct nvmf_rpc_ns_ctx, tgt_name), spdk_json_decode_string, true},
@@ -1840,8 +1854,8 @@ rpc_nvmf_subsystem_add_ns(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_subsystem_ns_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_subsystem_ns_decoder), ctx)) {
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_subsystem_add_ns_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_subsystem_add_ns_decoders), ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
 		nvmf_rpc_ns_ctx_free(ctx);
@@ -1887,7 +1901,7 @@ struct nvmf_rpc_ana_group_ctx {
 	bool response_sent;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_subsystem_ana_group_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_set_ns_ana_group_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_ana_group_ctx, nqn), spdk_json_decode_string},
 	{"nsid", offsetof(struct nvmf_rpc_ana_group_ctx, nsid), spdk_json_decode_uint32},
 	{"anagrpid", offsetof(struct nvmf_rpc_ana_group_ctx, anagrpid), spdk_json_decode_uint32},
@@ -1958,8 +1972,8 @@ rpc_nvmf_subsystem_set_ns_ana_group(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	if (spdk_json_decode_object(params, nvmf_rpc_subsystem_ana_group_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_subsystem_ana_group_decoder), ctx)) {
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_set_ns_ana_group_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_set_ns_ana_group_decoders), ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
 		nvmf_rpc_ana_group_ctx_free(ctx);
@@ -2122,7 +2136,7 @@ struct nvmf_rpc_remove_ns_ctx {
 	bool response_sent;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_subsystem_remove_ns_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_remove_ns_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_remove_ns_ctx, nqn), spdk_json_decode_string},
 	{"nsid", offsetof(struct nvmf_rpc_remove_ns_ctx, nsid), spdk_json_decode_uint32},
 	{"tgt_name", offsetof(struct nvmf_rpc_remove_ns_ctx, tgt_name), spdk_json_decode_string, true},
@@ -2191,8 +2205,8 @@ rpc_nvmf_subsystem_remove_ns(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	if (spdk_json_decode_object(params, nvmf_rpc_subsystem_remove_ns_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_subsystem_remove_ns_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_remove_ns_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_remove_ns_decoders),
 				    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2238,7 +2252,7 @@ struct nvmf_rpc_ns_visible_ctx {
 	bool response_sent;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_ns_visible_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_ns_add_host_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_ns_visible_ctx, nqn), spdk_json_decode_string},
 	{"nsid", offsetof(struct nvmf_rpc_ns_visible_ctx, nsid), spdk_json_decode_uint32},
 	{"host", offsetof(struct nvmf_rpc_ns_visible_ctx, host), spdk_json_decode_string},
@@ -2313,8 +2327,8 @@ nvmf_rpc_ns_visible(struct spdk_jsonrpc_request *request,
 	}
 	ctx->visible = visible;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_ns_visible_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_ns_visible_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_ns_add_host_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_ns_add_host_decoders),
 				    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2371,9 +2385,10 @@ struct nvmf_rpc_host_ctx {
 	char *dhchap_key;
 	char *dhchap_ctrlr_key;
 	bool allow_any_host;
+	bool keep_connections;
 };
 
-static const struct spdk_json_object_decoder nvmf_rpc_subsystem_host_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_add_host_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_host_ctx, nqn), spdk_json_decode_string},
 	{"host", offsetof(struct nvmf_rpc_host_ctx, host), spdk_json_decode_string},
 	{"tgt_name", offsetof(struct nvmf_rpc_host_ctx, tgt_name), spdk_json_decode_string, true},
@@ -2402,8 +2417,8 @@ rpc_nvmf_subsystem_add_host(struct spdk_jsonrpc_request *request,
 	struct spdk_key *key = NULL, *ckey = NULL;
 	int rc;
 
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_subsystem_host_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_subsystem_host_decoder),
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_subsystem_add_host_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_subsystem_add_host_decoders),
 					    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2474,6 +2489,13 @@ rpc_nvmf_subsystem_remove_host_done(void *_ctx, int status)
 	free(ctx);
 }
 
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_remove_host_decoders[] = {
+	{"nqn", offsetof(struct nvmf_rpc_host_ctx, nqn), spdk_json_decode_string},
+	{"host", offsetof(struct nvmf_rpc_host_ctx, host), spdk_json_decode_string},
+	{"keep_connections", offsetof(struct nvmf_rpc_host_ctx, keep_connections), spdk_json_decode_bool},
+	{"tgt_name", offsetof(struct nvmf_rpc_host_ctx, tgt_name), spdk_json_decode_string, true},
+};
+
 static void
 rpc_nvmf_subsystem_remove_host(struct spdk_jsonrpc_request *request,
 			       const struct spdk_json_val *params)
@@ -2492,8 +2514,8 @@ rpc_nvmf_subsystem_remove_host(struct spdk_jsonrpc_request *request,
 
 	ctx->request = request;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_subsystem_host_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_subsystem_host_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_remove_host_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_remove_host_decoders),
 				    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2529,9 +2551,15 @@ rpc_nvmf_subsystem_remove_host(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	rc = spdk_nvmf_subsystem_disconnect_host(subsystem, ctx->host,
-			rpc_nvmf_subsystem_remove_host_done,
-			ctx);
+	if (!ctx->keep_connections) {
+		rc = spdk_nvmf_subsystem_disconnect_host(subsystem, ctx->host,
+				rpc_nvmf_subsystem_remove_host_done,
+				ctx);
+	}
+	else {
+		SPDK_INFOLOG(nvmf, "Will not disconnect connections from host %s\n", ctx->host);
+		rpc_nvmf_subsystem_remove_host_done(ctx, 0);
+	}
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Internal error");
 		nvmf_rpc_host_ctx_free(ctx);
@@ -2553,8 +2581,8 @@ rpc_nvmf_subsystem_set_keys(struct spdk_jsonrpc_request *request,
 	struct spdk_key *key = NULL, *ckey = NULL;
 	int rc;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_subsystem_host_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_subsystem_host_decoder), &ctx)) {
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_add_host_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_add_host_decoders), &ctx)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
 		goto out;
@@ -2610,7 +2638,7 @@ out:
 }
 SPDK_RPC_REGISTER("nvmf_subsystem_set_keys", rpc_nvmf_subsystem_set_keys, SPDK_RPC_RUNTIME)
 
-static const struct spdk_json_object_decoder nvmf_rpc_subsystem_any_host_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_subsystem_allow_any_host_decoders[] = {
 	{"nqn", offsetof(struct nvmf_rpc_host_ctx, nqn), spdk_json_decode_string},
 	{"allow_any_host", offsetof(struct nvmf_rpc_host_ctx, allow_any_host), spdk_json_decode_bool},
 	{"tgt_name", offsetof(struct nvmf_rpc_host_ctx, tgt_name), spdk_json_decode_string, true},
@@ -2625,8 +2653,8 @@ rpc_nvmf_subsystem_allow_any_host(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 	int rc;
 
-	if (spdk_json_decode_object(params, nvmf_rpc_subsystem_any_host_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_subsystem_any_host_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_subsystem_allow_any_host_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_subsystem_allow_any_host_decoders),
 				    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2667,7 +2695,7 @@ SPDK_RPC_REGISTER("nvmf_subsystem_allow_any_host", rpc_nvmf_subsystem_allow_any_
 struct nvmf_rpc_target_ctx {
 	char *name;
 	uint32_t max_subsystems;
-	char *discovery_filter;
+	uint32_t discovery_filter;
 };
 
 static int
@@ -2721,7 +2749,7 @@ out:
 	return rc;
 }
 
-static const struct spdk_json_object_decoder nvmf_rpc_create_target_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_create_target_decoders[] = {
 	{"name", offsetof(struct nvmf_rpc_target_ctx, name), spdk_json_decode_string},
 	{"max_subsystems", offsetof(struct nvmf_rpc_target_ctx, max_subsystems), spdk_json_decode_uint32, true},
 	{"discovery_filter", offsetof(struct nvmf_rpc_target_ctx, discovery_filter), decode_discovery_filter, true}
@@ -2737,8 +2765,8 @@ rpc_nvmf_create_target(struct spdk_jsonrpc_request *request,
 	struct spdk_json_write_ctx	*w;
 
 	/* Decode parameters the first time to get the transport type */
-	if (spdk_json_decode_object(params, nvmf_rpc_create_target_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_create_target_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_create_target_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_create_target_decoders),
 				    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2747,6 +2775,7 @@ rpc_nvmf_create_target(struct spdk_jsonrpc_request *request,
 
 	snprintf(opts.name, NVMF_TGT_NAME_MAX_LENGTH, "%s", ctx.name);
 	opts.max_subsystems = ctx.max_subsystems;
+	opts.discovery_filter = ctx.discovery_filter;
 	opts.size = SPDK_SIZEOF(&opts, discovery_filter);
 
 	if (spdk_nvmf_get_tgt(opts.name) != NULL) {
@@ -2768,11 +2797,10 @@ rpc_nvmf_create_target(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 out:
 	free(ctx.name);
-	free(ctx.discovery_filter);
 }
 /* private */ SPDK_RPC_REGISTER("nvmf_create_target", rpc_nvmf_create_target, SPDK_RPC_RUNTIME);
 
-static const struct spdk_json_object_decoder nvmf_rpc_destroy_target_decoder[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_delete_target_decoders[] = {
 	{"name", offsetof(struct nvmf_rpc_target_ctx, name), spdk_json_decode_string},
 };
 
@@ -2792,8 +2820,8 @@ rpc_nvmf_delete_target(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt		*tgt;
 
 	/* Decode parameters the first time to get the transport type */
-	if (spdk_json_decode_object(params, nvmf_rpc_destroy_target_decoder,
-				    SPDK_COUNTOF(nvmf_rpc_destroy_target_decoder),
+	if (spdk_json_decode_object(params, rpc_nvmf_delete_target_decoders,
+				    SPDK_COUNTOF(rpc_nvmf_delete_target_decoders),
 				    &ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -2876,80 +2904,100 @@ nvmf_rpc_decode_max_io_qpairs(const struct spdk_json_val *val, void *out)
 	return rc;
 }
 
-static const struct spdk_json_object_decoder nvmf_rpc_create_transport_decoder[] = {
-	{	"trtype", offsetof(struct nvmf_rpc_create_transport_ctx, trtype), spdk_json_decode_string},
-	{
-		"max_queue_depth", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_queue_depth),
-		spdk_json_decode_uint16, true
-	},
-	{
-		"max_io_qpairs_per_ctrlr", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_qpairs_per_ctrlr),
-		nvmf_rpc_decode_max_io_qpairs, true
-	},
-	{
-		"in_capsule_data_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.in_capsule_data_size),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"max_io_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_io_size),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"io_unit_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.io_unit_size),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"max_aq_depth", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_aq_depth),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"num_shared_buffers", offsetof(struct nvmf_rpc_create_transport_ctx, opts.num_shared_buffers),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"buf_cache_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.buf_cache_size),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"dif_insert_or_strip", offsetof(struct nvmf_rpc_create_transport_ctx, opts.dif_insert_or_strip),
-		spdk_json_decode_bool, true
-	},
-	{
-		"abort_timeout_sec", offsetof(struct nvmf_rpc_create_transport_ctx, opts.abort_timeout_sec),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"zcopy", offsetof(struct nvmf_rpc_create_transport_ctx, opts.zcopy),
-		spdk_json_decode_bool, true
-	},
-	{
-		"tgt_name", offsetof(struct nvmf_rpc_create_transport_ctx, tgt_name),
-		spdk_json_decode_string, true
-	},
-	{
-		"acceptor_poll_rate", offsetof(struct nvmf_rpc_create_transport_ctx, opts.acceptor_poll_rate),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"ack_timeout", offsetof(struct nvmf_rpc_create_transport_ctx, opts.ack_timeout),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"data_wr_pool_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.data_wr_pool_size),
-		spdk_json_decode_uint32, true
-	},
-	{
-		"disable_command_passthru", offsetof(struct nvmf_rpc_create_transport_ctx, opts.disable_command_passthru),
-		spdk_json_decode_bool, true
-	},
-	{
-		"kas", offsetof(struct nvmf_rpc_create_transport_ctx, opts.kas),
-		spdk_json_decode_uint16, true
-	},
-	{
-		"min_kato", offsetof(struct nvmf_rpc_create_transport_ctx, opts.min_kato),
-		spdk_json_decode_uint32, true
+static int
+decode_masked_oncs(const struct spdk_json_val *val, void *out)
+{
+	struct spdk_nvme_cdata_oncs *oncs = out;
+	char *name = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &name);
+	if (rc) {
+		return rc;
 	}
+
+	if (strcmp(name, "nvmcmps") == 0) {
+		oncs->nvmcmps = 0;
+	} else if (strcmp(name, "nvmdsmsv") == 0) {
+		oncs->nvmdsmsv = 0;
+	} else if (strcmp(name, "nvmwzsv") == 0) {
+		oncs->nvmwzsv = 0;
+	} else if (strcmp(name, "reservs") == 0) {
+		oncs->reservs = 0;
+	} else if (strcmp(name, "nvmcpys") == 0) {
+		oncs->nvmcpys = 0;
+	} else {
+		rc = -EINVAL;
+		goto out;
+	}
+
+out:
+	free(name);
+	return rc;
+}
+
+static int
+decode_masked_oncs_array(const struct spdk_json_val *val, void *out)
+{
+	size_t count;
+
+	return spdk_json_decode_array(val, decode_masked_oncs, out, 16, &count, 0);
+}
+
+static int
+decode_masked_fuses(const struct spdk_json_val *val, void *out)
+{
+	struct spdk_nvme_cdata_fuses *fuses = out;
+	char *name = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &name);
+	if (rc) {
+		return rc;
+	}
+
+	if (strcmp(name, "fcws") == 0) {
+		fuses->fcws = 0;
+	} else {
+		rc = -EINVAL;
+		goto out;
+	}
+
+out:
+	free(name);
+	return rc;
+}
+
+static int
+decode_masked_fuses_array(const struct spdk_json_val *val, void *out)
+{
+	size_t count;
+
+	return spdk_json_decode_array(val, decode_masked_fuses, out, 16, &count, 0);
+}
+
+static const struct spdk_json_object_decoder rpc_nvmf_create_transport_decoders[] = {
+	{"trtype", offsetof(struct nvmf_rpc_create_transport_ctx, trtype), spdk_json_decode_string},
+	{"max_queue_depth", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_queue_depth), spdk_json_decode_uint16, true},
+	{"max_io_qpairs_per_ctrlr", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_qpairs_per_ctrlr), nvmf_rpc_decode_max_io_qpairs, true},
+	{"in_capsule_data_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.in_capsule_data_size), spdk_json_decode_uint32, true},
+	{"max_io_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_io_size), spdk_json_decode_uint32, true},
+	{"io_unit_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.io_unit_size), spdk_json_decode_uint32, true},
+	{"max_aq_depth", offsetof(struct nvmf_rpc_create_transport_ctx, opts.max_aq_depth), spdk_json_decode_uint32, true},
+	{"num_shared_buffers", offsetof(struct nvmf_rpc_create_transport_ctx, opts.num_shared_buffers), spdk_json_decode_uint32, true},
+	{"buf_cache_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.buf_cache_size), spdk_json_decode_uint32, true},
+	{"dif_insert_or_strip", offsetof(struct nvmf_rpc_create_transport_ctx, opts.dif_insert_or_strip), spdk_json_decode_bool, true},
+	{"abort_timeout_sec", offsetof(struct nvmf_rpc_create_transport_ctx, opts.abort_timeout_sec), spdk_json_decode_uint32, true},
+	{"zcopy", offsetof(struct nvmf_rpc_create_transport_ctx, opts.zcopy), spdk_json_decode_bool, true},
+	{"tgt_name", offsetof(struct nvmf_rpc_create_transport_ctx, tgt_name), spdk_json_decode_string, true},
+	{"acceptor_poll_rate", offsetof(struct nvmf_rpc_create_transport_ctx, opts.acceptor_poll_rate), spdk_json_decode_uint32, true},
+	{"ack_timeout", offsetof(struct nvmf_rpc_create_transport_ctx, opts.ack_timeout), spdk_json_decode_uint32, true},
+	{"data_wr_pool_size", offsetof(struct nvmf_rpc_create_transport_ctx, opts.data_wr_pool_size), spdk_json_decode_uint32, true},
+	{"disable_command_passthru", offsetof(struct nvmf_rpc_create_transport_ctx, opts.disable_command_passthru), spdk_json_decode_bool, true},
+	{"kas", offsetof(struct nvmf_rpc_create_transport_ctx, opts.kas), spdk_json_decode_uint16, true},
+	{"min_kato", offsetof(struct nvmf_rpc_create_transport_ctx, opts.min_kato), spdk_json_decode_uint32, true},
+	{"masked_oncs", offsetof(struct nvmf_rpc_create_transport_ctx, opts.oncs), decode_masked_oncs_array, true},
+	{"masked_fuses", offsetof(struct nvmf_rpc_create_transport_ctx, opts.fuses), decode_masked_fuses_array, true},
 };
 
 static void
@@ -3020,8 +3068,8 @@ rpc_nvmf_create_transport(struct spdk_jsonrpc_request *request,
 	}
 
 	/* Decode parameters the first time to get the transport type */
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_create_transport_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_create_transport_decoder),
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_create_transport_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_create_transport_decoders),
 					    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object_relaxed failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -3052,8 +3100,8 @@ rpc_nvmf_create_transport(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	if (spdk_json_decode_object_relaxed(params, nvmf_rpc_create_transport_decoder,
-					    SPDK_COUNTOF(nvmf_rpc_create_transport_decoder),
+	if (spdk_json_decode_object_relaxed(params, rpc_nvmf_create_transport_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_create_transport_decoders),
 					    ctx)) {
 		SPDK_ERRLOG("spdk_json_decode_object_relaxed failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -3088,7 +3136,7 @@ struct rpc_get_transport {
 	char *tgt_name;
 };
 
-static const struct spdk_json_object_decoder rpc_get_transport_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_get_transports_decoders[] = {
 	{"trtype", offsetof(struct rpc_get_transport, trtype), spdk_json_decode_string, true},
 	{"tgt_name", offsetof(struct rpc_get_transport, tgt_name), spdk_json_decode_string, true},
 };
@@ -3103,8 +3151,8 @@ rpc_nvmf_get_transports(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_get_transport_decoders,
-					    SPDK_COUNTOF(rpc_get_transport_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_get_transports_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_get_transports_decoders),
 					    &req)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -3158,7 +3206,7 @@ struct rpc_nvmf_get_stats_ctx {
 	struct spdk_json_write_ctx *w;
 };
 
-static const struct spdk_json_object_decoder rpc_get_stats_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_get_stats_decoders[] = {
 	{"tgt_name", offsetof(struct rpc_nvmf_get_stats_ctx, tgt_name), spdk_json_decode_string, true},
 };
 
@@ -3212,8 +3260,8 @@ rpc_nvmf_get_stats(struct spdk_jsonrpc_request *request,
 	ctx->request = request;
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_get_stats_decoders,
-					    SPDK_COUNTOF(rpc_get_stats_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_get_stats_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_get_stats_decoders),
 					    ctx)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -3353,13 +3401,12 @@ static void
 dump_nvmf_subsystem_listener(struct spdk_json_write_ctx *w,
 			     struct spdk_nvmf_subsystem_listener *listener)
 {
-	const struct spdk_nvme_transport_id *trid = listener->trid;
 	uint32_t i;
 
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_object_begin(w, "address");
-	nvmf_transport_listen_dump_trid(trid, w);
+	nvmf_transport_listen_dump_trid(listener->trid, w);
 	spdk_json_write_object_end(w);
 
 	if (spdk_nvmf_subsystem_get_ana_reporting(listener->subsystem)) {
@@ -3489,9 +3536,11 @@ rpc_nvmf_get_listeners_paused(struct spdk_nvmf_subsystem *subsystem,
 
 	spdk_json_write_array_begin(w);
 
-	for (listener = spdk_nvmf_subsystem_get_first_listener(ctx->subsystem);
-	     listener != NULL;
-	     listener = spdk_nvmf_subsystem_get_next_listener(ctx->subsystem, listener)) {
+	TAILQ_FOREACH(listener, &subsystem->listeners, link) {
+		if (!nvmf_subsystem_listener_is_active(listener)) {
+			continue;
+		}
+
 		dump_nvmf_subsystem_listener(w, listener);
 	}
 	spdk_json_write_array_end(w);
@@ -3592,7 +3641,7 @@ struct rpc_mdns_prr {
 	char *tgt_name;
 };
 
-static const struct spdk_json_object_decoder rpc_mdns_prr_decoders[] = {
+static const struct spdk_json_object_decoder rpc_nvmf_publish_mdns_prr_decoders[] = {
 	{"tgt_name", offsetof(struct rpc_mdns_prr, tgt_name), spdk_json_decode_string, true},
 };
 
@@ -3605,8 +3654,8 @@ rpc_nvmf_publish_mdns_prr(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_mdns_prr_decoders,
-					    SPDK_COUNTOF(rpc_mdns_prr_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_publish_mdns_prr_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_publish_mdns_prr_decoders),
 					    &req)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
@@ -3642,8 +3691,8 @@ rpc_nvmf_stop_mdns_prr(struct spdk_jsonrpc_request *request,
 	struct spdk_nvmf_tgt *tgt;
 
 	if (params) {
-		if (spdk_json_decode_object(params, rpc_mdns_prr_decoders,
-					    SPDK_COUNTOF(rpc_mdns_prr_decoders),
+		if (spdk_json_decode_object(params, rpc_nvmf_publish_mdns_prr_decoders,
+					    SPDK_COUNTOF(rpc_nvmf_publish_mdns_prr_decoders),
 					    &req)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
