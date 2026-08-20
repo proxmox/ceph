@@ -1,3 +1,9 @@
+ceph (19.2.6-pve1) trixie; urgency=medium
+
+  * update Ceph to Squid 19.2.6 stable release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 20 Aug 2026 17:25:29 +0200
+
 ceph (19.2.5-pve2) trixie; urgency=medium
 
   * fix #7777: ceph-base: clean up legacy /etc/init.d/ceph conffile that the
