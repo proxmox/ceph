@@ -1,3 +1,12 @@
+ceph (19.2.6-pve2) trixie; urgency=medium
+
+  * restore the removed auth_supported config option for backward compat.
+    This option is still used in PVE 9 and suddenly removing it during a
+    stable point release is not ideal, so postpone doing so to the next major
+    release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 24 Aug 2026 17:05:00 +0200
+
 ceph (19.2.6-pve1) trixie; urgency=medium
 
   * update Ceph to Squid 19.2.6 stable release.
