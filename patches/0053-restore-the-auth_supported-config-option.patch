@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Mon, 24 Aug 2026 11:15:00 +0200
+Subject: [PATCH] auth: restore the auth_supported config option
+
+Ceph dropped this long-deprecated option in a point release as part of
+the cephx aes256k series, although the release note that shipped with
+the removal files it under ">=21.0.0".
+
+Callers that pass the option explicitly then fail outright: librados
+refuses the connection, and the rbd CLI aborts on an unrecognized
+option. A config file carrying it is not affected, since it is simply
+ignored there. Restoring the option keeps such callers working, which
+lets Ceph be updated independently of the tools that talk to it.
+
+The three auth_*_required options keep their runtime flag, they only
+gain the legacy member this needs.
+
+Drop this once nothing passes 'auth_supported' any more.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/auth/AuthRegistry.cc             | 24 ++++++++++--------------
+ src/common/options/global.yaml.in    |  9 +++++++++
+ src/mon/Monitor.cc                   |  8 ++++++--
+ src/test/mon/test_mon_workloadgen.cc |  2 ++
+ 4 files changed, 27 insertions(+), 16 deletions(-)
+
+diff --git a/src/auth/AuthRegistry.cc b/src/auth/AuthRegistry.cc
+index 6b807bce92c..9a0922b316e 100644
+--- a/src/auth/AuthRegistry.cc
++++ b/src/auth/AuthRegistry.cc
+@@ -37,6 +37,7 @@ AuthRegistry::~AuthRegistry()
+ const char** AuthRegistry::get_tracked_conf_keys() const
+ {
+   static const char *keys[] = {
++    "auth_supported",
+     "auth_client_required",
+     "auth_cluster_required",
+     "auth_service_required",
+@@ -116,20 +117,15 @@ void AuthRegistry::_parse_mode_list(const string& s,
+ 
+ void AuthRegistry::_refresh_config()
+ {
+-  auto cluster_required = cct->_conf.get_val<std::string>("auth_cluster_required");
+-  auto service_required = cct->_conf.get_val<std::string>("auth_service_required");
+-  auto client_required = cct->_conf.get_val<std::string>("auth_client_required");
+-
+-  ldout(cct,10) << __func__ << ": conf values "
+-                << " cluster_required=" << cluster_required
+-                << " service_required=" << service_required
+-                << " client_required=" << client_required
+-                << dendl;
+-
+-  _parse_method_list(cluster_required, &cluster_methods);
+-  _parse_method_list(service_required, &service_methods);
+-  _parse_method_list(client_required, &client_methods);
+-
++  if (cct->_conf->auth_supported.size()) {
++    _parse_method_list(cct->_conf->auth_supported, &cluster_methods);
++    _parse_method_list(cct->_conf->auth_supported, &service_methods);
++    _parse_method_list(cct->_conf->auth_supported, &client_methods);
++  } else {
++    _parse_method_list(cct->_conf->auth_cluster_required, &cluster_methods);
++    _parse_method_list(cct->_conf->auth_service_required, &service_methods);
++    _parse_method_list(cct->_conf->auth_client_required, &client_methods);
++  }
+   _parse_mode_list(cct->_conf.get_val<string>("ms_mon_cluster_mode"),
+ 		   &mon_cluster_modes);
+   _parse_mode_list(cct->_conf.get_val<string>("ms_mon_service_mode"),
+diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
+index 90d07694923..62558140232 100644
+--- a/src/common/options/global.yaml.in
++++ b/src/common/options/global.yaml.in
+@@ -2117,6 +2117,7 @@ options:
+   default: cephx
+   flags:
+     - runtime
++  with_legacy: true
+ - name: auth_exit_on_failure
+   type: int
+   level: dev
+@@ -2135,6 +2136,7 @@ options:
+   default: cephx
+   flags:
+     - runtime
++  with_legacy: true
+ # what clients require of daemons
+ - name: auth_client_required
+   type: str
+@@ -2146,6 +2148,13 @@ options:
+   default: cephx, none
+   flags:
+     - runtime
++  with_legacy: true
++# deprecated; default value for above if they are not defined.
++- name: auth_supported
++  type: str
++  level: advanced
++  desc: authentication methods required (deprecated)
++  with_legacy: true
+ - name: max_rotating_auth_attempts
+   type: int
+   level: advanced
+diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
+index e5a1011dc28..a749fe4da3f 100644
+--- a/src/mon/Monitor.cc
++++ b/src/mon/Monitor.cc
+@@ -168,8 +168,12 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
+   logger(NULL), cluster_logger(NULL), cluster_logger_registered(false),
+   monmap(map),
+   log_client(cct_, messenger, monmap, LogClient::FLAG_MON),
+-  auth_cluster_required(cct, cct->_conf.get_val<std::string>("auth_cluster_required")),
+-  auth_service_required(cct, cct->_conf.get_val<std::string>("auth_service_required")),
++  auth_cluster_required(cct,
++			cct->_conf->auth_supported.empty() ?
++			cct->_conf->auth_cluster_required : cct->_conf->auth_supported),
++  auth_service_required(cct,
++			cct->_conf->auth_supported.empty() ?
++			cct->_conf->auth_service_required : cct->_conf->auth_supported),
+   mgr_messenger(mgr_m),
+   mgr_client(cct_, mgr_m, monmap),
+   gss_ktfile_client(cct->_conf.get_val<std::string>("gss_ktab_client_file")),
+diff --git a/src/test/mon/test_mon_workloadgen.cc b/src/test/mon/test_mon_workloadgen.cc
+index dc1b6222b0d..a8c01cda8f2 100644
+--- a/src/test/mon/test_mon_workloadgen.cc
++++ b/src/test/mon/test_mon_workloadgen.cc
+@@ -355,6 +355,8 @@ class OSDStub : public TestStub
+       gen(whoami),
+       mon_osd_rng(STUB_MON_OSD_FIRST, STUB_MON_OSD_LAST)
+   {
++    dout(20) << __func__ << " auth supported: "
++	     << cct->_conf->auth_supported << dendl;
+     stringstream ss;
+     ss << "client-osd" << whoami;
+     std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf.get_val<std::string>("ms_type") : cct->_conf->ms_public_type;

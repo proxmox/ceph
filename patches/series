@@ -50,3 +50,4 @@
 0050-mgr-osd_perf_query-fix-ivalid-escape-sequence.patch
 0051-mgr-zabbix-fix-invalid-escape-sequences.patch
 0052-pybind-rbd-disable-on_progress-callbacks-to-prevent-.patch
+0053-restore-the-auth_supported-config-option.patch
