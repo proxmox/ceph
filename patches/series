@@ -40,3 +40,4 @@
 0040-mgr-cephadm-always-use-the-internal-cryptocaller.patch
 0041-mgr-dashboard-add-an-option-to-control-the-dashboard.patch
 0042-debian-do-not-ship-legacy-init.d-ceph-script-anymore.patch
+0043-restore-the-auth_supported-config-option.patch
