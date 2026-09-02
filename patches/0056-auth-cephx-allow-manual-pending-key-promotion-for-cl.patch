@@ -1,0 +1,236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 2 Sep 2026 19:53:02 +0200
+Subject: [PATCH] auth/cephx: allow manual pending key promotion for clients
+
+A pending_key is promoted to the active key on its first successful use,
+which removes the old key while other processes of the same client
+identity may still rely on it. That rules out a planned migration where
+the old and the new key are both valid until every consumer has been
+switched over.
+
+Add mon_auth_client_pending_key_auto_promote, a runtime monitor option
+that defaults to the current behavior. When disabled, successful
+pending_key authentication of client entities is no longer recorded, so
+both keys stay valid until 'auth commit-pending' or 'auth clear-pending'
+ends the transition explicitly. Non-client entity types keep automatic
+promotion. Client-typed service daemons, like the ones cephadm deploys
+as client.<type>.<id>, follow the client behavior; cephadm's current key
+rotation does not rely on pending keys and is unaffected.
+
+The workunit gains a manual promotion section that exercises repeated
+use of both keys, clear, restage, commit, and rejection of the old key.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ qa/workunits/mon/auth_key_rotation.sh      | 61 ++++++++++++++++++++++
+ src/auth/cephx/CephxServiceHandler.cc      |  5 +-
+ src/common/options/mon.yaml.in             | 13 +++++
+ src/test/mon/test_cephx_service_handler.cc | 56 ++++++++++++++++++++
+ 4 files changed, 134 insertions(+), 1 deletion(-)
+
+diff --git a/qa/workunits/mon/auth_key_rotation.sh b/qa/workunits/mon/auth_key_rotation.sh
+index 1a53bab6d8a..884a1f8b42e 100755
+--- a/qa/workunits/mon/auth_key_rotation.sh
++++ b/qa/workunits/mon/auth_key_rotation.sh
+@@ -6,6 +6,8 @@ function expect_false()
+ 	if "$@"; then return 1; else return 0; fi
+ }
+ 
++set -o pipefail
++
+ 
+ ceph auth export
+ ceph auth rm client.rot
+@@ -55,4 +57,63 @@ ceph auth export client.rot | grep key | grep $PK
+ 
+ ceph -n client.rot --key $PK -s
+ 
++# manual pending key promotion for client entities
++function expect_denied()
++{
++	local rc=0
++	"$@" || rc=$?
++	# the ceph CLI exits with EACCES when the monitor rejects the key
++	[ "$rc" -eq 13 ]
++}
++
++ORIG_AUTO_PROMOTE=$(ceph config dump --format json | jq -r '.[] | select(.section == "mon" and .name == "mon_auth_client_pending_key_auto_promote") | .value')
++
++function cleanup_grace()
++{
++	local rc=0
++	if [ -n "$ORIG_AUTO_PROMOTE" ]; then
++		ceph config set mon mon_auth_client_pending_key_auto_promote "$ORIG_AUTO_PROMOTE" || rc=1
++	else
++		ceph config rm mon mon_auth_client_pending_key_auto_promote || rc=1
++	fi
++	ceph auth rm client.grace || rc=1
++	return $rc
++}
++
++trap 'cleanup_grace || exit 1' EXIT
++ceph auth rm client.grace
++ceph config set mon mon_auth_client_pending_key_auto_promote false
++ceph config get mon mon_auth_client_pending_key_auto_promote | grep false
++
++ceph auth get-or-create client.grace mon 'allow rwx'
++ceph auth get-or-create-pending client.grace
++GK=$(ceph auth export client.grace | grep 'key = ' | head -n 1 | awk '{print $3}')
++GPK=$(ceph auth export client.grace | grep pending.key | awk '{print $4}')
++
++for i in 1 2 3; do
++	ceph -n client.grace --key $GK -s
++	ceph -n client.grace --key $GPK -s
++	ceph auth export client.grace | grep pending.key
++done
++
++ceph auth clear-pending client.grace
++ceph -n client.grace --key $GK -s
++expect_denied ceph -n client.grace --key $GPK -s
++ceph auth export client.grace | expect_false grep pending.key
++
++ceph auth get-or-create-pending client.grace
++GPK=$(ceph auth export client.grace | grep pending.key | awk '{print $4}')
++ceph -n client.grace --key $GK -s
++ceph -n client.grace --key $GPK -s
++ceph auth export client.grace | grep pending.key
++
++ceph auth commit-pending client.grace
++ceph auth export client.grace | expect_false grep pending.key
++ceph auth export client.grace | grep key | grep -F "$GPK"
++expect_denied ceph -n client.grace --key $GK -s
++ceph -n client.grace --key $GPK -s
++
++cleanup_grace
++trap - EXIT
++
+ echo ok
+diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
+index c87001ddd51..76388d23895 100644
+--- a/src/auth/cephx/CephxServiceHandler.cc
++++ b/src/auth/cephx/CephxServiceHandler.cc
+@@ -349,7 +349,10 @@ int CephxServiceHandler::handle_request(
+ 	  encode(extra, *result_bl);
+ 	}
+ 
+-	if (used_pending) {
++	if (used_pending &&
++	    (!entity_name.is_client() ||
++	     cct->_conf.get_val<bool>(
++	       "mon_auth_client_pending_key_auto_promote"))) {
+ 	  matched_pending_key = eauth.pending_key;
+ 	}
+ 
+diff --git a/src/common/options/mon.yaml.in b/src/common/options/mon.yaml.in
+index 7f956a43fb0..2621d09e0b3 100644
+--- a/src/common/options/mon.yaml.in
++++ b/src/common/options/mon.yaml.in
+@@ -782,6 +782,19 @@ options:
+   - mon
+   flags:
+   - runtime
++- name: mon_auth_client_pending_key_auto_promote
++  type: bool
++  level: advanced
++  desc: Automatically promote pending client keys after successful authentication.
++  long_desc: >
++    When disabled, client entities retain their active and pending keys after
++    successful pending-key authentication. Other entity types continue to
++    promote pending keys automatically.
++  default: true
++  services:
++  - mon
++  flags:
++  - runtime
+ - name: mon_auth_emergency_allowed_ciphers
+   type: str
+   level: advanced
+diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
+index 8da6dae5991..aa891af9c3e 100644
+--- a/src/test/mon/test_cephx_service_handler.cc
++++ b/src/test/mon/test_cephx_service_handler.cc
+@@ -58,9 +58,12 @@ protected:
+   uint64_t server_challenge = 0;
+   // emulate the monitor accepting the session after a positive result
+   bool finish_session = true;
++  bool original_client_auto_promote = true;
+ 
+   void SetUp() override
+   {
++    original_client_auto_promote = g_ceph_context->_conf.get_val<bool>(
++      "mon_auth_client_pending_key_auto_promote");
+     ASSERT_TRUE(entity_name.from_str("client.pending-key-test"));
+     ASSERT_TRUE(key_server.generate_secret(entity_auth.key,
+ 					   CEPH_CRYPTO_AES256KRB5));
+@@ -70,6 +73,25 @@ protected:
+     key_server.add_auth(entity_name, entity_auth);
+   }
+ 
++  void TearDown() override
++  {
++    set_client_auto_promote(original_client_auto_promote);
++  }
++
++  void set_client_auto_promote(bool enabled)
++  {
++    EXPECT_EQ(0, g_ceph_context->_conf.set_val(
++		   "mon_auth_client_pending_key_auto_promote",
++		   enabled ? "true" : "false"));
++    g_ceph_context->_conf.apply_changes(nullptr);
++  }
++
++  void set_entity_name(const std::string& name)
++  {
++    ASSERT_TRUE(entity_name.from_str(name));
++    key_server.add_auth(entity_name, entity_auth);
++  }
++
+   std::unique_ptr<CephxServiceHandler> start_session(bool is_new_global_id)
+   {
+     auto handler = std::make_unique<CephxServiceHandler>(g_ceph_context,
+@@ -283,6 +305,8 @@ TEST_F(CephxServiceHandlerPendingKey, RejectsPendingResponseWithoutCapabilities)
+ 
+ TEST_F(CephxServiceHandlerPendingKey, RecordsPendingResponseOnSuccess)
+ {
++  EXPECT_TRUE(g_ceph_context->_conf.get_val<bool>(
++    "mon_auth_client_pending_key_auto_promote"));
+   install_rotating_secrets();
+   install_mon_cap();
+   auto handler = start_session(true);
+@@ -439,3 +463,35 @@ TEST_F(CephxServiceHandlerPendingKey, DropsDeferredPendingUseOnLaterFailure)
+   handler->on_authenticated();
+   expect_no_pending_use();
+ }
++
++TEST_F(CephxServiceHandlerPendingKey,
++       RetainsClientKeysWhenAutomaticPromotionIsDisabled)
++{
++  prepare_complete_auth();
++  set_client_auto_promote(false);
++
++  for (int i = 0; i < 3; ++i) {
++    auto active_handler = start_session(true);
++    EXPECT_EQ(1, authenticate(*active_handler, make_active_request()));
++    expect_no_pending_use();
++
++    auto pending_handler = start_session(true);
++    EXPECT_EQ(1, authenticate(*pending_handler, make_pending_request()));
++    expect_no_pending_use();
++  }
++}
++
++TEST_F(CephxServiceHandlerPendingKey,
++       RecordsNonClientPendingUseWhenClientPromotionIsDisabled)
++{
++  prepare_complete_auth();
++  set_client_auto_promote(false);
++
++  for (const auto& name : {"mon.pending-key-test", "osd.pending-key-test",
++			   "mds.pending-key-test", "mgr.pending-key-test"}) {
++    set_entity_name(name);
++    auto handler = start_session(true);
++    EXPECT_EQ(1, authenticate(*handler, make_pending_request()));
++    expect_pending_use();
++  }
++}
