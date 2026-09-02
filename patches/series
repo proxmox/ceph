@@ -51,3 +51,4 @@
 0051-mgr-zabbix-fix-invalid-escape-sequences.patch
 0052-pybind-rbd-disable-on_progress-callbacks-to-prevent-.patch
 0053-restore-the-auth_supported-config-option.patch
+0054-auth-cephx-check-cipher-policy-and-derive-session-ke.patch
