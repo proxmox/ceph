@@ -14,3 +14,4 @@
 0014-restore-the-auth_supported-config-option.patch
 0015-auth-cephx-check-cipher-policy-and-derive-session-ke.patch
 0016-auth-cephx-track-pending-key-use-per-accepted-sessio.patch
+0017-auth-cephx-allow-manual-pending-key-promotion-for-cl.patch
