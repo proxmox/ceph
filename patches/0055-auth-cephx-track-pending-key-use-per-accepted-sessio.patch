@@ -1,0 +1,240 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 2 Sep 2026 21:34:18 +0200
+Subject: [PATCH] auth/cephx: track pending key use per accepted session
+
+The handler only sees its own part of monitor authentication, while the
+monitor still parses the entity's capabilities afterwards and may not
+accept the session. Keep the bookkeeping about which candidate key was
+used with the handler and let the monitor drive it through a new
+AuthServiceHandler hook once it has accepted the session, on both the
+messenger v2 and the legacy MAuth path.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/auth/AuthServiceHandler.h              |  4 ++
+ src/auth/cephx/CephxServiceHandler.cc      | 12 +++-
+ src/auth/cephx/CephxServiceHandler.h       |  4 ++
+ src/mon/AuthMonitor.cc                     |  7 ++-
+ src/mon/Monitor.cc                         |  6 +-
+ src/test/mon/test_cephx_service_handler.cc | 68 +++++++++++++++++-----
+ 6 files changed, 82 insertions(+), 19 deletions(-)
+
+diff --git a/src/auth/AuthServiceHandler.h b/src/auth/AuthServiceHandler.h
+index 39f17b81e91..28ec5ae7f7e 100644
+--- a/src/auth/AuthServiceHandler.h
++++ b/src/auth/AuthServiceHandler.h
+@@ -66,6 +66,10 @@ public:
+ 			     AuthCapsInfo *caps,
+ 			     CryptoKey *session_key,
+ 			     std::string *connection_secret) = 0;
++  // Invoked by the owner once it accepted the session that a positive
++  // handle_request() result belongs to, after any capability parsing that
++  // could still reject it.
++  virtual void on_authenticated() {}
+ 
+   const EntityName& get_entity_name() { return entity_name; }
+   uint64_t get_global_id() { return global_id; }
+diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
+index ea65c4d688e..c87001ddd51 100644
+--- a/src/auth/cephx/CephxServiceHandler.cc
++++ b/src/auth/cephx/CephxServiceHandler.cc
+@@ -174,6 +174,7 @@ int CephxServiceHandler::handle_request(
+     {
+       ldout(cct, 10) << "handle_request get_auth_session_key for "
+ 		     << entity_name << dendl;
++      matched_pending_key.clear();
+ 
+       CephXAuthenticate req;
+       try {
+@@ -349,7 +350,7 @@ int CephxServiceHandler::handle_request(
+ 	}
+ 
+ 	if (used_pending) {
+-	  key_server->note_used_pending_key(entity_name, eauth.pending_key);
++	  matched_pending_key = eauth.pending_key;
+ 	}
+ 
+ 	// caller should try to finish authentication
+@@ -444,6 +445,15 @@ int CephxServiceHandler::handle_request(
+   return ret;
+ }
+ 
++void CephxServiceHandler::on_authenticated()
++{
++  if (matched_pending_key.empty()) {
++    return;
++  }
++  key_server->note_used_pending_key(entity_name, matched_pending_key);
++  matched_pending_key.clear();
++}
++
+ void CephxServiceHandler::build_cephx_response_header(int request_type, int status, bufferlist& bl)
+ {
+   struct CephXResponseHeader header;
+diff --git a/src/auth/cephx/CephxServiceHandler.h b/src/auth/cephx/CephxServiceHandler.h
+index 3d9bc2cd183..6ccf32ecb7c 100644
+--- a/src/auth/cephx/CephxServiceHandler.h
++++ b/src/auth/cephx/CephxServiceHandler.h
+@@ -27,6 +27,9 @@ struct CephXServiceTicketInfo;
+ class CephxServiceHandler  : public AuthServiceHandler {
+   KeyServer *key_server;
+   uint64_t server_challenge = 0;
++  // pending_key that authenticated the last request, recorded as used once
++  // the owner accepts the session
++  CryptoKey matched_pending_key;
+ 
+   ceph::shared_mutex lock = ceph::make_shared_mutex("CephxServiceHandler::lock");
+ 
+@@ -41,6 +44,7 @@ public:
+     AuthCapsInfo *caps,
+     CryptoKey *session_key,
+     std::string *connection_secret) override;
++  void on_authenticated() override;
+ 
+ private:
+   int do_start_session(bool is_new_global_id,
+diff --git a/src/mon/AuthMonitor.cc b/src/mon/AuthMonitor.cc
+index 00d3fe99344..f627909a06e 100644
+--- a/src/mon/AuthMonitor.cc
++++ b/src/mon/AuthMonitor.cc
+@@ -957,9 +957,14 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
+       goto done;
+     }
+     if (ret > 0) {
+-      if (!s->authenticated &&
++      bool accepted = s->authenticated;
++      if (!accepted &&
+ 	  mon.ms_handle_fast_authentication(s->con.get()) > 0) {
+ 	finished = true;
++	accepted = true;
++      }
++      if (accepted) {
++	s->auth_handler->on_authenticated();
+       }
+       ret = 0;
+     }
+diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
+index e5a1011dc28..af2255cbda6 100644
+--- a/src/mon/Monitor.cc
++++ b/src/mon/Monitor.cc
+@@ -6631,11 +6631,11 @@ int Monitor::handle_auth_request(
+       &auth_meta->session_key,
+       &auth_meta->connection_secret);
+   }
+-  if (r > 0 &&
+-      !s->authenticated) {
+-    if (!ms_handle_fast_authentication(con)) {
++  if (r > 0) {
++    if (!s->authenticated && !ms_handle_fast_authentication(con)) {
+       return -EACCES;
+     }
++    s->auth_handler->on_authenticated();
+   }
+ 
+   dout(30) << " r " << r << " reply:\n";
+diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
+index 6310988f72e..8da6dae5991 100644
+--- a/src/test/mon/test_cephx_service_handler.cc
++++ b/src/test/mon/test_cephx_service_handler.cc
+@@ -56,6 +56,8 @@ protected:
+   EntityName entity_name;
+   EntityAuth entity_auth;
+   uint64_t server_challenge = 0;
++  // emulate the monitor accepting the session after a positive result
++  bool finish_session = true;
+ 
+   void SetUp() override
+   {
+@@ -118,6 +120,20 @@ protected:
+     return request;
+   }
+ 
++  CephXAuthenticate make_wrong_request()
++  {
++    CephXAuthenticate request{};
++    request.client_challenge = 1;
++    const auto active_response = calculate_response(entity_auth.key,
++						    request.client_challenge);
++    const auto pending_response = calculate_response(entity_auth.pending_key,
++						     request.client_challenge);
++    while (request.key == active_response || request.key == pending_response) {
++      ++request.key;
++    }
++    return request;
++  }
++
+   int authenticate(CephxServiceHandler& handler,
+ 		   const CephXAuthenticate& request,
+ 		   CryptoKey *session_key = nullptr,
+@@ -132,10 +148,14 @@ protected:
+     bufferlist ignored_result;
+     AuthCapsInfo caps;
+     CryptoKey ignored_session_key;
+-    return handler.handle_request(request_iter, 0,
+-				  result ? result : &ignored_result, &caps,
+-				  session_key ? session_key : &ignored_session_key,
+-				  nullptr);
++    int r = handler.handle_request(request_iter, 0,
++				   result ? result : &ignored_result, &caps,
++				   session_key ? session_key : &ignored_session_key,
++				   nullptr);
++    if (r > 0 && finish_session) {
++      handler.on_authenticated();
++    }
++    return r;
+   }
+ 
+   void install_rotating_secrets()
+@@ -227,17 +247,8 @@ protected:
+ TEST_F(CephxServiceHandlerPendingKey, RejectsWrongResponse)
+ {
+   auto handler = start_session(true);
+-  CephXAuthenticate request{};
+-  request.client_challenge = 1;
+-  const auto active_response = calculate_response(entity_auth.key,
+-						  request.client_challenge);
+-  const auto pending_response = calculate_response(entity_auth.pending_key,
+-						   request.client_challenge);
+-  while (request.key == active_response || request.key == pending_response) {
+-    ++request.key;
+-  }
+ 
+-  EXPECT_EQ(-EACCES, authenticate(*handler, request));
++  EXPECT_EQ(-EACCES, authenticate(*handler, make_wrong_request()));
+   expect_no_pending_use();
+ }
+ 
+@@ -399,3 +410,32 @@ TEST_F(CephxServiceHandlerPendingKey, RejectsBothDisallowedCiphers)
+   EXPECT_EQ(-EACCES, authenticate(*pending_handler, make_pending_request()));
+   expect_no_pending_use();
+ }
++
++TEST_F(CephxServiceHandlerPendingKey, DefersPendingUseUntilSessionAccepted)
++{
++  prepare_complete_auth();
++  finish_session = false;
++  auto handler = start_session(true);
++
++  ASSERT_EQ(1, authenticate(*handler, make_pending_request()));
++  expect_no_pending_use();
++
++  handler->on_authenticated();
++  expect_pending_use();
++
++  handler->on_authenticated();
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, DropsDeferredPendingUseOnLaterFailure)
++{
++  prepare_complete_auth();
++  finish_session = false;
++  auto handler = start_session(true);
++
++  ASSERT_EQ(1, authenticate(*handler, make_pending_request()));
++  EXPECT_EQ(-EACCES, authenticate(*handler, make_wrong_request()));
++
++  handler->on_authenticated();
++  expect_no_pending_use();
++}
