@@ -1,0 +1,580 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 2 Sep 2026 19:55:41 +0200
+Subject: [PATCH] auth/cephx: check cipher policy and derive session keys per
+ candidate
+
+The monitor accepts either the active or the pending key of an entity,
+but cipher policy and the session key types were taken from the active
+key regardless of which candidate matched. A disallowed pending cipher
+could thus authenticate through an allowed active key, an allowed
+pending key was never tried behind a disallowed active one, and a
+client authenticating with a key of a different type received session
+keys it might not handle.
+
+Evaluate policy and the challenge per candidate and derive the auth and
+initial service session keys from the matched key. Add a unit test for
+the candidate handling.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/auth/cephx/CephxServiceHandler.cc      |  84 +++--
+ src/test/mon/CMakeLists.txt                |   8 +
+ src/test/mon/test_cephx_service_handler.cc | 401 +++++++++++++++++++++
+ 3 files changed, 450 insertions(+), 43 deletions(-)
+ create mode 100644 src/test/mon/test_cephx_service_handler.cc
+
+diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
+index 3d17c66e3b6..e86759036d4 100644
+--- a/src/auth/cephx/CephxServiceHandler.cc
++++ b/src/auth/cephx/CephxServiceHandler.cc
+@@ -193,59 +193,53 @@ int CephxServiceHandler::handle_request(
+ 	break;
+       }
+ 
+-      if (!cipher_is_allowed(eauth.key.get_type())) {
+-	ldout(cct, 20) << __func__
+-                       << " authentication failed due to unallowed cipher type: "
+-                       << CryptoManager::get_key_type_name(eauth.key.get_type()) << dendl;
+-        ldout(cct, 30);
+-          std::shared_lock rl(lock);
+-          auto ciphers = key_server->get_ciphers_allowed();
+-          dout_prefix << __func__
+-                      << ": ciphers are:";
+-          for (auto& cipher : ciphers) {
+-            dout_prefix << " " << CryptoManager::get_key_type_name(cipher);
+-          }
+-        dout_prefix << dendl;
+-        ret = -EACCES;
+-        break;
+-      }
+-
+       if (!server_challenge) {
+ 	ret = -EACCES;
+ 	break;
+-      }      
++      }
+ 
+-      uint64_t expected_key;
+-      CryptoKey *used_key = &eauth.key;
++      uint64_t expected_key = 0;
++      CryptoKey *used_key = nullptr;
++      bool used_pending = false;
+       std::string error;
+-      cephx_calc_client_server_challenge(cct, eauth.key, server_challenge,
+-					 req.client_challenge, &expected_key, error);
+-      if ((!error.empty() || req.key != expected_key) &&
+-	  !eauth.pending_key.empty()) {
++      auto key_matches = [&](CryptoKey& key) {
++	if (!cipher_is_allowed(key.get_type())) {
++	  ldout(cct, 20) << __func__
++			 << " authentication candidate has unallowed cipher type: "
++			 << CryptoManager::get_key_type_name(key.get_type())
++			 << dendl;
++	  return false;
++	}
++
++	error.clear();
++	cephx_calc_client_server_challenge(cct, key, server_challenge,
++					 req.client_challenge, &expected_key,
++					 error);
++	if (!error.empty()) {
++	  ldout(cct, 0) << " cephx_calc_client_server_challenge error: "
++			 << error << dendl;
++	  return false;
++	}
++
++	ldout(cct, 20) << " checking key: req.key=" << hex << req.key
++			 << " expected_key=" << expected_key << dec << dendl;
++	return req.key == expected_key;
++      };
++
++      if (key_matches(eauth.key)) {
++	used_key = &eauth.key;
++      } else if (!eauth.pending_key.empty()) {
+ 	ldout(cct, 10) << "normal key failed for " << entity_name
+ 		       << ", trying pending_key" << dendl;
+-	// try pending_key instead
+-	error.clear();
+-	cephx_calc_client_server_challenge(cct, eauth.pending_key,
+-					   server_challenge,
+-					   req.client_challenge, &expected_key,
+-					   error);
+-	if (error.empty()) {
++	if (key_matches(eauth.pending_key)) {
+ 	  used_key = &eauth.pending_key;
+-	  key_server->note_used_pending_key(entity_name, eauth.pending_key);
++	  used_pending = true;
+ 	}
+       }
+-      if (!error.empty()) {
+-	ldout(cct, 0) << " cephx_calc_client_server_challenge error: " << error << dendl;
+-	ret = -EACCES;
+-	break;
+-      }
+ 
+-      ldout(cct, 20) << " checking key: req.key=" << hex << req.key
+-	       << " expected_key=" << expected_key << dec << dendl;
+-      if (req.key != expected_key) {
++      if (!used_key) {
+         ldout(cct, 0) << " unexpected key: req.key=" << hex << req.key
+-		<< " expected_key=" << expected_key << dec << dendl;
++		<< dec << dendl;
+         ret = -EACCES;
+ 	break;
+       }
+@@ -276,7 +270,7 @@ int CephxServiceHandler::handle_request(
+       info.ticket.init_timestamps(ceph_clock_now(), ttl);
+       info.validity.set_from_double(ttl);
+ 
+-      key_server->generate_secret(session_key, eauth.key.get_type());
++      key_server->generate_secret(session_key, used_key->get_type());
+ 
+       info.session_key = session_key;
+       if (psession_key) {
+@@ -341,7 +335,7 @@ int CephxServiceHandler::handle_request(
+ 	      key_server->build_session_auth_info(
+ 		service_id,
+ 		info.ticket,
+-                eauth.key.get_type(),
++                used_key->get_type(),
+ 		svc_info);
+ 	      info_vec.push_back(svc_info);
+ 	    }
+@@ -355,6 +349,10 @@ int CephxServiceHandler::handle_request(
+ 	  encode(extra, *result_bl);
+ 	}
+ 
++	if (used_pending) {
++	  key_server->note_used_pending_key(entity_name, eauth.pending_key);
++	}
++
+ 	// caller should try to finish authentication
+ 	ret = 1;
+       }
+diff --git a/src/test/mon/CMakeLists.txt b/src/test/mon/CMakeLists.txt
+index 5dad07b32b9..2d1cec5c8a1 100644
+--- a/src/test/mon/CMakeLists.txt
++++ b/src/test/mon/CMakeLists.txt
+@@ -33,6 +33,14 @@ add_executable(unittest_mon_moncap
+ add_ceph_unittest(unittest_mon_moncap)
+ target_link_libraries(unittest_mon_moncap mon global)
+ 
++# unittest_cephx_service_handler
++add_executable(unittest_cephx_service_handler
++  test_cephx_service_handler.cc
++  $<TARGET_OBJECTS:unit-main>
++  )
++add_ceph_unittest(unittest_cephx_service_handler)
++target_link_libraries(unittest_cephx_service_handler mon global)
++
+ # unittest_mon_map
+ add_executable(unittest_mon_monmap
+   MonMap.cc
+diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
+new file mode 100644
+index 00000000000..6310988f72e
+--- /dev/null
++++ b/src/test/mon/test_cephx_service_handler.cc
+@@ -0,0 +1,401 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
++// vim: ts=8 sw=2 smarttab
++
++#include "auth/Auth.h"
++#include "auth/cephx/CephxKeyServer.h"
++#include "auth/cephx/CephxProtocol.h"
++#include "auth/cephx/CephxServiceHandler.h"
++#include "common/ceph_context.h"
++#include "global/global_context.h"
++#include "gtest/gtest.h"
++
++#include <algorithm>
++#include <cerrno>
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++using ceph::bufferlist;
++using ceph::decode;
++using ceph::encode;
++
++class TestKeyServer : public KeyServer {
++public:
++  TestKeyServer(CephContext *cct, KeyRing *extra_secrets)
++    : KeyServer(cct, extra_secrets)
++  {
++  }
++
++  void set_allowed_ciphers(std::vector<int> ciphers)
++  {
++    allowed_ciphers = std::move(ciphers);
++  }
++
++  bool is_cipher_allowed(int cipher) const override
++  {
++    return std::find(allowed_ciphers.begin(), allowed_ciphers.end(), cipher) !=
++      allowed_ciphers.end();
++  }
++
++  std::vector<int> get_ciphers_allowed() const override
++  {
++    return allowed_ciphers;
++  }
++
++private:
++  std::vector<int> allowed_ciphers{CEPH_CRYPTO_AES256KRB5};
++};
++
++class CephxServiceHandlerPendingKey : public testing::Test {
++protected:
++  static constexpr uint64_t global_id = 1234;
++
++  KeyRing extra_secrets;
++  TestKeyServer key_server{g_ceph_context, &extra_secrets};
++  EntityName entity_name;
++  EntityAuth entity_auth;
++  uint64_t server_challenge = 0;
++
++  void SetUp() override
++  {
++    ASSERT_TRUE(entity_name.from_str("client.pending-key-test"));
++    ASSERT_TRUE(key_server.generate_secret(entity_auth.key,
++					   CEPH_CRYPTO_AES256KRB5));
++    ASSERT_TRUE(key_server.generate_secret(entity_auth.pending_key,
++					   CEPH_CRYPTO_AES256KRB5));
++    ASSERT_FALSE(entity_auth.key == entity_auth.pending_key);
++    key_server.add_auth(entity_name, entity_auth);
++  }
++
++  std::unique_ptr<CephxServiceHandler> start_session(bool is_new_global_id)
++  {
++    auto handler = std::make_unique<CephxServiceHandler>(g_ceph_context,
++							 &key_server);
++    bufferlist challenge_bl;
++    AuthCapsInfo caps;
++    EXPECT_EQ(0, handler->start_session(entity_name, global_id,
++					is_new_global_id, &challenge_bl,
++					&caps));
++
++    auto challenge_iter = challenge_bl.cbegin();
++    CephXServerChallenge challenge;
++    decode(challenge, challenge_iter);
++    EXPECT_NE(0, challenge.server_challenge);
++    server_challenge = challenge.server_challenge;
++    return handler;
++  }
++
++  uint64_t calculate_response(CryptoKey& key, uint64_t client_challenge)
++  {
++    uint64_t response = 0;
++    std::string error;
++    cephx_calc_client_server_challenge(g_ceph_context, key,
++				       server_challenge, client_challenge,
++				       &response, error);
++    EXPECT_TRUE(error.empty()) << error;
++    return response;
++  }
++
++  CephXAuthenticate make_pending_request()
++  {
++    CephXAuthenticate request{};
++    do {
++      ++request.client_challenge;
++      request.key = calculate_response(entity_auth.pending_key,
++				       request.client_challenge);
++    } while (request.key == calculate_response(entity_auth.key,
++						request.client_challenge));
++    return request;
++  }
++
++  CephXAuthenticate make_active_request()
++  {
++    CephXAuthenticate request{};
++    request.client_challenge = 1;
++    request.key = calculate_response(entity_auth.key,
++				     request.client_challenge);
++    return request;
++  }
++
++  int authenticate(CephxServiceHandler& handler,
++		   const CephXAuthenticate& request,
++		   CryptoKey *session_key = nullptr,
++		   bufferlist *result = nullptr)
++  {
++    bufferlist request_bl;
++    CephXRequestHeader header{CEPHX_GET_AUTH_SESSION_KEY};
++    encode(header, request_bl);
++    encode(request, request_bl);
++
++    auto request_iter = request_bl.cbegin();
++    bufferlist ignored_result;
++    AuthCapsInfo caps;
++    CryptoKey ignored_session_key;
++    return handler.handle_request(request_iter, 0,
++				  result ? result : &ignored_result, &caps,
++				  session_key ? session_key : &ignored_session_key,
++				  nullptr);
++  }
++
++  void install_rotating_secrets()
++  {
++    KeyServerData::Incremental incremental;
++    incremental.op = KeyServerData::AUTH_INC_SET_ROTATING;
++    ASSERT_TRUE(key_server.prepare_rotating_update(incremental.rotating_bl,
++						   false));
++    key_server.apply_data_incremental(incremental);
++  }
++
++  void install_mon_cap()
++  {
++    std::string cap = "allow *";
++    encode(cap, entity_auth.caps["mon"]);
++    encode(cap, entity_auth.caps["osd"]);
++    key_server.add_auth(entity_name, entity_auth);
++  }
++
++  void set_key_types(int active_type, int pending_type)
++  {
++    ASSERT_TRUE(key_server.generate_secret(entity_auth.key, active_type));
++    ASSERT_TRUE(key_server.generate_secret(entity_auth.pending_key,
++					   pending_type));
++    key_server.add_auth(entity_name, entity_auth);
++  }
++
++  void prepare_complete_auth()
++  {
++    install_rotating_secrets();
++    install_mon_cap();
++  }
++
++  void expect_session_key_types(const bufferlist& result,
++				CryptoKey& matched_key,
++				int expected_type)
++  {
++    auto result_iter = result.cbegin();
++    CephXResponseHeader header;
++    decode(header, result_iter);
++    ASSERT_EQ(CEPHX_GET_AUTH_SESSION_KEY, header.request_type);
++    ASSERT_EQ(0, header.status);
++
++    CephXTicketManager tickets(g_ceph_context);
++    ASSERT_TRUE(tickets.verify_service_ticket_reply(matched_key, result_iter));
++    auto& auth_ticket = tickets.get_handler(CEPH_ENTITY_TYPE_AUTH);
++    EXPECT_EQ(expected_type, auth_ticket.session_key.get_type());
++
++    bufferlist connection_secret;
++    bufferlist extra_tickets;
++    decode(connection_secret, result_iter);
++    decode(extra_tickets, result_iter);
++    EXPECT_TRUE(result_iter.end());
++    EXPECT_EQ(0, connection_secret.length());
++
++    auto extra_iter = extra_tickets.cbegin();
++    ASSERT_TRUE(tickets.verify_service_ticket_reply(auth_ticket.session_key,
++						     extra_iter));
++    EXPECT_TRUE(extra_iter.end());
++    EXPECT_EQ(expected_type,
++	      tickets.get_handler(CEPH_ENTITY_TYPE_OSD).session_key.get_type());
++  }
++
++  void expect_auth_unchanged()
++  {
++    EntityAuth current;
++    ASSERT_TRUE(key_server.get_auth(entity_name, current));
++    EXPECT_EQ(entity_auth.key, current.key);
++    EXPECT_EQ(entity_auth.pending_key, current.pending_key);
++  }
++
++  void expect_no_pending_use()
++  {
++    EXPECT_TRUE(key_server.get_used_pending_keys().empty());
++    expect_auth_unchanged();
++  }
++
++  void expect_pending_use()
++  {
++    const auto used_pending_keys = key_server.get_used_pending_keys();
++    ASSERT_EQ(1, used_pending_keys.size());
++    const auto found = used_pending_keys.find(entity_name);
++    ASSERT_NE(used_pending_keys.end(), found);
++    EXPECT_EQ(entity_auth.pending_key, found->second);
++    expect_auth_unchanged();
++  }
++};
++
++TEST_F(CephxServiceHandlerPendingKey, RejectsWrongResponse)
++{
++  auto handler = start_session(true);
++  CephXAuthenticate request{};
++  request.client_challenge = 1;
++  const auto active_response = calculate_response(entity_auth.key,
++						  request.client_challenge);
++  const auto pending_response = calculate_response(entity_auth.pending_key,
++						   request.client_challenge);
++  while (request.key == active_response || request.key == pending_response) {
++    ++request.key;
++  }
++
++  EXPECT_EQ(-EACCES, authenticate(*handler, request));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, RejectsPendingResponseWithoutOldTicket)
++{
++  auto handler = start_session(false);
++  auto request = make_pending_request();
++
++  EXPECT_EQ(-EACCES, authenticate(*handler, request));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey,
++       RejectsPendingResponseWithoutRotatingSecrets)
++{
++  auto handler = start_session(true);
++  auto request = make_pending_request();
++
++  EXPECT_EQ(-EIO, authenticate(*handler, request));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, RejectsPendingResponseWithoutCapabilities)
++{
++  install_rotating_secrets();
++  auto handler = start_session(true);
++  auto request = make_pending_request();
++
++  EXPECT_EQ(-EACCES, authenticate(*handler, request));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, RecordsPendingResponseOnSuccess)
++{
++  install_rotating_secrets();
++  install_mon_cap();
++  auto handler = start_session(true);
++  auto request = make_pending_request();
++
++  EXPECT_EQ(1, authenticate(*handler, request));
++  expect_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, DoesNotRecordActiveResponseOnSuccess)
++{
++  install_rotating_secrets();
++  install_mon_cap();
++  auto handler = start_session(true);
++  auto request = make_active_request();
++
++  EXPECT_EQ(1, authenticate(*handler, request));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey,
++       UsesMatchedSessionTypesForAesActiveAndAes256Pending)
++{
++  set_key_types(CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5);
++  key_server.set_allowed_ciphers({CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5});
++  prepare_complete_auth();
++
++  auto active_handler = start_session(true);
++  auto active_request = make_active_request();
++  active_request.other_keys = CEPH_ENTITY_TYPE_OSD;
++  CryptoKey active_session_key;
++  bufferlist active_result;
++  ASSERT_EQ(1, authenticate(*active_handler, active_request,
++			    &active_session_key, &active_result));
++  EXPECT_EQ(CEPH_CRYPTO_AES, active_session_key.get_type());
++  expect_session_key_types(active_result, entity_auth.key, CEPH_CRYPTO_AES);
++  expect_no_pending_use();
++
++  auto pending_handler = start_session(true);
++  auto pending_request = make_pending_request();
++  pending_request.other_keys = CEPH_ENTITY_TYPE_OSD;
++  CryptoKey pending_session_key;
++  bufferlist pending_result;
++  ASSERT_EQ(1, authenticate(*pending_handler, pending_request,
++			    &pending_session_key, &pending_result));
++  EXPECT_EQ(CEPH_CRYPTO_AES256KRB5, pending_session_key.get_type());
++  expect_session_key_types(pending_result, entity_auth.pending_key,
++			   CEPH_CRYPTO_AES256KRB5);
++  expect_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey,
++       UsesMatchedSessionTypesForAes256ActiveAndAesPending)
++{
++  set_key_types(CEPH_CRYPTO_AES256KRB5, CEPH_CRYPTO_AES);
++  key_server.set_allowed_ciphers({CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5});
++  prepare_complete_auth();
++
++  auto active_handler = start_session(true);
++  auto active_request = make_active_request();
++  active_request.other_keys = CEPH_ENTITY_TYPE_OSD;
++  CryptoKey active_session_key;
++  bufferlist active_result;
++  ASSERT_EQ(1, authenticate(*active_handler, active_request,
++			    &active_session_key, &active_result));
++  EXPECT_EQ(CEPH_CRYPTO_AES256KRB5, active_session_key.get_type());
++  expect_session_key_types(active_result, entity_auth.key,
++			   CEPH_CRYPTO_AES256KRB5);
++  expect_no_pending_use();
++
++  auto pending_handler = start_session(true);
++  auto pending_request = make_pending_request();
++  pending_request.other_keys = CEPH_ENTITY_TYPE_OSD;
++  CryptoKey pending_session_key;
++  bufferlist pending_result;
++  ASSERT_EQ(1, authenticate(*pending_handler, pending_request,
++			    &pending_session_key, &pending_result));
++  EXPECT_EQ(CEPH_CRYPTO_AES, pending_session_key.get_type());
++  expect_session_key_types(pending_result, entity_auth.pending_key,
++			   CEPH_CRYPTO_AES);
++  expect_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, RejectsDisallowedPendingCipher)
++{
++  set_key_types(CEPH_CRYPTO_AES256KRB5, CEPH_CRYPTO_AES);
++  key_server.set_allowed_ciphers({CEPH_CRYPTO_AES256KRB5});
++  prepare_complete_auth();
++
++  auto active_handler = start_session(true);
++  EXPECT_EQ(1, authenticate(*active_handler, make_active_request()));
++  expect_no_pending_use();
++
++  auto pending_handler = start_session(true);
++  EXPECT_EQ(-EACCES, authenticate(*pending_handler, make_pending_request()));
++  expect_no_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, TriesAllowedPendingAfterDisallowedActive)
++{
++  set_key_types(CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5);
++  key_server.set_allowed_ciphers({CEPH_CRYPTO_AES256KRB5});
++  prepare_complete_auth();
++
++  auto active_handler = start_session(true);
++  EXPECT_EQ(-EACCES, authenticate(*active_handler, make_active_request()));
++  expect_no_pending_use();
++
++  auto pending_handler = start_session(true);
++  EXPECT_EQ(1, authenticate(*pending_handler, make_pending_request()));
++  expect_pending_use();
++}
++
++TEST_F(CephxServiceHandlerPendingKey, RejectsBothDisallowedCiphers)
++{
++  set_key_types(CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5);
++  key_server.set_allowed_ciphers({});
++  prepare_complete_auth();
++
++  auto active_handler = start_session(true);
++  EXPECT_EQ(-EACCES, authenticate(*active_handler, make_active_request()));
++  expect_no_pending_use();
++
++  auto pending_handler = start_session(true);
++  EXPECT_EQ(-EACCES, authenticate(*pending_handler, make_pending_request()));
++  expect_no_pending_use();
++}
