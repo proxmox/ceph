@@ -1,3 +1,13 @@
+ceph (19.2.6-pve3) trixie; urgency=medium
+
+  * cephx: add optional manual promotion for pending client keys. With
+    mon_auth_client_pending_key_auto_promote disabled, monitors accept both
+    active and pending keys until an explicit commit or clear. This lets
+    running clients refresh without interrupting those still using the old
+    key. The default remains automatic promotion.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 02 Sep 2026 21:58:07 +0200
+
 ceph (19.2.6-pve2) trixie; urgency=medium
 
   * restore the removed auth_supported config option for backward compat.
