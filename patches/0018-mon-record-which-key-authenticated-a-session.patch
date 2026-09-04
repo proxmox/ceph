@@ -1,0 +1,243 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Fri, 4 Sep 2026 17:10:41 +0200
+Subject: [PATCH] mon: record which key authenticated a session
+
+An operator rotating a client key cannot tell which live sessions
+still authenticate with the previous key: the session dump names the
+entity, not the key. A pending key makes that worse, as both keys of
+an entity are valid at once.
+
+Keep the type and a fingerprint of the key behind the latest accepted
+authentication in the monitor session, together with whether it was
+the entity's pending key, and dump them with the session. The
+fingerprint is the first 16 hex digits of the SHA-256 of the key's
+base64 form, so a tool can compute it from 'ceph auth get' output
+without the monitor exposing the secret. A renewal authenticates
+again, so the record follows the key used last.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/auth/AuthServiceHandler.h              | 10 +++++
+ src/auth/cephx/CephxServiceHandler.cc      | 11 ++++++
+ src/auth/cephx/CephxServiceHandler.h       | 14 +++++++
+ src/mon/AuthMonitor.cc                     |  1 +
+ src/mon/Monitor.cc                         |  1 +
+ src/mon/Session.h                          | 18 +++++++++
+ src/test/mon/test_cephx_service_handler.cc | 43 ++++++++++++++++++++++
+ 7 files changed, 98 insertions(+)
+
+diff --git a/src/auth/AuthServiceHandler.h b/src/auth/AuthServiceHandler.h
+index 74f3fbb5091..b191da6dcad 100644
+--- a/src/auth/AuthServiceHandler.h
++++ b/src/auth/AuthServiceHandler.h
+@@ -18,6 +18,8 @@
+ 
+ #include <stddef.h>              // for NULL
+ #include <stdint.h>              // for uint64_t
++#include <string>
++
+ #include "common/entity_name.h"  // for EntityName
+ #include "include/common_fwd.h"
+ #include "include/buffer_fwd.h"  // for ceph::buffer::list
+@@ -72,6 +74,14 @@ public:
+   // could still reject it.
+   virtual void on_authenticated() {}
+ 
++  // The key behind the last successful authentication, for the owner's
++  // session records: its type, a fingerprint that names it without
++  // revealing it, and whether it was the entity's pending key. Zero, empty
++  // and false until a request succeeded, or when the protocol has no key.
++  virtual int get_used_key_type() const { return 0; }
++  virtual std::string get_used_key_fingerprint() const { return {}; }
++  virtual bool get_used_key_pending() const { return false; }
++
+   const EntityName& get_entity_name() { return entity_name; }
+   uint64_t get_global_id() { return global_id; }
+   global_id_status_t get_global_id_status() { return global_id_status; }
+diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
+index eda3253fe36..fa30ca4130b 100644
+--- a/src/auth/cephx/CephxServiceHandler.cc
++++ b/src/auth/cephx/CephxServiceHandler.cc
+@@ -23,6 +23,7 @@
+ 
+ #include "include/random.h"
+ #include "common/Clock.h" // for ceph_clock_now()
++#include "common/ceph_crypto.h"
+ #include "common/config.h"
+ #include "common/debug.h"
+ 
+@@ -356,6 +357,9 @@ int CephxServiceHandler::handle_request(
+ 	       "mon_auth_client_pending_key_auto_promote"))) {
+ 	  matched_pending_key = eauth.pending_key;
+ 	}
++	used_key_type = used_key->get_type();
++	used_key_fingerprint = key_fingerprint(*used_key);
++	used_key_pending = used_pending;
+ 
+ 	// caller should try to finish authentication
+ 	ret = 1;
+@@ -449,6 +453,13 @@ int CephxServiceHandler::handle_request(
+   return ret;
+ }
+ 
++std::string CephxServiceHandler::key_fingerprint(const CryptoKey& key)
++{
++  bufferlist bl;
++  bl.append(key.encode_base64());
++  return ceph::crypto::digest<ceph::crypto::SHA256>(bl).to_str().substr(0, 16);
++}
++
+ void CephxServiceHandler::on_authenticated()
+ {
+   if (matched_pending_key.empty()) {
+diff --git a/src/auth/cephx/CephxServiceHandler.h b/src/auth/cephx/CephxServiceHandler.h
+index 133274372a7..d7fefee6e79 100644
+--- a/src/auth/cephx/CephxServiceHandler.h
++++ b/src/auth/cephx/CephxServiceHandler.h
+@@ -31,6 +31,10 @@ class CephxServiceHandler  : public AuthServiceHandler {
+   // pending_key that authenticated the last request, recorded as used once
+   // the owner accepts the session
+   CryptoKey matched_pending_key;
++  // the key behind the last successful CEPHX_GET_AUTH_SESSION_KEY
++  int used_key_type = 0;
++  std::string used_key_fingerprint;
++  bool used_key_pending = false;
+ 
+   ceph::shared_mutex lock = ceph::make_shared_mutex("CephxServiceHandler::lock");
+ 
+@@ -46,6 +50,16 @@ public:
+     CryptoKey *session_key,
+     std::string *connection_secret) override;
+   void on_authenticated() override;
++  int get_used_key_type() const override { return used_key_type; }
++  std::string get_used_key_fingerprint() const override {
++    return used_key_fingerprint;
++  }
++  bool get_used_key_pending() const override { return used_key_pending; }
++
++  // The first 16 hex digits of the SHA-256 of the key's base64 form, the
++  // same value a tool computes from 'ceph auth get' output to tell keys
++  // apart without handling the secret itself.
++  static std::string key_fingerprint(const CryptoKey& key);
+ 
+ private:
+   int do_start_session(bool is_new_global_id,
+diff --git a/src/mon/AuthMonitor.cc b/src/mon/AuthMonitor.cc
+index ea6723a7050..729d0402b2a 100644
+--- a/src/mon/AuthMonitor.cc
++++ b/src/mon/AuthMonitor.cc
+@@ -967,6 +967,7 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
+       }
+       if (accepted) {
+ 	s->auth_handler->on_authenticated();
++	s->note_auth_key();
+       }
+       ret = 0;
+     }
+diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
+index e9f251ca681..3de4ef3fe85 100644
+--- a/src/mon/Monitor.cc
++++ b/src/mon/Monitor.cc
+@@ -6888,6 +6888,7 @@ int Monitor::handle_auth_request(
+       return -EACCES;
+     }
+     s->auth_handler->on_authenticated();
++    s->note_auth_key();
+   }
+ 
+   dout(30) << " r " << r << " reply:\n";
+diff --git a/src/mon/Session.h b/src/mon/Session.h
+index 668f25607d1..d4e56182709 100644
+--- a/src/mon/Session.h
++++ b/src/mon/Session.h
+@@ -71,6 +71,10 @@ struct MonSession : public RefCountedObject {
+ 
+   AuthServiceHandler *auth_handler = nullptr;
+   EntityName entity_name;
++  // the key behind the latest accepted authentication of this session
++  int auth_key_type = 0;
++  std::string auth_key_fingerprint;
++  bool auth_key_pending = false;
+   uint64_t global_id = 0;
+   global_id_status_t global_id_status = global_id_status_t::NONE;
+ 
+@@ -127,6 +131,16 @@ struct MonSession : public RefCountedObject {
+     return socket_addr;
+   }
+ 
++  // A renewal authenticates again, so the record follows the latest key used.
++  void note_auth_key() {
++    if (!auth_handler) {
++      return;
++    }
++    auth_key_type = auth_handler->get_used_key_type();
++    auth_key_fingerprint = auth_handler->get_used_key_fingerprint();
++    auth_key_pending = auth_handler->get_used_key_pending();
++  }
++
+   void dump(ceph::Formatter *f) const {
+     f->dump_stream("name") << name;
+     f->dump_stream("entity_name") << entity_name;
+@@ -140,6 +154,10 @@ struct MonSession : public RefCountedObject {
+     f->dump_bool("open", !closed);
+     f->dump_object("caps", caps);
+     f->dump_bool("authenticated", authenticated);
++    f->dump_string("auth_key_type",
++		   CryptoManager::get_key_type_name(auth_key_type));
++    f->dump_string("auth_key_fingerprint", auth_key_fingerprint);
++    f->dump_bool("auth_key_pending", auth_key_pending);
+     f->dump_unsigned("global_id", global_id);
+     f->dump_stream("global_id_status") << global_id_status;
+     f->dump_unsigned("osd_epoch", osd_epoch);
+diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
+index aa891af9c3e..402bef70c51 100644
+--- a/src/test/mon/test_cephx_service_handler.cc
++++ b/src/test/mon/test_cephx_service_handler.cc
+@@ -495,3 +495,46 @@ TEST_F(CephxServiceHandlerPendingKey,
+     expect_pending_use();
+   }
+ }
++
++TEST_F(CephxServiceHandlerPendingKey, RecordsTheKeyBehindEachAuthentication)
++{
++  prepare_complete_auth();
++  const auto active_fp = CephxServiceHandler::key_fingerprint(entity_auth.key);
++  const auto pending_fp =
++    CephxServiceHandler::key_fingerprint(entity_auth.pending_key);
++  EXPECT_EQ(16u, active_fp.size());
++  EXPECT_NE(active_fp, pending_fp);
++
++  auto handler = start_session(true);
++  EXPECT_EQ(0, handler->get_used_key_type());
++  EXPECT_TRUE(handler->get_used_key_fingerprint().empty());
++  EXPECT_FALSE(handler->get_used_key_pending());
++
++  EXPECT_EQ(-EACCES, authenticate(*handler, make_wrong_request()));
++  EXPECT_EQ(0, handler->get_used_key_type());
++  EXPECT_TRUE(handler->get_used_key_fingerprint().empty());
++
++  EXPECT_EQ(1, authenticate(*handler, make_active_request()));
++  EXPECT_EQ(CEPH_CRYPTO_AES256KRB5, handler->get_used_key_type());
++  EXPECT_EQ(active_fp, handler->get_used_key_fingerprint());
++  EXPECT_FALSE(handler->get_used_key_pending());
++
++  auto pending_handler = start_session(true);
++  EXPECT_EQ(1, authenticate(*pending_handler, make_pending_request()));
++  EXPECT_EQ(CEPH_CRYPTO_AES256KRB5, pending_handler->get_used_key_type());
++  EXPECT_EQ(pending_fp, pending_handler->get_used_key_fingerprint());
++  EXPECT_TRUE(pending_handler->get_used_key_pending());
++}
++
++TEST_F(CephxServiceHandlerPendingKey, KeyRecordFollowsTheCipherOfTheKeyUsed)
++{
++  set_key_types(CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5);
++  key_server.set_allowed_ciphers({CEPH_CRYPTO_AES, CEPH_CRYPTO_AES256KRB5});
++  prepare_complete_auth();
++
++  auto handler = start_session(true);
++  EXPECT_EQ(1, authenticate(*handler, make_active_request()));
++  EXPECT_EQ(CEPH_CRYPTO_AES, handler->get_used_key_type());
++  EXPECT_EQ(CephxServiceHandler::key_fingerprint(entity_auth.key),
++	    handler->get_used_key_fingerprint());
++}
