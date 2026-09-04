@@ -54,3 +54,4 @@
 0054-auth-cephx-check-cipher-policy-and-derive-session-ke.patch
 0055-auth-cephx-track-pending-key-use-per-accepted-sessio.patch
 0056-auth-cephx-allow-manual-pending-key-promotion-for-cl.patch
+0057-mon-record-which-key-authenticated-a-session.patch
