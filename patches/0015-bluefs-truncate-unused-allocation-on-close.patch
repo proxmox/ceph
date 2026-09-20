@@ -1,0 +1,395 @@
+From 8e68cb4b9bf0941fe3a2f20678844a0721de9904 Mon Sep 17 00:00:00 2001
+From: Viliam Durina <viliam.durina@gmail.com>
+Date: Tue, 1 Sep 2026 10:58:18 +0200
+Subject: [PATCH] os/bluestore: Re-introduce truncation in
+ `BlueRocksWritableFile.Close()`
+
+`rocksdb::WritableFile` assumes that whatever was allocated using `Allocate()`, and was not actually written to, is released when the file is closed (cf. `PosixWritableFile::Close()`). This used to work up to PR #62224 (released in 20.1.0, a tentacle RC), which removed the truncation from `close` and it assumed that `truncate` is called.
+
+This PR adds the truncation back to `BlueRocksWritableFile::Close()`. We cannot bring back the exact pre-62224 code, as it relies on `h->pos`. Instead we flush the file and use `fnode.size`, which contains the on-disk size, including the envelope.
+
+This should fix https://tracker.ceph.com/issues/76256.
+
+I'm not sure why this issue excessively affected clusters with no sharding. From the logs attached to the issue, in the non-sharded case there are many files with only a few kB payload in a 70MB file; in the sharded case the unreleased file tails still exist, but are much smaller.
+
+The new test case unit-tests the new `truncate_unused_allocations()` method, overall correctness of BlueFS operation is covered by other tests already. We also delete `BlueStoreWritableFile::UseDirectIO()`, as it is unused (it doesn't override superclass method).
+
+Fixes: https://tracker.ceph.com/issues/76256
+Signed-off-by: Viliam Durina <viliam.durina@gmail.com>
+(cherry picked from commit 88dca29d2dd99443826311723db375df96ddca5e)
+---
+ src/os/bluestore/BlueFS.cc                |  31 ++++-
+ src/os/bluestore/BlueFS.h                 |   8 ++
+ src/os/bluestore/BlueRocksEnv.cc          |  13 +-
+ src/test/objectstore/CMakeLists.txt       |   7 +
+ src/test/objectstore/test_bluefs.cc       |  65 +++++++++
+ src/test/objectstore/test_bluerocksenv.cc | 159 ++++++++++++++++++++++
+ 6 files changed, 275 insertions(+), 8 deletions(-)
+ create mode 100644 src/test/objectstore/test_bluerocksenv.cc
+
+diff --git a/src/os/bluestore/BlueFS.cc b/src/os/bluestore/BlueFS.cc
+index a30f3580a50a..54d49a368775 100644
+--- a/src/os/bluestore/BlueFS.cc
++++ b/src/os/bluestore/BlueFS.cc
+@@ -4313,9 +4313,8 @@ uint64_t BlueFS::_flush_special(FileWriter *h)
+   return new_data;
+ }
+ 
+-int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
++int BlueFS::truncate(FileWriter *h, uint64_t offset) /*_WF_L*/
+ {
+-  auto t0 = mono_clock::now();
+   std::lock_guard hl(h->lock);
+   auto& fnode = h->file->fnode;
+ 
+@@ -4345,6 +4344,34 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
+       offset = h->file->fnode.size;
+     }
+   }
++  return _truncate_LDF(h, offset);
++}
++
++int BlueFS::truncate_unused(FileWriter *h) /*_WF_L*/
++{
++  std::lock_guard hl(h->lock);
++
++  // we never truncate internal log files
++  ceph_assert(h->file->fnode.ino > 1);
++
++  if (h->get_buffer_length()) {
++    int r = _flush_F(h, true);
++    if (r < 0)
++      return r;
++  }
++  // Everything this file will ever hold has been flushed by now, so truncating
++  // it to its current size gives back exactly the tail that preallocate() has
++  // reserved and that was never written to. This works for envelope mode files
++  // too, as fnode.size is the on-disk size there as well.
++  dout(10) << __func__ << " file " << h->file->fnode << dendl;
++  return _truncate_LDF(h, h->file->fnode.size);
++}
++
++int BlueFS::_truncate_LDF(FileWriter *h, uint64_t offset) /*_WF_WLDF*/
++{
++  auto t0 = mono_clock::now();
++  ceph_assert(ceph_mutex_is_locked(h->lock));
++  auto& fnode = h->file->fnode;
+   if (offset > fnode.size) {
+     ceph_abort_msg("truncate up not supported");
+   }
+diff --git a/src/os/bluestore/BlueFS.h b/src/os/bluestore/BlueFS.h
+index b320d57a951b..19e7d5178bd7 100644
+--- a/src/os/bluestore/BlueFS.h
++++ b/src/os/bluestore/BlueFS.h
+@@ -666,6 +666,11 @@ class BlueFS {
+   int _flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool buffered);
+   int _flush_F(FileWriter *h, bool force, bool *flushed = nullptr);
+   int _flush_envelope_F(FileWriter *h);
++  // Truncates file to 'offset', which must be expressed in on-disk units
++  // (that is, envelopes included for envelope mode files) and must not be
++  // larger than the amount of data already flushed. Releases the allocations
++  // that fall past the new end of file.
++  int _truncate_LDF(FileWriter *h, uint64_t offset);
+   int _fsync(FileWriter *h, bool force_dirty);
+   uint64_t _flush_special(FileWriter *h);
+ 
+@@ -915,6 +920,9 @@ class BlueFS {
+   void invalidate_cache(FileRef f, uint64_t offset, uint64_t len);
+   int preallocate(FileRef f, uint64_t offset, uint64_t len);
+   int truncate(FileWriter *h, uint64_t offset);
++  // Releases the space that preallocate() has reserved for the file but that
++  // has not been written to. To be called when the file is done growing.
++  int truncate_unused(FileWriter *h);
+ 
+   size_t probe_alloc_avail(int dev, uint64_t alloc_size);
+ 
+diff --git a/src/os/bluestore/BlueRocksEnv.cc b/src/os/bluestore/BlueRocksEnv.cc
+index fc4f60e1fc9e..991a92c58d25 100644
+--- a/src/os/bluestore/BlueRocksEnv.cc
++++ b/src/os/bluestore/BlueRocksEnv.cc
+@@ -221,6 +221,13 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
+   }
+ 
+   rocksdb::Status Close() override {
++    // RocksDB assumes that when the file is closed, unused allocated
++    // space is truncated. It's not explicitly documented, but compare
++    // PosixWritableFile::Close().
++    int r = fs->truncate_unused(h);
++    if (r < 0) {
++      return err_to_status(r);
++    }
+     fs->fsync(h);
+     return rocksdb::Status::OK();
+   }
+@@ -241,12 +248,6 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
+     return true;
+   }
+ 
+-  // Indicates the upper layers if the current WritableFile implementation
+-  // uses direct IO.
+-  bool UseDirectIO() const {
+-    return false;
+-  }
+-
+   void SetWriteLifeTimeHint(rocksdb::Env::WriteLifeTimeHint hint) override {
+     h->write_hint = (const int)hint;
+   }
+diff --git a/src/test/objectstore/CMakeLists.txt b/src/test/objectstore/CMakeLists.txt
+index d72d99ec37cc..f0960c2eb3bf 100644
+--- a/src/test/objectstore/CMakeLists.txt
++++ b/src/test/objectstore/CMakeLists.txt
+@@ -126,6 +126,13 @@ if(WITH_BLUESTORE)
+   add_ceph_unittest(unittest_bluefs)
+   target_link_libraries(unittest_bluefs os global)
+ 
++  # unittest_bluerocksenv
++  add_executable(unittest_bluerocksenv
++    test_bluerocksenv.cc
++    )
++  add_ceph_unittest(unittest_bluerocksenv)
++  target_link_libraries(unittest_bluerocksenv os global RocksDB::RocksDB)
++
+   # unittest_bluefs_ex
+   add_executable(unittest_bluefs_ex
+     test_bluefs_ex.cc
+diff --git a/src/test/objectstore/test_bluefs.cc b/src/test/objectstore/test_bluefs.cc
+index ab0501cd8c24..0bc926a7236a 100644
+--- a/src/test/objectstore/test_bluefs.cc
++++ b/src/test/objectstore/test_bluefs.cc
+@@ -2244,6 +2244,71 @@ TEST(BlueFS, truncate_drops_allocations) {
+ 
+ 
+ 
++// Space reserved by preallocate() but never written to has to be given back
++// when truncate_unused_allocations() is called.
++TEST(BlueFS, truncate_unused_allocations) {
++  constexpr uint64_t K = 1024;
++  constexpr uint64_t M = 1024 * K;
++  uuid_d fsid;
++  const char* DIR_NAME = "dir";
++  const char* FILE_NAME = "file1";
++  constexpr uint64_t alloc_unit = 64 * K;
++  constexpr uint64_t db_size = 128 * M;
++  struct {
++    uint64_t preallocated_size;
++    uint64_t write_size;
++    uint64_t allocated_after_drop;
++  } scenarios [] = {
++    // preallocate 8M, write a single byte, a single AU is to remain
++    { 8*M, 1, 64*K },
++    // preallocate 8M, write 1M + 1, 1M + one AU is to remain
++    { 8*M, 1*M + 1, 1*M + 64*K },
++    // preallocated space fully used, nothing to give back
++    { 1*M, 1*M, 1*M },
++    // nothing preallocated, nothing to give back either
++    { 0, 123*K, 128*K },
++  };
++  for (auto& s : scenarios) {
++    ConfSaver conf(g_ceph_context->_conf);
++    conf.SetVal("bluefs_shared_alloc_size", stringify(alloc_unit).c_str());
++    conf.SetVal("bluefs_alloc_size", stringify(1*M).c_str());
++
++    TempBdev bdev_db{db_size};
++
++    bluefs_shared_alloc_context_t shared_alloc;
++    shared_alloc.set(
++      Allocator::create(g_ceph_context, g_ceph_context->_conf->bluefs_allocator,
++                        db_size, alloc_unit, "test shared allocator"),
++      alloc_unit);
++    shared_alloc.a->init_add_free(0, db_size);
++
++    BlueFS fs(g_ceph_context);
++    ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev_db.path, false,
++                                     &shared_alloc));
++    ASSERT_EQ(0, fs.mkfs(fsid, {BlueFS::BDEV_DB, false, false}));
++    ASSERT_EQ(0, fs.mount());
++    ASSERT_EQ(0, fs.maybe_verify_layout({BlueFS::BDEV_DB, false, false}));
++    BlueFS::FileWriter *h;
++    ASSERT_EQ(0, fs.mkdir(DIR_NAME));
++    ASSERT_EQ(0, fs.open_for_write(DIR_NAME, FILE_NAME, &h, false));
++    uint64_t pre = fs.get_used();
++    ASSERT_EQ(0, fs.preallocate(h->file, 0, s.preallocated_size));
++    const std::string content(s.write_size, 'x');
++    h->append(content.c_str(), content.length());
++    fs.fsync(h);
++    ASSERT_EQ(0, fs.truncate_unused(h));
++    fs.fsync(h);
++    uint64_t post = fs.get_used();
++    // no data may be lost by giving the unused tail back
++    EXPECT_EQ(s.write_size, h->file->fnode.size);
++    fs.close_writer(h);
++    EXPECT_EQ(pre, post - s.allocated_after_drop);
++
++    fs.umount();
++    delete shared_alloc.a;
++  }
++}
++
+ TEST(BlueFS, test_log_runway) {
+   uint64_t max_log_runway = 65536;
+   ConfSaver conf(g_ceph_context->_conf);
+diff --git a/src/test/objectstore/test_bluerocksenv.cc b/src/test/objectstore/test_bluerocksenv.cc
+new file mode 100644
+index 000000000000..201de7696d10
+--- /dev/null
++++ b/src/test/objectstore/test_bluerocksenv.cc
+@@ -0,0 +1,159 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
++// vim: ts=8 sw=2 sts=2 expandtab
++
++#include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <stack>
++#include <string>
++#include <vector>
++#include <gtest/gtest.h>
++
++#include "common/ceph_argparse.h"
++#include "global/global_init.h"
++#include "include/intarith.h"
++#include "include/stringify.h"
++
++#include "os/bluestore/BlueFS.h"
++#include "os/bluestore/BlueRocksEnv.h"
++
++#include "rocksdb/db.h"
++#include "rocksdb/options.h"
++
++using namespace std;
++
++class TempBdev {
++public:
++  TempBdev(uint64_t size)
++    : path{get_temp_bdev(size)}
++  {}
++  ~TempBdev() {
++    rm_temp_bdev(path);
++  }
++  const std::string path;
++private:
++  static string get_temp_bdev(uint64_t size)
++  {
++    static int n = 0;
++    string fn = "ceph_test_bluerocksenv.tmp.block." + stringify(getpid())
++      + "." + stringify(++n);
++    int fd = ::open(fn.c_str(), O_CREAT|O_RDWR|O_TRUNC, 0644);
++    ceph_assert(fd >= 0);
++    int r = ::ftruncate(fd, size);
++    ceph_assert(r >= 0);
++    ::close(fd);
++    return fn;
++  }
++  static void rm_temp_bdev(string f)
++  {
++    ::unlink(f.c_str());
++  }
++};
++
++class ConfSaver {
++  std::stack<std::pair<std::string, std::string>> saved_settings;
++  ConfigProxy& conf;
++public:
++  ConfSaver(ConfigProxy& conf) : conf(conf) {
++    conf._clear_safe_to_start_threads();
++  };
++  ~ConfSaver() {
++    conf._clear_safe_to_start_threads();
++    while(saved_settings.size() > 0) {
++      auto& e = saved_settings.top();
++      conf.set_val_or_die(e.first, e.second);
++      saved_settings.pop();
++    }
++    conf.set_safe_to_start_threads();
++    conf.apply_changes(nullptr);
++  }
++  void SetVal(const char* key, const char* val) {
++    std::string skey(key);
++    std::string prev_val;
++    conf.get_val(skey, &prev_val);
++    conf.set_val_or_die(skey, val);
++    saved_settings.emplace(skey, prev_val);
++  }
++};
++
++// End-to-end regression test for https://tracker.ceph.com/issues/76256.
++//
++// RocksDB preallocates space for the files it writes via
++// WritableFile::Allocate(), and expects the unused tail to be released when
++// the file is closed. It doesn't call Truncate() for that.
++TEST(BlueRocksEnv, close_releases_preallocated_tail) {
++  constexpr uint64_t alloc_unit = 4 << 10;
++  const char* DB_DIR = "db";
++
++  ConfSaver conf(g_ceph_context->_conf);
++  conf.SetVal("bluefs_shared_alloc_size", stringify(alloc_unit).c_str());
++  conf.SetVal("bluefs_alloc_size", stringify(alloc_unit).c_str());
++
++  uuid_d fsid;
++  TempBdev bdev_db{(64 << 20)};
++
++  BlueFS fs(g_ceph_context);
++  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev_db.path, false));
++  ASSERT_EQ(0, fs.mkfs(fsid, {BlueFS::BDEV_DB, false, false}));
++  ASSERT_EQ(0, fs.mount());
++  ASSERT_EQ(0, fs.maybe_verify_layout({BlueFS::BDEV_DB, false, false}));
++  ASSERT_EQ(0, fs.mkdir(DB_DIR));
++
++  auto make_options = [&](BlueRocksEnv* env) {
++    rocksdb::Options options;
++    options.env = env;
++    options.create_if_missing = true;
++    // use smallest possible sizes to speed up the test
++    options.write_buffer_size = 64 << 10;
++    options.manifest_preallocation_size = 64 << 10;
++    return options;
++  };
++
++  // create a database
++  {
++    BlueRocksEnv env(&fs);
++    rocksdb::DB* db = nullptr;
++    ASSERT_TRUE(rocksdb::DB::Open(make_options(&env), DB_DIR, &db).ok());
++    ASSERT_TRUE(db->Put(rocksdb::WriteOptions(), "key", "v").ok());
++    // Close the db without flushing the memtable, so that the WAL and the MANIFEST are
++    // closed but stay alive -- the state in which the preallocated tails were leaked.
++    ASSERT_TRUE(db->Close().ok());
++    delete db;
++  }
++
++  std::vector<std::string> ls;
++  ASSERT_EQ(0, fs.readdir(DB_DIR, &ls));
++  ASSERT_LT(3, ls.size());
++  for (std::string& fname : ls) {
++    if (fname == "." || fname == "..") {
++      continue;
++    }
++    BlueFS::FileReader* r;
++    ASSERT_EQ(0, fs.open_for_read(DB_DIR, fname, &r));
++    auto& fnode = r->file->fnode;
++    // This is what was fixed in the issue - the file held allocated more than necessary
++    EXPECT_EQ(p2roundup(fnode.size, alloc_unit), fnode.get_allocated())
++      << DB_DIR << "/" << fname << " holds " << fnode.get_allocated()
++      << " bytes for " << fnode.size << " bytes of data";
++    delete r;
++  }
++
++  fs.umount();
++}
++
++int main(int argc, char **argv) {
++  auto args = argv_to_vec(argc, argv);
++  map<string,string> defaults = {
++    { "debug_bluefs", "1/20" },
++    { "debug_bdev", "1/20" }
++  };
++
++  auto cct = global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
++			 CODE_ENVIRONMENT_UTILITY,
++			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
++  common_init_finish(g_ceph_context);
++
++  ::testing::InitGoogleTest(&argc, argv);
++  return RUN_ALL_TESTS();
++}

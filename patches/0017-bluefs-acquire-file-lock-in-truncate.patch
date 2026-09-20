@@ -1,0 +1,42 @@
+From efe2e8d1bf0be327118da6e9e62f6132e6335c9e Mon Sep 17 00:00:00 2001
+From: Igor Fedotov <igor.fedotov@croit.io>
+Date: Wed, 2 Sep 2026 12:24:57 +0300
+Subject: [PATCH] os/bluestore: do acquire file lock in BlueFS::truncate
+
+Fixes: https://tracker.ceph.com/issues/80188
+Signed-off-by: Igor Fedotov <igor.fedotov@croit.io>
+(cherry picked from commit 481ebbd14cd36ae55f2aea305d5ac8bcf5ae4ef0)
+---
+ src/os/bluestore/BlueFS.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/os/bluestore/BlueFS.cc b/src/os/bluestore/BlueFS.cc
+index 54d49a368775..ed848dd876a6 100644
+--- a/src/os/bluestore/BlueFS.cc
++++ b/src/os/bluestore/BlueFS.cc
+@@ -4313,7 +4313,7 @@ uint64_t BlueFS::_flush_special(FileWriter *h)
+   return new_data;
+ }
+ 
+-int BlueFS::truncate(FileWriter *h, uint64_t offset) /*_WF_L*/
++int BlueFS::truncate(FileWriter *h, uint64_t offset) /*_WF_WLDF*/
+ {
+   std::lock_guard hl(h->lock);
+   auto& fnode = h->file->fnode;
+@@ -4347,7 +4347,7 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset) /*_WF_L*/
+   return _truncate_LDF(h, offset);
+ }
+ 
+-int BlueFS::truncate_unused(FileWriter *h) /*_WF_L*/
++int BlueFS::truncate_unused(FileWriter *h) /*_WF_WLDF*/
+ {
+   std::lock_guard hl(h->lock);
+ 
+@@ -4380,6 +4380,7 @@ int BlueFS::_truncate_LDF(FileWriter *h, uint64_t offset) /*_WF_WLDF*/
+   {
+     std::lock_guard ll(log.lock);
+     std::lock_guard dl(dirty.lock);
++    std::lock_guard fl(h->file->lock);
+     if (h->file->deleted) {
+       dout(10) << __func__ << " deleted, no-op" << dendl;
+       return 0;

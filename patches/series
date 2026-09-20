@@ -16,3 +16,6 @@
 0016-auth-cephx-track-pending-key-use-per-accepted-sessio.patch
 0017-auth-cephx-allow-manual-pending-key-promotion-for-cl.patch
 0018-mon-record-which-key-authenticated-a-session.patch
+0015-bluefs-truncate-unused-allocation-on-close.patch
+0016-bluefs-fix-use_direct_io-override.patch
+0017-bluefs-acquire-file-lock-in-truncate.patch

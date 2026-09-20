@@ -1,0 +1,30 @@
+From 21c357d88278eceb0beb9c69c837ad68517e2df4 Mon Sep 17 00:00:00 2001
+From: Viliam Durina <viliam.durina@gmail.com>
+Date: Wed, 2 Sep 2026 15:35:19 +0200
+Subject: [PATCH] os/bluestore: Fix `use_direct_io()` override
+
+Requested here: https://github.com/ceph/ceph/pull/71479#discussion_r3914283440
+
+Signed-off-by: Viliam Durina <viliam.durina@gmail.com>
+(cherry picked from commit aa054f89c99dbac553b0e12b9670ee46b99758b8)
+---
+ src/os/bluestore/BlueRocksEnv.cc | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/os/bluestore/BlueRocksEnv.cc b/src/os/bluestore/BlueRocksEnv.cc
+index 991a92c58d25..673af2d729ae 100644
+--- a/src/os/bluestore/BlueRocksEnv.cc
++++ b/src/os/bluestore/BlueRocksEnv.cc
+@@ -248,6 +248,12 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
+     return true;
+   }
+ 
++  // Indicates the upper layers if the current WritableFile implementation
++  // uses direct IO.
++  bool use_direct_io() const override {
++    return false;
++  }
++
+   void SetWriteLifeTimeHint(rocksdb::Env::WriteLifeTimeHint hint) override {
+     h->write_hint = (const int)hint;
+   }
