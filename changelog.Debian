@@ -1,3 +1,9 @@
+ceph (20.2.4-pve5) trixie; urgency=medium
+
+  * backport fix for bluestore OSD's BlueFS space leak on close.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 01 Oct 2026 20:35:10 +0200
+
 ceph (20.2.4-pve4) trixie; urgency=medium
 
   * cephx: record which key authenticated each monitor session and show its
