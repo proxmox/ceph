@@ -19,9 +19,6 @@
  * Copyright (C) 2016 ScyllaDB.
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <memory>
 #include <regex>
@@ -31,15 +28,12 @@ module;
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm_ext/erase.hpp>
+#include <fmt/ranges.h>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/metrics.hh>
 #include <seastar/core/metrics_api.hh>
 #include <seastar/core/relabel_config.hh>
 #include <seastar/core/reactor.hh>
-#endif
 
 namespace seastar {
 extern seastar::logger seastar_logger;
@@ -219,6 +213,48 @@ static std::string get_unique_id() {
 label shard_label("shard");
 namespace impl {
 
+namespace {
+/*
+ * true if a label value needs escaping under prometheus rules, invalid characters in
+ * prometheus are also invalid in scollectd
+ */
+inline bool label_needs_escaping(std::string_view value) {
+    // newline, " and \ need to be escaped
+    static constexpr std::string_view disallowed = "\n\"\\";
+    return value.find_first_of(disallowed) != std::string_view::npos;
+}
+
+/*
+ * Sanitizes the label value as per the line format rules
+ * > label_value can be any sequence of UTF-8 characters, but the backslash (\), double-quote ("), and
+ * > line feed (\n) characters have to be escaped as \\, \", and \n, respectively.
+ */
+inline sstring escape_label_value(sstring label_value) {
+    if (!label_needs_escaping(label_value)) {
+        return label_value;
+    }
+    std::string escaped;
+    escaped.reserve(label_value.size() + 1); // some extra space
+    for (char c : label_value) {
+        switch (c) {
+            case '\\': escaped += R"(\\)"; break;
+            case '\"': escaped += R"(\")"; break;
+            case '\n': escaped += R"(\n)"; break;
+            default:   escaped += c;
+        }
+    }
+    return escaped;
+}
+
+}
+
+escaped_string::escaped_string(sstring v) : _value(escape_label_value(std::move(v))) {}
+
+escaped_string& escaped_string::operator=(const sstring& v) {
+    _value = escape_label_value(v);
+    return *this;
+}
+
 registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, skip_when_empty skip) :
         _f(f) {
     _info.enabled = enabled;
@@ -227,18 +263,17 @@ registered_metric::registered_metric(metric_id id, metric_function f, bool enabl
     _info.original_labels = id.internalized_labels();
 }
 
-metric_value metric_value::operator+(const metric_value& c) {
-    metric_value res(*this);
+metric_value& metric_value::operator+=(const metric_value& c) {
     switch (_type) {
     case data_type::HISTOGRAM:
     case data_type::SUMMARY:
-        std::get<histogram>(res.u) += std::get<histogram>(c.u);
+        std::get<histogram>(u) += std::get<histogram>(c.u);
         break;
     default:
-        std::get<double>(res.u) += std::get<double>(c.u);
+        std::get<double>(u) += std::get<double>(c.u);
         break;
     }
-    return res;
+    return *this;
 }
 
 void metric_value::ulong_conversion_error(double d) {
@@ -415,8 +450,8 @@ foreign_ptr<values_reference> get_values() {
 }
 
 
-instance_id_type shard() {
-    return to_sstring(this_shard_id());
+escaped_string shard() {
+    return escaped_string{to_sstring(this_shard_id())};
 }
 
 void impl::gc_internalized_labels() {
@@ -485,7 +520,7 @@ register_ref impl::add_registration(const metric_id& id, const metric_type& type
     if (_value_map.find(name) != _value_map.end()) {
         auto& metric = _value_map[name];
         if (metric.find(rm->info().id.labels()) != metric.end()) {
-            throw double_registration("registering metrics twice for metrics: " + name);
+            throw double_registration(fmt::format("registering metrics twice for metrics: {} with labels {}", name, rm->info().id.labels()));
         }
         if (metric.info().type != type.base_type) {
             throw std::runtime_error("registering metrics " + name + " registered with different type.");

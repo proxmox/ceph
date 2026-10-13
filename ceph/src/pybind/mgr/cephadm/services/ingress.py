@@ -4,12 +4,15 @@ import random
 import string
 from typing import List, Dict, Any, Tuple, cast, Optional, TYPE_CHECKING
 
-from ceph.deployment.service_spec import ServiceSpec, IngressSpec
+from ceph.deployment.service_spec import ServiceSpec, IngressSpec, MonitorCertSource
+from ceph.deployment.utils import is_ipv6
 from mgr_util import build_url
 from cephadm import utils
-from orchestrator import OrchestratorError, DaemonDescription
-from cephadm.services.cephadmservice import CephadmDaemonDeploySpec, CephService
+from orchestrator import OrchestratorError, DaemonDescription, DaemonDescriptionStatus
+from cephadm.services.cephadmservice import CephadmDaemonDeploySpec, CephService, CephadmService
 from .service_registry import register_cephadm_service
+from cephadm.tlsobject_types import TLSCredentials
+from cephadm.schedule import get_placement_hosts
 
 if TYPE_CHECKING:
     from ..module import CephadmOrchestrator
@@ -21,6 +24,18 @@ logger = logging.getLogger(__name__)
 class IngressService(CephService):
     TYPE = 'ingress'
     MAX_KEEPALIVED_PASS_LEN = 8
+
+    @property
+    def needs_monitoring(self) -> bool:
+        return True
+
+    @property
+    def haproxy_stats_cert_name(self) -> str:
+        return 'haproxy_monitor_ssl_cert'
+
+    @property
+    def haproxy_stats_key_name(self) -> str:
+        return 'haproxy_monitor_ssl_key'
 
     @classmethod
     def get_dependencies(cls, mgr: "CephadmOrchestrator",
@@ -57,6 +72,7 @@ class IngressService(CephService):
             self,
             daemon_spec: CephadmDaemonDeploySpec,
     ) -> CephadmDaemonDeploySpec:
+        super().prepare_create(daemon_spec)
         if daemon_spec.daemon_type == 'haproxy':
             return self.haproxy_prepare_create(daemon_spec)
         if daemon_spec.daemon_type == 'keepalived':
@@ -102,13 +118,13 @@ class IngressService(CephService):
         assert ingress_spec.backend_service
         daemons = mgr.cache.get_daemons_by_service(ingress_spec.backend_service)
         deps = [d.name() for d in daemons]
-        for attr in ['ssl_cert', 'ssl_key']:
-            ssl_cert_key = getattr(ingress_spec, attr, None)
-            if ssl_cert_key:
-                assert isinstance(ssl_cert_key, str)
-                deps.append(f'ssl-cert-key:{str(utils.md5_hash(ssl_cert_key))}')
+        backend_spec = mgr.spec_store[ingress_spec.backend_service].spec
+        if backend_spec.service_type == 'nfs':
+            hosts = get_placement_hosts(spec, mgr.cache.get_schedulable_hosts(), mgr.cache.get_draining_hosts())
+            deps.append(f'placement_hosts:{",".join(sorted(h.hostname for h in hosts))}')
 
-        return sorted(deps)
+        parent_deps = CephadmService.get_dependencies(mgr, spec)
+        return sorted(deps + parent_deps)
 
     def haproxy_generate_config(
             self,
@@ -136,6 +152,7 @@ class IngressService(CephService):
         if spec.monitor_password:
             password = spec.monitor_password
 
+        peer_hosts = {}
         if backend_spec.service_type == 'nfs':
             mode = 'tcp'
             # we need to get the nfs daemon with the highest rank_generation for
@@ -188,8 +205,20 @@ class IngressService(CephService):
                         'ip': '0.0.0.0',
                         'port': 0,
                     })
+            # Get peer hosts for haproxy active-active configuration using placement hosts
+            hosts = get_placement_hosts(
+                spec,
+                self.mgr.cache.get_schedulable_hosts(),
+                self.mgr.cache.get_draining_hosts()
+            )
+            if hosts:
+                for host in hosts:
+                    peer_ip = self.mgr.inventory.get_addr(host.hostname)
+                    peer_hosts[host.hostname] = peer_ip
+                logger.debug(f"HAProxy peer hosts for {spec.service_name()}: {peer_hosts}")
+
         else:
-            mode = 'http'
+            mode = 'tcp' if spec.use_tcp_mode_over_rgw else 'http'
             servers = [
                 {
                     'name': d.name(),
@@ -209,6 +238,23 @@ class IngressService(CephService):
         frontend_port = daemon_spec.ports[0] if daemon_spec.ports else spec.frontend_port
         if ip != '[::]' and frontend_port:
             daemon_spec.port_ips = {str(frontend_port): ip}
+
+        monitor_ip, monitor_port = self.get_monitoring_details(daemon_spec.service_name, daemon_spec.host)
+        if monitor_ip:
+            monitor_ips = [monitor_ip]
+            daemon_spec.port_ips.update({str(monitor_port): monitor_ip})
+        else:
+            monitor_ips = [ip, host_ip]
+
+        monitor_ssl_file = None
+        cert_ips = [ip]
+        if spec.monitor_ssl:
+            if spec.monitor_cert_source == MonitorCertSource.REUSE_SERVICE_CERT.value:
+                monitor_ssl_file = 'haproxy.pem'
+                cert_ips.extend(monitor_ips)
+            else:
+                monitor_ssl_file = 'stats_haproxy.pem'
+
         haproxy_conf = self.mgr.template.render(
             'services/ingress/haproxy.cfg.j2',
             {
@@ -219,12 +265,15 @@ class IngressService(CephService):
                 'user': spec.monitor_user or 'admin',
                 'password': password,
                 'ip': ip,
+                'monitor_ips': monitor_ips,
                 'frontend_port': frontend_port,
-                'monitor_port': daemon_spec.ports[1] if daemon_spec.ports else spec.monitor_port,
-                'local_host_ip': host_ip,
+                'monitor_port': spec.monitor_port,
                 'default_server_opts': server_opts,
-                'health_check_interval': spec.health_check_interval or '2s',
+                'health_check_interval': spec.health_check_interval or ('30s' if backend_spec.service_type == 'nfs' else '2s'),
                 'v4v6_flag': v4v6_flag,
+                'monitor_ssl_file': monitor_ssl_file,
+                'peer_hosts': peer_hosts,
+                'is_ipv6': is_ipv6(ip)
             }
         )
         config_files = {
@@ -233,13 +282,34 @@ class IngressService(CephService):
             }
         }
 
-        if spec.ssl_cert:
-            config_files['files']['haproxy.pem'] = spec.ssl_cert
+        if spec.ssl:
+            tls_pair = self.get_certificates(daemon_spec)
+            combined_pem = tls_pair.cert + '\n' + tls_pair.key
+            config_files['files']['haproxy.pem'] = combined_pem
 
-        if spec.ssl_key:
-            config_files['files']['haproxy.pem.key'] = spec.ssl_key
+        if spec.monitor_ssl and spec.monitor_cert_source != MonitorCertSource.REUSE_SERVICE_CERT.value:
+            tls_creds = self.get_stats_certs(spec, daemon_spec, monitor_ips)
+            monitor_ssl_cert = [tls_creds.cert, tls_creds.key]
+            config_files['files']['stats_haproxy.pem'] = '\n'.join(monitor_ssl_cert)
 
         return config_files, self.get_haproxy_dependencies(self.mgr, spec)
+
+    def get_stats_certs(
+        self,
+        svc_spec: IngressSpec,
+        daemon_spec: CephadmDaemonDeploySpec,
+        ips: Optional[List[str]] = None,
+    ) -> TLSCredentials:
+        return self.get_certificates_generic(
+            svc_spec=svc_spec,
+            daemon_spec=daemon_spec,
+            cert_attr='monitor_ssl_cert',
+            key_attr='monitor_ssl_key',
+            cert_source_attr='monitor_cert_source',
+            cert_name=self.haproxy_stats_cert_name,
+            key_name=self.haproxy_stats_key_name,
+            ips=ips
+        )
 
     def keepalived_prepare_create(
             self,
@@ -257,6 +327,56 @@ class IngressService(CephService):
         daemon_spec.final_config, daemon_spec.deps = self.keepalived_generate_config(daemon_spec)
 
         return daemon_spec
+
+    @staticmethod
+    def _ingress_keepalived_required_count(
+        mgr: "CephadmOrchestrator",
+        ispec: IngressSpec,
+    ) -> int:
+        """
+        get keepalived slot count from ingress placement only
+        """
+        return ispec.placement.get_target_count(mgr.cache.get_schedulable_hosts())
+
+    @staticmethod
+    def keepalived_should_auto_start(
+        mgr: "CephadmOrchestrator",
+        dd: DaemonDescription,
+        spec: ServiceSpec,
+    ) -> bool:
+        """
+        Whether a stopped keepalived unit should be started by the serve loop.
+        Does not auto-start while more keepalived daemons exist than the placement target
+        """
+        ispec = cast(IngressSpec, spec)
+        ingress_daemons = mgr.cache.get_daemons_by_service(ispec.service_name())
+        keepalived_total = len(
+            [d for d in ingress_daemons if d.daemon_type == 'keepalived']
+        )
+        required = IngressService._ingress_keepalived_required_count(mgr, ispec)
+        if keepalived_total > required:
+            return False
+        if ispec.keepalive_only:
+            if not ispec.backend_service:
+                return False
+            for d in mgr.cache.get_daemons_by_service(ispec.backend_service):
+                if d.hostname != dd.hostname:
+                    continue
+                if d.status in (
+                    DaemonDescriptionStatus.running,
+                    DaemonDescriptionStatus.starting,
+                ):
+                    return True
+            return False
+        for d in mgr.cache.get_daemons_by_service(spec.service_name()):
+            if d.daemon_type != 'haproxy' or d.hostname != dd.hostname:
+                continue
+            if d.status in (
+                DaemonDescriptionStatus.running,
+                DaemonDescriptionStatus.starting,
+            ):
+                return True
+        return False
 
     @staticmethod
     def get_keepalived_dependencies(mgr: "CephadmOrchestrator", spec: Optional[ServiceSpec]) -> List[str]:
@@ -441,3 +561,101 @@ class IngressService(CephService):
         }
 
         return config_file, self.get_keepalived_dependencies(self.mgr, spec)
+
+    def get_monitoring_details(self, service_name: str, host: str) -> Tuple[Optional[str], Optional[int]]:
+        spec = cast(IngressSpec, self.mgr.spec_store[service_name].spec)
+        monitor_port = spec.monitor_port
+
+        # check if monitor needs to be bind on specific ip
+        monitor_addr = spec.monitor_ip_addrs.get(host) if spec.monitor_ip_addrs else None
+        if monitor_addr and monitor_addr not in self.mgr.cache.get_host_network_ips(host):
+            logger.debug(f"Monitoring IP {monitor_addr} is not configured on host {host}.")
+            monitor_addr = None
+        if not monitor_addr and spec.monitor_networks:
+            monitor_addr = self.mgr.get_first_matching_network_ip(host, spec, spec.monitor_networks)
+            if not monitor_addr:
+                logger.debug(f"No IP address found in the network {spec.monitor_networks} on host {host}.")
+        return monitor_addr, monitor_port
+
+    def has_placement_changed(self, deps: List[str], spec: ServiceSpec) -> bool:
+        """Check if placement hosts have changed"""
+        def extract_hosts(deps: List[str]) -> List[str]:
+            for dep in deps:
+                if dep.startswith('placement_hosts:'):
+                    host_string = dep.split(':', 1)[1]
+                    return host_string.split(',') if host_string else []
+            return []
+
+        hosts = extract_hosts(deps)
+        current_hosts = get_placement_hosts(
+            spec,
+            self.mgr.cache.get_schedulable_hosts(),
+            self.mgr.cache.get_draining_hosts()
+        )
+        current_hosts = sorted(h.hostname for h in current_hosts)
+        if current_hosts != hosts:
+            logger.debug(f'Placement has changed for {spec.service_name()} from {hosts} -> {current_hosts}')
+            return True
+        return False
+
+    def choose_next_action(
+        self,
+        scheduled_action: utils.Action,
+        daemon_type: Optional[str],
+        spec: Optional[ServiceSpec],
+        curr_deps: List[str],
+        last_deps: List[str],
+        daemon: Optional[DaemonDescription] = None,
+    ) -> utils.NextDaemonStep:
+        """Given the scheduled_action, service spec, daemon_type, and
+        current and previous dependency lists return the next action that
+        this service would prefer cephadm take.
+        """
+        step = super().choose_next_action(
+            scheduled_action, daemon_type, spec, curr_deps, last_deps
+        )
+        action = step.action
+        # keepalived is not systemd-enabled; when stopped, redeploy rewrites
+        # the unit and container so the serve loop can start the daemon again.
+        if (
+            daemon_type == 'keepalived'
+            and action is utils.Action.RECONFIG
+            and daemon is not None
+            and daemon.status == DaemonDescriptionStatus.stopped
+        ):
+            logger.debug(
+                'Redeploy wanted %s: keepalived deps changed (daemon stopped)',
+                spec.service_name() if spec else daemon_type,
+            )
+            return utils.NextDaemonStep(utils.Action.REDEPLOY)
+
+        if (
+            action is not utils.Action.REDEPLOY
+            and daemon_type == 'haproxy'
+            and spec
+            and hasattr(spec, 'backend_service')
+        ):
+            backend_spec = self.mgr.spec_store[spec.backend_service].spec
+            if backend_spec.service_type == 'nfs':
+                if self.has_placement_changed(last_deps, spec):
+                    logger.debug(
+                        'Redeploy wanted %s: placement has changed',
+                        spec.service_name(),
+                    )
+                    return utils.NextDaemonStep(utils.Action.REDEPLOY)
+                sym_diff = set(curr_deps).symmetric_difference(last_deps)
+                if sym_diff and all(
+                    s.startswith(f'nfs.{backend_spec.service_id}')
+                    for s in sym_diff
+                ):
+                    logger.debug(
+                        'Reconfigure HAProxy with SIGHUP due to change in NFS backend '
+                        '(%s)',
+                        spec.service_name(),
+                    )
+                    return utils.NextDaemonStep(
+                        utils.Action.RECONFIG,
+                        skip_restart_for_reconfig=True,
+                        send_signal_to_daemon='SIGHUP',
+                    )
+        return step

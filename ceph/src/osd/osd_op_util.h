@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -48,6 +48,7 @@ public:
   bool check_rmw(int flag) const ;
   bool may_read() const;
   bool may_read_data() const;
+  bool may_read_data_for_ec() const;
   bool may_write() const;
   bool may_cache() const;
   bool rwordered_forced() const;
@@ -59,11 +60,13 @@ public:
   bool need_skip_handle_cache() const;
   bool need_skip_promote() const;
   bool allows_returnvec() const;
+  bool ec_direct_read() const;
+  bool ec_sync_read() const;
 
   void set_read();
   void set_write();
   void set_cache();
-  void set_class_read();
+  void set_class_read(bool is_erasure);
   void set_class_write();
   void set_pg_op();
   void set_promote();
@@ -72,6 +75,8 @@ public:
   void set_force_rwordered();
   void set_returnvec();
   void set_read_data();
+  void set_ec_direct_read();
+  void set_ec_sync_read();
 
   int set_from_op(
     const MOSDOp *m,

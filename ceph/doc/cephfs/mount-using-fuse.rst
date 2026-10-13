@@ -5,7 +5,7 @@
 ========================
 
 `ceph-fuse`_ can be used as an alternative to the :ref:`CephFS kernel
-driver<cephfs-mount-using-kernel-driver>` to mount CephFS file systems.
+driver<cephfs_mount_using_kernel_driver>` to mount CephFS file systems.
 `ceph-fuse`_ mounts are made in userspace. This means that `ceph-fuse`_ mounts
 are less performant than kernel driver mounts, but they are easier to manage
 and easier to upgrade.
@@ -25,7 +25,7 @@ mounts, as listed on the `Mount CephFS: Prerequisites`_ page.
 
 Synopsis
 ========
-This is the general form of the command for mounting CephFS via FUSE: 
+This is the general form of the command for mounting CephFS via FUSE:
 
 .. prompt:: bash #
 
@@ -49,7 +49,7 @@ too::
 
     ceph-fuse --id foo -k /path/to/keyring /mnt/mycephfs
 
-You may pass a Monitor's address and port on the commandline, although this is not mandatory::
+You may pass a Monitor's address and port on the command line, although this is not mandatory::
 
     ceph-fuse --id foo -m 192.168.0.1:6789 /mnt/mycephfs
 
@@ -99,7 +99,7 @@ To mount a subdirectory of the CephFS, add the following to ``/etc/fstab``::
 ``ceph-fuse@.service`` and ``ceph-fuse.target`` systemd units are available.
 As usual, these unit files declare the default dependencies and recommended
 execution context for ``ceph-fuse``. After making the fstab entry shown above,
-run following commands::
+run the following commands::
 
     systemctl start ceph-fuse@/mnt/mycephfs.service
     systemctl enable ceph-fuse.target

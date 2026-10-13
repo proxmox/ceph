@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -111,7 +111,7 @@ struct RGWObjManifestPart {
   }
 
   void dump(Formatter *f) const;
-  static void generate_test_instances(std::list<RGWObjManifestPart*>& o);
+  static std::list<RGWObjManifestPart> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWObjManifestPart)
 
@@ -163,7 +163,7 @@ struct RGWObjManifestRule {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
-  static void generate_test_instances(std::list<RGWObjManifestRule*>& o);
+  static std::list<RGWObjManifestRule> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWObjManifestRule)
 
@@ -190,7 +190,7 @@ struct RGWObjTier {
       DECODE_FINISH(bl);
     }
     void dump(Formatter *f) const;
-    static void generate_test_instances(std::list<RGWObjTier*>& o);
+    static std::list<RGWObjTier> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWObjTier)
 
@@ -254,7 +254,15 @@ public:
   }
 
   void get_implicit_location(uint64_t cur_part_id, uint64_t cur_stripe, uint64_t ofs,
-                             std::string *override_prefix, rgw_obj_select *location) const;
+                             const std::string *override_prefix, rgw_obj_select *location) const;
+
+  const std::map<uint64_t, RGWObjManifestRule>& get_rules() const {
+    return rules;
+  }
+
+  void clear_rules() {
+    rules.clear();
+  }
 
   void set_trivial_rule(uint64_t tail_ofs, uint64_t stripe_max_size) {
     RGWObjManifestRule rule(0, tail_ofs, 0, stripe_max_size);
@@ -374,12 +382,12 @@ public:
   }
 
   void dump(Formatter *f) const;
-  static void generate_test_instances(std::list<RGWObjManifest*>& o);
+  static std::list<RGWObjManifest> generate_test_instances();
 
   int append(const DoutPrefixProvider *dpp, RGWObjManifest& m, const RGWZoneGroup& zonegroup,
              const RGWZoneParams& zone_params);
 
-  bool get_rule(uint64_t ofs, RGWObjManifestRule *rule);
+  bool get_rule(uint64_t ofs, RGWObjManifestRule *rule) const;
 
   bool empty() const {
     if (explicit_objs)
@@ -465,6 +473,10 @@ public:
 
   uint64_t get_max_head_size() const {
     return max_head_size;
+  }
+
+  void set_max_head_size(uint64_t _max_head_size) {
+    max_head_size = _max_head_size;
   }
 
   const std::string& get_tier_type() {

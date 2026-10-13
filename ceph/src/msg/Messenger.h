@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -34,6 +35,7 @@
 #include "include/types.h"
 #include "include/ceph_features.h"
 #include "auth/Crypto.h"
+#include "common/Clock.h" // for ceph_clock_now()
 #include "common/item_history.h"
 #include "auth/AuthRegistry.h"
 #include "compressor_registry.h"
@@ -378,6 +380,13 @@ public:
    * you must not destroy them before you destroy the Messenger.
    */
   virtual void set_policy_throttlers(int type, Throttle *bytes, Throttle *msgs=NULL) = 0;
+  /**
+   * set the maximum size of the dispatch queue throttle
+   *
+   * This is an init-time function and must be called *before* calling
+   * start().
+   */
+  virtual void set_dispatch_throttle_size(uint64_t size) {}
   /**
    * set the default send priority
    *

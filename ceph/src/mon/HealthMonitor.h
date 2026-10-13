@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -76,11 +77,13 @@ private:
 
   bool prepare_command(MonOpRequestRef op);
   bool prepare_health_checks(MonOpRequestRef op);
+  void check_for_colocated_monitors(health_check_map_t *checks);
   void check_for_older_version(health_check_map_t *checks);
   void check_for_mon_down(health_check_map_t *checks, std::set<std::string> &mons_down);
   void check_for_clock_skew(health_check_map_t *checks);
   void check_mon_crush_loc_stretch_mode(health_check_map_t *checks);
   void check_if_msgr2_enabled(health_check_map_t *checks);
+  void check_erasure_code_profiles(health_check_map_t *checks);
   void check_netsplit(health_check_map_t *checks, std::set<std::string> &mons_down);
   bool check_leader_health();
   bool check_member_health();

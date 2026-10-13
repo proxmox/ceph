@@ -49,6 +49,9 @@ def get_command_line_parser():
                         help='Drop branches responsible for less than this threshold relative to the previous level, not global. (default 3%%)')
     parser.add_argument('--format', choices=['graph', 'trace'], default='graph',
                         help='The output format, default is %(default)s. `trace` is suitable as input for flamegraph.pl')
+    parser.add_argument('-a', '--addr2line', default='llvm-addr2line',
+                        help='The path or name of the addr2line command, which should behave as and '
+                            'accept the same options as binutils addr2line or llvm-addr2line (the default).')
     parser.add_argument('file', nargs='?',
                         type=argparse.FileType('r'),
                         default=sys.stdin,
@@ -59,6 +62,13 @@ def get_command_line_parser():
 class Node:
     def __init__(self, addr: str):
         self.addr = addr
+        x = addr.find('+')
+        if x >= 0:
+            self.addr_only = addr[x + 1:]
+            self.module = addr[:x]
+        else:
+            self.addr_only = addr
+            self.module = None
         self.callers = {}
         self.callees = {}
         self.printed = False
@@ -229,7 +239,7 @@ Use --direction={'bottom-up' if top_down else 'top-down'} to print {'callees' if
                 l = f"{prefix}{p}{l} addr={n.addr}{stats}"
                 p = "| "
                 if self.resolver:
-                    lines = self.resolver.resolve_address(n.addr).splitlines()
+                    lines = self.resolver.resolve_address(n.addr_only, module=n.module).splitlines()
                     if len(lines) == 1:
                         li = lines[0]
                         if li.startswith("??"):
@@ -401,7 +411,8 @@ def main():
     resolver = None
     if args.executable:
         resolver = addr2line.BacktraceResolver(executable=args.executable,
-                                               concise=not args.full_function_names)
+                                               concise=not args.full_function_names,
+                                               cmd_path=args.addr2line)
     if args.format == 'graph':
         render = Graph(resolver)
     else:

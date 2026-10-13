@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <boost/iterator/counting_iterator.hpp>
 #include <numeric>
@@ -7,7 +7,7 @@
 #include "test/crimson/gtest_seastar.h"
 
 #include "crimson/common/errorator.h"
-#include "crimson/common/errorator-loop.h"
+#include "crimson/common/errorator-utils.h"
 #include "crimson/common/log.h"
 #include "seastar/core/sleep.hh"
 

@@ -11,6 +11,7 @@ from typing import (
     NamedTuple,
     no_type_check,
     Optional,
+    overload,
     Sequence,
     Set,
     TYPE_CHECKING,
@@ -408,6 +409,8 @@ def _extract_target_func(
 
 
 class CLICommandBase(object):
+    COMMANDS: Dict[str, 'CLICommandBase'] = {}
+
     def __init__(self,
                  prefix: str,
                  perm: str = 'rw',
@@ -557,6 +560,22 @@ class CLICommandBase(object):
         return type(name, (cls,), {
             'COMMANDS': {},
         })
+
+
+class Command(CLICommandBase):
+    """Backward-compatible shim for modules that use Command(prefix, handler=func)"""
+    def __init__(self, prefix: str, perm: str = 'rw', poll: bool = False,
+                 handler: Optional[Callable] = None, **kwargs: Any):
+        super().__init__(prefix, perm, poll)
+        if handler is not None:
+            self._register_handler(handler)
+
+
+# Backward-compatible alias: the mgr daemon binary imports CLICommand by name
+CLICommand = CLICommandBase
+# Backward-compatible aliases for built-in modules that import these names
+CLIReadCommand = CLICommandBase.Read
+CLIWriteCommand = CLICommandBase.Write
 
 
 def CLICheckNonemptyFileInput(desc: str) -> Callable[[HandlerFuncType], HandlerFuncType]:
@@ -1166,6 +1185,9 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
     def have_enough_osds(self) -> bool:
         # wait until we have enough OSDs to allow the pool to be healthy
         ready = 0
+        self.log.debug("checking for enough OSDs")
+        self.log.debug(f'osds returned from osd_map: {self.get("osd_map")["osds"]}')
+        self.log.debug(f'osd_map: {self.get("osd_map")}')
         for osd in self.get("osd_map")["osds"]:
             if osd["up"] and osd["in"]:
                 ready += 1
@@ -1485,7 +1507,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
             self._rados = None
 
     @API.expose
-    def get(self, data_name: str) -> Any:
+    def get(self, data_name: str, mutable: bool = False) -> Any:
         """
         Called by the plugin to fetch named cluster-wide objects from ceph-mgr.
 
@@ -1496,16 +1518,29 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
                 pool_stats, pg_ready, osd_ping_times, mgr_map, mgr_ips,
                 modified_config_options, service_map, mds_metadata,
                 have_local_config_map, osd_pool_stats, pg_status.
+        :param bool mutable: If True, returns a mutable copy of the data that can
+                be modified safely. If False (default), returns read-only cached
+                data (in case cached enabled) for better performance and cache protection.
 
         Note:
             All these structures have their own JSON representations: experiment
             or look at the C++ ``dump()`` methods to learn about them.
         """
-        obj = self._ceph_get(data_name)
-        if isinstance(obj, bytes):
-            obj = json.loads(obj)
+        return self._ceph_get(data_name, mutable)
 
-        return obj
+    @API.expose
+    def erase(self, data_name: str) -> None:
+        """
+        Called by the plugin to erase cache entries for named
+        cluster-wide objects from ceph-mgr.
+        :param str data_name: Valid things to erase are osd_map, mon_map,
+                fs_map, pg_summary, io_rate, pg_dump, df, osd_stats,
+                health, mon_status, devices, pg_stats, pool_stats,
+                pg_ready, osd_ping_times, mgr_map, mgr_ips,
+                modified_config_options, service_map, mds_metadata,
+                have_local_config_map, osd_pool_stats, pg_status.
+        """
+        return self._ceph_erase(data_name)
 
     def _stattype_to_str(self, stattype: int) -> str:
 
@@ -1742,6 +1777,26 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         """
         return cast(List[ServerInfoT], self._ceph_get_server(None))
 
+    @overload
+    def get_metadata(self,
+                     svc_type: str,
+                     svc_id: str) -> Optional[Dict[str, str]]:
+        ...
+
+    @overload
+    def get_metadata(self,
+                     svc_type: str,
+                     svc_id: str,
+                     default: None) -> Optional[Dict[str, str]]:
+        ...
+
+    @overload
+    def get_metadata(self,
+                     svc_type: str,
+                     svc_id: str,
+                     default: Dict[str, str]) -> Dict[str, str]:
+        ...
+
     def get_metadata(self,
                      svc_type: str,
                      svc_id: str,
@@ -1751,12 +1806,14 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
 
         ceph-mgr fetches metadata asynchronously, so are windows of time during
         addition/removal of services where the metadata is not available to
-        modules.  ``None`` is returned if no metadata is available.
+        modules.  ``None`` is returned if no metadata is available, unless
+        ``default`` is provided, in which case ``default`` is returned.
 
         :param str svc_type: service type (e.g., 'mds', 'osd', 'mon')
         :param str svc_id: service id. convert OSD integer IDs to strings when
             calling this
-        :rtype: dict, or None if no metadata found
+        :param default: value to return when no metadata is available
+        :rtype: dict, or None if no metadata found and no default given
         """
         metadata = self._ceph_get_metadata(svc_type, svc_id)
         if not metadata:
@@ -2506,11 +2563,13 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
 
         return self._ceph_have_mon_connection()
 
+    @API.perm('w')
+    @API.expose
     def update_progress_event(self,
                               evid: str,
                               desc: str,
                               progress: float,
-                              add_to_ceph_s: bool) -> None:
+                              add_to_ceph_s: bool = False) -> None:
         return self._ceph_update_progress_event(evid, desc, progress, add_to_ceph_s)
 
     @API.perm('w')

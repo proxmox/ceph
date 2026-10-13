@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -24,12 +25,15 @@
 #include <string>
 #include <unordered_map>
 
+#include "include/ceph_assert.h"
+#include "include/cephfs/types.h" // for mds_rank_t
 #include "include/Context.h"
 #include "include/xlist.h"
 #include "include/elist.h"
 #include "include/interval_set.h"
-#include "mdstypes.h"
+#include "mdstypes.h" // for metareqid_t, session_info_t
 #include "mds/MDSAuthCaps.h"
+#include "common/ceph_time.h" // for ceph::coarse_mono_{clock,time}
 #include "common/DecayCounter.h"
 
 #include "Mutation.h" // for struct MDRequestImpl
@@ -559,7 +563,7 @@ public:
 
   Session* get_or_add_session(const entity_inst_t& i);
 
-  static void generate_test_instances(std::list<SessionMapStore*>& ls);
+  static std::list<SessionMapStore> generate_test_instances();
   void reset_state()
   {
     session_map.clear();

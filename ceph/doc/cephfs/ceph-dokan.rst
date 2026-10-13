@@ -1,4 +1,5 @@
 .. _ceph-dokan:
+
 =======================
 Mount CephFS on Windows
 =======================
@@ -71,7 +72,7 @@ when mounting a CephFS file system. The following commands are equivalent::
     ceph-dokan --name client.foo -l x
 
 Unmounting file systems
------------------=-----
+-----------------------
 
 The mount can be removed by either issuing ctrl-c or using the unmap command,
 like so::

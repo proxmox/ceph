@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -242,7 +242,7 @@ int reset_stats(const DoutPrefixProvider* dpp, optional_yield y,
     ret.update_call(call);
 
     encode(call, in);
-    op.exec("user", "reset_user_stats2", in, &out, &rval);
+    op.exec(cls::user::method::reset_user_stats2, in, &out, &rval);
     r = ref.operate(dpp, std::move(op), y, librados::OPERATION_RETURNVEC);
     if (r < 0) {
       return r;

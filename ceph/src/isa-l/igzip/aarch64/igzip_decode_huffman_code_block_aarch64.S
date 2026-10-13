@@ -27,6 +27,8 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
+#include "../include/aarch64_label.h"
+
 	.arch armv8-a
 	.text
 	.align	2
@@ -257,8 +259,10 @@ declare Macros
 .endm
 
 
-	.global	decode_huffman_code_block_stateless_aarch64
+	.global	cdecl(decode_huffman_code_block_stateless_aarch64)
+#ifndef __APPLE__
 	.type	decode_huffman_code_block_stateless_aarch64, %function
+#endif
 /*
 	void decode_huffman_code_block_stateless_aarch64(
 				struct inflate_state *state,
@@ -269,7 +273,7 @@ declare Macros
 	declare_generic_reg	arg2,		2, x
 
 	declare_generic_reg	state,		11,x
-	declare_generic_reg	start_out,	18,x
+	declare_generic_reg	start_out,	29,x
 
 	declare_generic_reg	read_in,	3,x
 	declare_generic_reg	read_in_length,	4,w
@@ -288,7 +292,7 @@ declare Macros
 	declare_generic_reg	block_state,	8,w
 	declare_generic_reg	block_state_adr,9,x
 	declare_generic_reg	look_back_dist,	10,w
-	declare_generic_reg	bfinal,		22,x
+	declare_generic_reg	bfinal,		22,w
 
 	declare_generic_reg	next_out,	12,x
 	declare_generic_reg	avail_out,	13,w
@@ -305,7 +309,7 @@ declare Macros
 	declare_generic_reg	write_overflow_lits,26,w
 	declare_generic_reg	repeat_length,27,w
 
-decode_huffman_code_block_stateless_aarch64:
+cdecl(decode_huffman_code_block_stateless_aarch64):
 	//save registers
 	push_stack
 
@@ -324,8 +328,13 @@ decode_huffman_code_block_stateless_aarch64:
 	ldp	write_overflow_lits,write_overflow_len,[block_state_adr,_write_overflow_lits-_block_state]
 
 	//init rfc_table
+#ifndef __APPLE__
 	adrp	rfc_table,rfc_lookup_table
 	add	rfc_table,rfc_table,:lo12:rfc_lookup_table
+#else
+	adrp	rfc_table,rfc_lookup_table@PAGE
+	add	rfc_table,rfc_table,rfc_lookup_table@PAGEOFF
+#endif
 #if ENABLE_TBL_INSTRUCTION
 	ld1	{v1.16b,v2.16b,v3.16b},[rfc_table]
 	add	rfc_table,rfc_table,48
@@ -598,8 +607,8 @@ next_lit_eq_256:
 				ISAL_BLOCK_INPUT_DONE : ISAL_BLOCK_NEW_HDR;
 	*/
 	mov	block_state, ISAL_BLOCK_INPUT_DONE
-	cmp	w_bfinal,0
-	csel	block_state, block_state, w_bfinal, ne
+	cmp	bfinal,0
+	csel	block_state, block_state, bfinal, ne
 	str	block_state, [block_state_adr]
 
 	b	block_state_loop
@@ -661,8 +670,10 @@ byte_copy_loop:
 	strb	w_arg0, [next_out],1
 	bne	byte_copy_loop
 	b	decompress_data_end
+#ifndef __APPLE__
 	.size	decode_huffman_code_block_stateless_aarch64, .-decode_huffman_code_block_stateless_aarch64
 	.type	rfc_lookup_table, %object
+#endif
 
 rfc_lookup_table:
 #if ENABLE_TBL_INSTRUCTION
@@ -686,4 +697,6 @@ rfc_lookup_table:
 	.short	0x0101, 0x0181, 0x0201, 0x0301, 0x0401, 0x0601, 0x0801, 0x0c01
 	.short	0x1001, 0x1801, 0x2001, 0x3001, 0x4001, 0x6001, 0x0000, 0x0000
 #endif
+#ifndef __APPLE__
 	.size	rfc_lookup_table, . - rfc_lookup_table
+#endif

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <boost/asio/error.hpp>
 #include <boost/asio/placeholders.hpp>
@@ -122,13 +122,15 @@ void CacheSession::send(ObjectCacheRequest* reply) {
   bufferlist bl;
   reply->encode();
   bl.append(reply->get_payload_bufferlist());
+  // bl owns the encoded payload; free reply here so it can't leak if the
+  // handler is dropped on teardown.
+  delete reply;
 
   boost::asio::async_write(m_dm_socket,
         boost::asio::buffer(bl.c_str(), bl.length()),
         boost::asio::transfer_exactly(bl.length()),
-        [this, bl, reply](const boost::system::error_code& err,
+        [this, bl](const boost::system::error_code& err,
           size_t bytes_transferred) {
-          delete reply;
           if (err || bytes_transferred != bl.length()) {
             fault(err);
             return;

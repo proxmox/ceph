@@ -32,6 +32,7 @@ Cloud Storage Class Tier Type
 
   * ``cloud-s3-glacier`` : S3 Glacier or Tape storage services.
 
+.. _radosgw_cloud_tier_configuration:
 
 Cloud Storage Class Tier Configuration
 --------------------------------------
@@ -47,7 +48,10 @@ Cloud Storage Class Tier Configuration
     "acls": [ { "type": <id | email | uri>,
                 "source_id": <source_id>,
                 "dest_id": <dest_id> } ... ],
+    "location_constraint": <location-constraint>,
     "target_path": <target_path>,
+    "target_by_bucket": <true | false>,
+    "target_by_bucket_prefix": <template>,
     "target_storage_class": <target-storage-class>,
     "multipart_sync_threshold": {object_size},
     "multipart_min_part_size": {part_size},
@@ -107,9 +111,53 @@ Cloud Transition Specific Configurables
 
   A string that defines how the target path is constructed. The target path
   specifies a prefix to which the source bucket-name/object-name is appended.
-  If not specified the ``target_path`` created is ``rgwx-${zonegroup}-${storage-class}-cloud-bucket``.
+  If not specified and ``target_by_bucket`` is ``false``, the ``target_path``
+  created is ``rgwx-${zonegroup}-${storage_class}-cloud-bucket``.
 
-  For example: ``target_path = rgwx-archive-${zonegroup}/``
+  Supports the template variables ``${zonegroup}`` and ``${storage_class}``.
+
+  The ``target_path`` value is only used when ``target_by_bucket`` is ``false``.
+
+  For example: ``target_path = rgwx-${zonegroup}-archive/``
+
+* ``target_by_bucket`` (boolean)
+
+  When enabled, each source bucket transitions to a dedicated destination
+  bucket rather than sharing a common target. Defaults to ``false`` to
+  preserve the legacy behavior.
+
+* ``target_by_bucket_prefix`` (string)
+
+  Optional template used when ``target_by_bucket`` is true to derive the
+  destination bucket name. Supports the variables ``${zonegroup}``,
+  ``${storage_class}``, ``${bucket}``, ``${tenant}``, and ``${owner}``.
+  The ``${owner}`` variable expands to the bucket owner's identifier
+  (the user ID for user-owned buckets, or the account ID for account-owned
+  buckets). If unset, the template falls back to the built-in default
+  ``rgwx-${zonegroup}-${storage_class}-${bucket}``.
+
+.. note::
+   S3 bucket naming constraints still apply on the destination side
+   (lowercase letters and numbers, 3-63 characters, no slashes). RGW
+   lowercases the derived bucket name. If you include slashes or invalid
+   characters in a custom template, bucket creation may still fail on the
+   target cloud.
+
+For example, to enable per-bucket targeting with a custom prefix:
+
+.. prompt:: bash #
+
+   radosgw-admin zonegroup placement modify --rgw-zonegroup default \
+                                              --placement-id default-placement \
+                                              --storage-class CLOUDTIER \
+                                              --tier-config=target_by_bucket=true,\
+                                              target_by_bucket_prefix=archive-${owner}-${bucket}
+
+* ``location_constraint`` (string)
+
+  Specifies the region where the target bucket will be created on the remote
+  S3 endpoint. For AWS, specify this only if the region is other than
+  US East (``us-east-1``).
 
 * ``target_storage_class`` (string)
 
@@ -121,7 +169,7 @@ Cloud Transition Specific Configurables
   If ``true``, the metadata of the object transitioned to the cloud service is retained.
   If ``false`` (default), the object is deleted after the transition.
   This option is ignored for current-versioned objects. For more details,
-  refer to the "Versioned Objects" section below.
+  refer to the :ref:`versioned_objects` section below.
 
 
 S3 Specific Configurables
@@ -150,7 +198,7 @@ How to Configure
 
 See :ref:`adding_a_storage_class` for how to configure storage-class for a zonegroup. The cloud transition requires a creation of a special storage class with tier type defined as ``cloud-s3`` or ``cloud-s3-glacier``.
 
-.. note:: If you have not performed previous `Multisite Configuration`_,
+.. note:: If you have not performed previous :ref:`Multisite Configuration <multisite>`,
           a ``default`` zone and zonegroup are created for you, and changes
           to the zone/zonegroup will not take effect until the Ceph Object
           Gateways (RGW daemons) are restarted. If you have created a realm for multisite,
@@ -196,6 +244,7 @@ For example
                               "access_key": "",
                               "secret": "",
                               "host_style": "path",
+                              "location_constraint": "",
                               "target_storage_class": "",
                               "target_path": "",
                               "acl_mappings": [],
@@ -405,6 +454,7 @@ Below is the object name format::
 
   s3://<target_path>/<source_bucket_name>/<source_object_name>(-<source_object_version_id>)
 
+.. _versioned_objects:
 
 Versioned Objects
 ~~~~~~~~~~~~~~~~~
@@ -419,7 +469,7 @@ For versioned and locked objects, similar semantics as that of LifecycleExpirati
 Restoring Objects
 -----------------
 The objects transitioned to cloud can now be restored. For more information, refer to
-`Restoring Objects from Cloud <https://docs.ceph.com/en/latest/radosgw/cloud-restore/>`_.
+:ref:`Restoring Objects from Cloud <radosgw-cloud-restore>`.
 
 
 Future Work
@@ -428,5 +478,3 @@ Future Work
 * Send presigned redirect or read-through the objects transitioned to cloud.
 
 * Support transition to other cloud providers (like Azure).
-
-.. _`Multisite Configuration`: ../multisite

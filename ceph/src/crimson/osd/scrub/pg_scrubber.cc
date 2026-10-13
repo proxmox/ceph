@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab expandtab
+// vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include <fmt/ranges.h>
 
@@ -134,6 +134,7 @@ void PGScrubber::notify_scrub_end(bool deep)
     pg.peering_state.state_clear(PG_STATE_DEEP_SCRUB);
   }
   pg.publish_stats_to_osd();
+  pg.kick_snap_trim();
 }
 
 const std::set<pg_shard_t> &PGScrubber::get_ids_to_scrub() const
@@ -183,8 +184,12 @@ void PGScrubber::reserve_range(const hobject_t &start, const hobject_t &end)
 void PGScrubber::release_range()
 {
   LOG_PREFIX(PGScrubber::release_range);
-  ceph_assert(blocked);
-  DEBUGDPP("blocked: {}", pg, *blocked);
+  if (!blocked) {
+    DEBUGDPP("range not reserved, skipping", pg);
+    return;
+  }
+  DEBUGDPP("blocked: {}, releasing pg background_process_lock (range {} .. {})",
+	   pg, *blocked, blocked->begin, blocked->end);
   pg.background_process_lock.unlock();
   blocked->p.set_value();
   blocked = std::nullopt;
@@ -277,6 +282,12 @@ void PGScrubber::emit_scrub_result(
   DEBUGDPP("", pg);
   pg.peering_state.update_stats(
     [this, FNAME, deep, &in_stats](auto &history, auto &pg_stats) {
+      // Handle invalid stats, in case of split/merge
+      if (pg_stats.stats_invalid) {
+        pg_stats.stats.sum = in_stats;
+        pg_stats.stats_invalid = false;
+        DEBUGDPP(" repaired invalid stats! ", pg);
+      }
       foreach_scrub_maintained_stat(
 	[deep, &pg_stats, &in_stats](
 	  const auto &name, auto statptr, bool skip_for_shallow) {

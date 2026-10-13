@@ -1,4 +1,3 @@
-
 """
 ceph-mgr orchestrator interface
 
@@ -530,10 +529,13 @@ class Orchestrator(object):
         """
         raise NotImplementedError()
 
-    def cert_store_cert_ls(self, show_details: bool = False) -> OrchResult[Dict[str, Any]]:
+    def cert_store_cert_ls(self,
+                           filter_by: str = '',
+                           show_details: bool = False,
+                           include_cephadm_signed: bool = False) -> OrchResult[Dict[str, Any]]:
         raise NotImplementedError()
 
-    def cert_store_entity_ls(self) -> OrchResult[Dict[Any, Dict[str, List[str]]]]:
+    def cert_store_bindings_ls(self) -> OrchResult[Dict[Any, Dict[str, List[str]]]]:
         raise NotImplementedError()
 
     def cert_store_reload(self) -> OrchResult[str]:
@@ -542,7 +544,10 @@ class Orchestrator(object):
     def cert_store_cert_check(self) -> OrchResult[List[str]]:
         raise NotImplementedError()
 
-    def cert_store_key_ls(self) -> OrchResult[Dict[str, Any]]:
+    def cert_store_key_ls(self, include_cephadm_generated_keys: bool = False) -> OrchResult[Dict[str, Any]]:
+        raise NotImplementedError()
+
+    def get_nvmeof_tls_bundle(self, service_name: str, daemon_name: str) -> OrchResult[Dict[str, str]]:
         raise NotImplementedError()
 
     def cert_store_get_cert(
@@ -567,7 +572,7 @@ class Orchestrator(object):
         self,
         cert: str,
         key: str,
-        entity: str,
+        consumer: str,
         cert_name: Optional[str] = None,
         service_name: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -581,6 +586,7 @@ class Orchestrator(object):
         cert: str,
         service_name: Optional[str] = None,
         hostname: Optional[str] = None,
+        force: bool = False
     ) -> OrchResult[str]:
         raise NotImplementedError()
 
@@ -635,6 +641,7 @@ class Orchestrator(object):
             'prometheus': self.apply_prometheus,
             'loki': self.apply_loki,
             'promtail': self.apply_promtail,
+            'alloy': self.apply_alloy,
             'rbd-mirror': self.apply_rbd_mirror,
             'rgw': self.apply_rgw,
             'ingress': self.apply_ingress,
@@ -750,7 +757,7 @@ class Orchestrator(object):
         :param replace_block: marks the corresponding block device as being replaced.
         :param replace_db: marks the corresponding db device as being replaced.
         :param replace_wal: marks the corresponding wal device as being replaced.
-        :param force: Forces the OSD removal process without waiting for the data to be drained first.
+        :param force: Forces OSD removal without waiting for PG drain or osd safe-to-destroy.
         :param zap: Zap/Erase all devices associated with the OSDs (DESTROYS DATA)
         :param no_destroy: Do not destroy associated VGs/LVs with the OSD.
 
@@ -866,6 +873,14 @@ class Orchestrator(object):
         """remove prometheus target for multi-cluster"""
         raise NotImplementedError()
 
+    def set_prometheus_remote_write(self, url: str, remote_write_allowed_metrics: List[str]) -> OrchResult[str]:
+        """set prometheus remote write url and allowed metrics for multi-cluster"""
+        raise NotImplementedError()
+
+    def remove_prometheus_remote_write(self, url: str) -> OrchResult[str]:
+        """remove prometheus remote write url and allowed metrics for multi-cluster"""
+        raise NotImplementedError()
+
     def get_alertmanager_access_info(self) -> OrchResult[Dict[str, str]]:
         """get alertmanager access information"""
         raise NotImplementedError()
@@ -884,6 +899,10 @@ class Orchestrator(object):
 
     def apply_promtail(self, spec: ServiceSpec) -> OrchResult[str]:
         """Update existing a Promtail daemon(s)"""
+        raise NotImplementedError()
+
+    def apply_alloy(self, spec: ServiceSpec) -> OrchResult[str]:
+        """Update existing a alloy daemon(s)"""
         raise NotImplementedError()
 
     def apply_crash(self, spec: ServiceSpec) -> OrchResult[str]:
@@ -949,7 +968,8 @@ class Orchestrator(object):
         raise NotImplementedError()
 
     def upgrade_start(self, image: Optional[str], version: Optional[str], daemon_types: Optional[List[str]],
-                      hosts: Optional[str], services: Optional[List[str]], limit: Optional[int]) -> OrchResult[str]:
+                      hosts: Optional[str], services: Optional[List[str]], limit: Optional[int],
+                      bucket_type: Optional[str] = None, bucket_name: Optional[str] = None) -> OrchResult[str]:
         raise NotImplementedError()
 
     def upgrade_pause(self) -> OrchResult[str]:
@@ -1016,6 +1036,7 @@ def daemon_type_to_service(dtype: str) -> str:
         'ceph-exporter': 'ceph-exporter',
         'loki': 'loki',
         'promtail': 'promtail',
+        'alloy': 'alloy',
         'crash': 'crash',
         'crashcollector': 'crash',  # Specific Rook Daemon
         'container': 'container',
@@ -1051,6 +1072,7 @@ def service_to_daemon_types(stype: str) -> List[str]:
         'prometheus': ['prometheus'],
         'loki': ['loki'],
         'promtail': ['promtail'],
+        'alloy': ['alloy'],
         'node-exporter': ['node-exporter'],
         'ceph-exporter': ['ceph-exporter'],
         'crash': ['crash'],
@@ -1204,7 +1226,8 @@ class DaemonDescription(object):
                  rank_generation: Optional[int] = None,
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
-                 pending_daemon_config: bool = False
+                 pending_daemon_config: bool = False,
+                 user_stopped: bool = False
                  ) -> None:
 
         #: Host is at the same granularity as InventoryHost
@@ -1280,6 +1303,7 @@ class DaemonDescription(object):
             self.extra_entrypoint_args = ArgumentSpec.from_general_args(
                 extra_entrypoint_args)
         self.pending_daemon_config = pending_daemon_config
+        self.user_stopped = user_stopped
 
     def __setattr__(self, name: str, value: Any) -> None:
         if value is not None and name in ('extra_container_args', 'extra_entrypoint_args'):
@@ -1404,6 +1428,9 @@ class DaemonDescription(object):
     def update_pending_daemon_config(self, value: bool) -> None:
         self.pending_daemon_config = value
 
+    def update_user_stopped_status(self, value: bool) -> None:
+        self.user_stopped = value
+
     def __repr__(self) -> str:
         return "<DaemonDescription>({type}.{id})".format(type=self.daemon_type,
                                                          id=self.daemon_id)
@@ -1438,6 +1465,7 @@ class DaemonDescription(object):
         out['rank_generation'] = self.rank_generation
         out['systemd_unit'] = self.systemd_unit
         out['pending_daemon_config'] = self.pending_daemon_config
+        out['user_stopped'] = self.user_stopped
 
         for k in ['last_refresh', 'created', 'started', 'last_deployed',
                   'last_configured']:
@@ -1476,6 +1504,7 @@ class DaemonDescription(object):
         out['ip'] = self.ip
         out['systemd_unit'] = self.systemd_unit
         out['pending_daemon_config'] = self.pending_daemon_config
+        out['user_stopped'] = self.user_stopped
 
         for k in ['last_refresh', 'created', 'started', 'last_deployed',
                   'last_configured']:

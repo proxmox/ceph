@@ -1,5 +1,7 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
+#include <cmath>
 
 #include <fmt/chrono.h>
 #include <seastar/core/metrics.hh>
@@ -8,18 +10,12 @@
 
 #include "crimson/os/seastore/async_cleaner.h"
 #include "crimson/os/seastore/backref_manager.h"
+#include "crimson/os/seastore/lba_manager.h"
 #include "crimson/os/seastore/transaction_manager.h"
 
 SET_SUBSYS(seastore_cleaner);
 
 namespace {
-
-enum class gc_formula_t {
-  GREEDY,
-  BENEFIT,
-  COST_BENEFIT,
-};
-constexpr auto gc_formula = gc_formula_t::COST_BENEFIT;
 
 }
 
@@ -32,7 +28,6 @@ void segment_info_t::set_open(
   ceph_assert(_seq != NULL_SEG_SEQ);
   ceph_assert(_type != segment_type_t::NULL_SEG);
   ceph_assert(_category != data_category_t::NUM);
-  ceph_assert(is_rewrite_generation(_generation));
   state = Segment::segment_state_t::OPEN;
   seq = _seq;
   type = _type;
@@ -67,7 +62,6 @@ void segment_info_t::init_closed(
   ceph_assert(_seq != NULL_SEG_SEQ);
   ceph_assert(_type != segment_type_t::NULL_SEG);
   ceph_assert(_category != data_category_t::NUM);
-  ceph_assert(is_rewrite_generation(_generation));
   state = Segment::segment_state_t::CLOSED;
   seq = _seq;
   type = _type;
@@ -342,9 +336,13 @@ void JournalTrimmerImpl::config_t::validate() const
 {
   ceph_assert(max_journal_bytes <= DEVICE_OFF_MAX);
   ceph_assert(max_journal_bytes > target_journal_dirty_bytes);
+  ceph_assert(target_journal_dirty_bytes >= min_journal_dirty_bytes);
+  ceph_assert(target_journal_dirty_bytes > rewrite_dirty_bytes_per_cycle);
   ceph_assert(max_journal_bytes > target_journal_alloc_bytes);
-  ceph_assert(rewrite_dirty_bytes_per_cycle > 0);
-  ceph_assert(rewrite_backref_bytes_per_cycle > 0);
+  ceph_assert(rewrite_dirty_bytes_per_trans > 0);
+  ceph_assert(rewrite_dirty_bytes_per_cycle >=
+    rewrite_dirty_bytes_per_trans);
+  ceph_assert(max_backref_bytes_per_cycle > 0);
 }
 
 JournalTrimmerImpl::config_t
@@ -354,23 +352,28 @@ JournalTrimmerImpl::config_t::get_default(
   assert(roll_size);
   std::size_t target_dirty_bytes = 0;
   std::size_t target_alloc_bytes = 0;
+  std::size_t min_dirty_bytes = 0;
   std::size_t max_journal_bytes = 0;
   if (type == backend_type_t::SEGMENTED) {
-    target_dirty_bytes = 12 * roll_size;
+    min_dirty_bytes = 12 * roll_size;
     target_alloc_bytes = 2 * roll_size;
+    target_dirty_bytes = 14 * roll_size;
     max_journal_bytes = 16 * roll_size;
   } else {
     assert(type == backend_type_t::RANDOM_BLOCK);
-    target_dirty_bytes = roll_size / 4;
+    min_dirty_bytes = roll_size / 4;
     target_alloc_bytes = roll_size / 4;
+    target_dirty_bytes = roll_size / 3;
     max_journal_bytes = roll_size / 2;
   }
   return config_t{
     target_dirty_bytes,
     target_alloc_bytes,
+    min_dirty_bytes,
     max_journal_bytes,
-    1<<17,// rewrite_dirty_bytes_per_cycle
-    1<<24 // rewrite_backref_bytes_per_cycle
+    1<<26,// rewrite_dirty_bytes_per_cycle, 64MB
+    1<<17,// rewrite_dirty_bytes_per_trans, 128KB
+    1<<24 // max_backref_bytes_per_cycle, 16MB
   };
 }
 
@@ -381,33 +384,43 @@ JournalTrimmerImpl::config_t::get_test(
   assert(roll_size);
   std::size_t target_dirty_bytes = 0;
   std::size_t target_alloc_bytes = 0;
+  std::size_t min_dirty_bytes = 0;
   std::size_t max_journal_bytes = 0;
   if (type == backend_type_t::SEGMENTED) {
-    target_dirty_bytes = 2 * roll_size;
+    min_dirty_bytes = 2 * roll_size;
     target_alloc_bytes = 2 * roll_size;
+    target_dirty_bytes = 3 * roll_size;
     max_journal_bytes = 4 * roll_size;
   } else {
     assert(type == backend_type_t::RANDOM_BLOCK);
-    target_dirty_bytes = roll_size / 36;
+    min_dirty_bytes = roll_size / 36;
     target_alloc_bytes = roll_size / 4;
+    target_dirty_bytes = roll_size / 24;
     max_journal_bytes = roll_size / 2;
   }
   return config_t{
     target_dirty_bytes,
     target_alloc_bytes,
+    min_dirty_bytes,
     max_journal_bytes,
-    1<<17,// rewrite_dirty_bytes_per_cycle
-    1<<24 // rewrite_backref_bytes_per_cycle
+    (target_dirty_bytes > 1<<26)
+      ? 1<<25
+      : target_dirty_bytes / 2, // rewrite_dirty_bytes_per_cycle
+    1<<17,// rewrite_dirty_bytes_per_trans, 128KB
+    1<<24 // max_backref_bytes_per_cycle, 16MB
   };
 }
 
 JournalTrimmerImpl::JournalTrimmerImpl(
+  store_index_t store_index,
   BackrefManager &backref_manager,
   config_t config,
   backend_type_t type,
   device_off_t roll_start,
-  device_off_t roll_size)
-  : backref_manager(backref_manager),
+  device_off_t roll_size,
+  bool tail_include_alloc)
+  : JournalTrimmer(tail_include_alloc),
+    backref_manager(backref_manager),
     config(config),
     backend_type(type),
     roll_start(roll_start),
@@ -417,7 +430,7 @@ JournalTrimmerImpl::JournalTrimmerImpl(
   config.validate();
   ceph_assert(roll_start >= 0);
   ceph_assert(roll_size > 0);
-  register_metrics();
+  register_metrics(store_index);
 }
 
 void JournalTrimmerImpl::set_journal_head(journal_seq_t head)
@@ -480,7 +493,7 @@ void JournalTrimmerImpl::update_journal_tails(
     }
   }
 
-  if (alloc_tail != JOURNAL_SEQ_NULL) {
+  if (tail_include_alloc && alloc_tail != JOURNAL_SEQ_NULL) {
     ceph_assert(journal_head == JOURNAL_SEQ_NULL ||
                 journal_head >= alloc_tail);
     if (journal_alloc_tail != JOURNAL_SEQ_NULL &&
@@ -509,6 +522,31 @@ journal_seq_t JournalTrimmerImpl::get_tail_limit() const
   auto ret = journal_head.add_offset(
       backend_type,
       -static_cast<device_off_t>(config.max_journal_bytes),
+      roll_start,
+      roll_size);
+  return ret;
+}
+
+journal_seq_t JournalTrimmerImpl::get_dirty_tail_min_target() const
+{
+  assert(background_callback->is_ready());
+  auto ret = journal_head.add_offset(
+      backend_type,
+      -static_cast<device_off_t>(config.min_journal_dirty_bytes),
+      roll_start,
+      roll_size);
+  return ret;
+}
+
+journal_seq_t JournalTrimmerImpl::get_dirty_tail_target_per_cycle() const
+{
+  assert(background_callback->is_ready());
+  auto journal_dirty_bytes = get_journal_dirty_bytes();
+  assert(journal_dirty_bytes >= get_dirty_bytes_to_trim());
+  auto ret = journal_head.add_offset(
+      backend_type,
+      -static_cast<device_off_t>(
+	journal_dirty_bytes - get_dirty_bytes_to_trim()),
       roll_start,
       roll_size);
   return ret;
@@ -552,7 +590,8 @@ std::size_t JournalTrimmerImpl::get_dirty_journal_size() const
 
 std::size_t JournalTrimmerImpl::get_alloc_journal_size() const
 {
-  if (!background_callback->is_ready()) {
+  if (!background_callback->is_ready() ||
+      !tail_include_alloc) {
     return 0;
   }
   auto ret = journal_head.relative_to(
@@ -570,21 +609,21 @@ seastar::future<> JournalTrimmerImpl::trim() {
       if (should_trim_alloc()) {
         return trim_alloc(
         ).handle_error(
-          crimson::ct_error::assert_all{
+          crimson::ct_error::assert_all(
             "encountered invalid error in trim_alloc"
-          }
+          )
         );
       } else {
         return seastar::now();
       }
     },
     [this] {
-      if (should_trim_dirty()) {
+      if (should_start_trim_dirty()) {
         return trim_dirty(
         ).handle_error(
-          crimson::ct_error::assert_all{
+          crimson::ct_error::assert_all(
             "encountered invalid error in trim_dirty"
-          }
+          )
         );
       } else {
         return seastar::now();
@@ -618,7 +657,7 @@ JournalTrimmerImpl::trim_alloc()
       return backref_manager.merge_cached_backrefs(
         t,
         target,
-        config.rewrite_backref_bytes_per_cycle
+        config.max_backref_bytes_per_cycle
       ).si_then([this, FNAME, &t](auto trim_alloc_to)
         -> ExtentCallbackInterface::submit_transaction_direct_iertr::future<>
       {
@@ -646,59 +685,72 @@ JournalTrimmerImpl::trim_dirty()
 
   auto& shard_stats = extent_callback->get_shard_stats();
   ++(shard_stats.trim_dirty_num);
-  ++(shard_stats.pending_bg_num);
 
-  return repeat_eagain([this, FNAME, &shard_stats] {
-    ++(shard_stats.repeat_trim_dirty_num);
+  auto target = get_dirty_tail_target_per_cycle();
+  return ::crimson::repeat([this, FNAME, &shard_stats, target] {
+    if (should_stop_trim_dirty(target)) {
+      return trim_ertr::make_ready_future<
+	seastar::stop_iteration>(seastar::stop_iteration::yes);
+    }
+    ++(shard_stats.pending_bg_num);
+    return repeat_eagain([this, FNAME, &shard_stats, target] {
+      ++(shard_stats.repeat_trim_dirty_num);
 
-    return extent_callback->with_transaction_intr(
-      Transaction::src_t::TRIM_DIRTY,
-      "trim_dirty",
-      CACHE_HINT_NOCACHE,
-      [this, FNAME](auto &t)
-    {
-      auto target = get_dirty_tail_target();
-      DEBUGT("start, dirty_tail={}, target={}",
-             t, journal_dirty_tail, target);
-      return extent_callback->get_next_dirty_extents(
-        t,
-        target,
-        config.rewrite_dirty_bytes_per_cycle
-      ).si_then([this, FNAME, &t](auto dirty_list) {
-        DEBUGT("rewrite {} dirty extents", t, dirty_list.size());
-        return seastar::do_with(
-          std::move(dirty_list),
-          [this, &t](auto &dirty_list)
-        {
-          return trans_intr::do_for_each(
-            dirty_list,
-            [this, &t](auto &e) {
-            return extent_callback->rewrite_extent(
-                t, e, INIT_GENERATION, NULL_TIME);
-          });
-        });
-      }).si_then([this, &t] {
-        return extent_callback->submit_transaction_direct(t);
+      return extent_callback->with_transaction_intr(
+	Transaction::src_t::TRIM_DIRTY,
+	"trim_dirty",
+	CACHE_HINT_NOCACHE,
+	[this, FNAME, target](auto &t)
+      {
+	DEBUGT("start, dirty_tail={}, target={}",
+	       t, journal_dirty_tail, target);
+	return extent_callback->get_next_dirty_extents(
+	  t,
+	  target,
+	  config.rewrite_dirty_bytes_per_trans
+	).si_then([this, FNAME, &t](auto dirty_list) {
+	  DEBUGT("rewrite {} dirty extents", t, dirty_list.size());
+	  return seastar::do_with(
+	    std::move(dirty_list),
+	    [this, &t](auto &dirty_list)
+	  {
+	    return trans_intr::do_for_each(
+	      dirty_list,
+	      [this, &t](auto &e) {
+	      return extent_callback->rewrite_extent(
+		  t, e, INIT_GENERATION, NULL_TIME);
+	    });
+	  });
+	}).si_then([this, &t] {
+	  return extent_callback->submit_transaction_direct(t);
+	});
       });
-    });
-  }).finally([this, FNAME, &shard_stats] {
-    DEBUG("finish, dirty_tail={}", journal_dirty_tail);
+    }).safe_then([] {
+      return seastar::stop_iteration::no;
+    }).finally([this, FNAME, &shard_stats] {
+      DEBUG("finish, dirty_tail={}", journal_dirty_tail);
 
-    assert(shard_stats.pending_bg_num);
-    --(shard_stats.pending_bg_num);
+      assert(shard_stats.pending_bg_num);
+      --(shard_stats.pending_bg_num);
+      return seastar::stop_iteration::no;
+    });
   });
 }
 
-void JournalTrimmerImpl::register_metrics()
+void JournalTrimmerImpl::register_metrics(store_index_t store_index)
 {
   namespace sm = seastar::metrics;
   metrics.add_group("journal_trimmer", {
     sm::make_counter("dirty_journal_bytes",
                      [this] { return get_dirty_journal_size(); },
-                     sm::description("the size of the journal for dirty extents")),
+                     sm::description("the size of the journal for dirty extents"),
+                     {sm::label_instance("shard_store_index",
+                                         std::to_string(store_index))}),
     sm::make_counter("alloc_journal_bytes",
                      [this] { return get_alloc_journal_size(); },
-                     sm::description("the size of the journal for alloc info"))
+                     sm::description("the size of the journal for alloc info"),
+                     {sm::label_instance("shard_store_index",
+                                         std::to_string(store_index))}),
   });
 }
 
@@ -708,7 +760,7 @@ std::ostream &operator<<(
   os << "JournalTrimmer(";
   if (stats.trimmer.background_callback->is_ready()) {
     os << "should_block_io_on_trim=" << stats.trimmer.should_block_io_on_trim()
-       << ", should_(trim_dirty=" << stats.trimmer.should_trim_dirty()
+       << ", should_(trim_dirty=" << stats.trimmer.should_start_trim_dirty()
        << ", trim_alloc=" << stats.trimmer.should_trim_alloc() << ")";
   } else {
     os << "not-ready";
@@ -719,7 +771,8 @@ std::ostream &operator<<(
        << ", dirty_tail=" << stats.trimmer.get_dirty_tail();
     if (stats.trimmer.background_callback->is_ready()) {
       os << ", alloc_tail_target=" << stats.trimmer.get_alloc_tail_target()
-         << ", dirty_tail_target=" << stats.trimmer.get_dirty_tail_target()
+         << ", dirty_tail_min_target=" << stats.trimmer.get_dirty_tail_min_target()
+	 << ", dirty_tail_target=" << stats.trimmer.get_dirty_tail_target()
          << ", tail_limit=" << stats.trimmer.get_tail_limit();
     }
   }
@@ -861,19 +914,36 @@ std::ostream &operator<<(
 }
 
 SegmentCleaner::SegmentCleaner(
+  store_index_t store_index,
   config_t config,
   SegmentManagerGroupRef&& sm_group,
   BackrefManager &backref_manager,
   SegmentSeqAllocator &segment_seq_allocator,
+  rewrite_gen_t max_rewrite_generation,
   bool detailed,
   bool is_cold)
-  : detailed(detailed),
+  : store_index(store_index),
+    detailed(detailed),
     is_cold(is_cold),
     config(config),
     sm_group(std::move(sm_group)),
     backref_manager(backref_manager),
-    ool_segment_seq_allocator(segment_seq_allocator)
+    ool_segment_seq_allocator(segment_seq_allocator),
+    max_rewrite_generation(max_rewrite_generation)
 {
+  LOG_PREFIX(SegmentCleaner::SegmentCleaner);
+  auto formula = crimson::common::get_conf<std::string>(
+    "seastore_segment_cleaner_gc_formula");
+  INFO("gc_formula={}, max_rewrite_generation={}",
+    formula, max_rewrite_generation);
+  if (formula == "greedy") {
+    gc_formula = gc_formula_t::GREEDY;
+  } else if (formula == "cost_benefit") {
+    gc_formula = gc_formula_t::COST_BENEFIT;
+  } else {
+    assert(formula == "benefit");
+    gc_formula = gc_formula_t::BENEFIT;
+  }
   config.validate();
 }
 
@@ -899,96 +969,127 @@ void SegmentCleaner::register_metrics()
   metrics.add_group(prefix, {
     sm::make_counter("segments_number",
 		     [this] { return segments.get_num_segments(); },
-		     sm::description("the number of segments")),
+		     sm::description("the number of segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segment_size",
 		     [this] { return segments.get_segment_size(); },
-		     sm::description("the bytes of a segment")),
+		     sm::description("the bytes of a segment"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_in_journal",
 		     [this] { return get_segments_in_journal(); },
-		     sm::description("the number of segments in journal")),
+		     sm::description("the number of segments in journal"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_type_journal",
 		     [this] { return segments.get_num_type_journal(); },
-		     sm::description("the number of segments typed journal")),
+		     sm::description("the number of segments typed journal"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_type_ool",
 		     [this] { return segments.get_num_type_ool(); },
-		     sm::description("the number of segments typed out-of-line")),
+		     sm::description("the number of segments typed out-of-line"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_open",
 		     [this] { return segments.get_num_open(); },
-		     sm::description("the number of open segments")),
+		     sm::description("the number of open segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_empty",
 		     [this] { return segments.get_num_empty(); },
-		     sm::description("the number of empty segments")),
+		     sm::description("the number of empty segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_closed",
 		     [this] { return segments.get_num_closed(); },
-		     sm::description("the number of closed segments")),
+		     sm::description("the number of closed segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_counter("segments_count_open_journal",
 		     [this] { return segments.get_count_open_journal(); },
-		     sm::description("the count of open journal segment operations")),
+		     sm::description("the count of open journal segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_count_open_ool",
 		     [this] { return segments.get_count_open_ool(); },
-		     sm::description("the count of open ool segment operations")),
+		     sm::description("the count of open ool segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_count_release_journal",
 		     [this] { return segments.get_count_release_journal(); },
-		     sm::description("the count of release journal segment operations")),
+		     sm::description("the count of release journal segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_count_release_ool",
 		     [this] { return segments.get_count_release_ool(); },
-		     sm::description("the count of release ool segment operations")),
+		     sm::description("the count of release ool segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_count_close_journal",
 		     [this] { return segments.get_count_close_journal(); },
-		     sm::description("the count of close journal segment operations")),
+		     sm::description("the count of close journal segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("segments_count_close_ool",
 		     [this] { return segments.get_count_close_ool(); },
-		     sm::description("the count of close ool segment operations")),
+		     sm::description("the count of close ool segment operations"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_counter("total_bytes",
 		     [this] { return segments.get_total_bytes(); },
-		     sm::description("the size of the space")),
+		     sm::description("the size of the space"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("available_bytes",
 		     [this] { return segments.get_available_bytes(); },
-		     sm::description("the size of the space is available")),
+		     sm::description("the size of the space is available"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("unavailable_unreclaimable_bytes",
 		     [this] { return get_unavailable_unreclaimable_bytes(); },
-		     sm::description("the size of the space is unavailable and unreclaimable")),
+		     sm::description("the size of the space is unavailable and unreclaimable"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("unavailable_reclaimable_bytes",
 		     [this] { return get_unavailable_reclaimable_bytes(); },
-		     sm::description("the size of the space is unavailable and reclaimable")),
+		     sm::description("the size of the space is unavailable and reclaimable"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("used_bytes", stats.used_bytes,
-		     sm::description("the size of the space occupied by live extents")),
+		     sm::description("the size of the space occupied by live extents"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("unavailable_unused_bytes",
 		     [this] { return get_unavailable_unused_bytes(); },
-		     sm::description("the size of the space is unavailable and not alive")),
+		     sm::description("the size of the space is unavailable and not alive"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_counter("projected_count", stats.projected_count,
-		    sm::description("the number of projected usage reservations")),
+		    sm::description("the number of projected usage reservations"),
+        {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("projected_used_bytes_sum", stats.projected_used_bytes_sum,
-		    sm::description("the sum of the projected usage in bytes")),
+		    sm::description("the sum of the projected usage in bytes"),
+        {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_counter("reclaimed_bytes", stats.reclaimed_bytes,
-		     sm::description("rewritten bytes due to reclaim")),
+		     sm::description("rewritten bytes due to reclaim"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("reclaimed_segment_bytes", stats.reclaimed_segment_bytes,
-		     sm::description("rewritten bytes due to reclaim")),
+		     sm::description("rewritten bytes due to reclaim"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("closed_journal_used_bytes", stats.closed_journal_used_bytes,
-		     sm::description("used bytes when close a journal segment")),
+		     sm::description("used bytes when close a journal segment"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("closed_journal_total_bytes", stats.closed_journal_total_bytes,
-		     sm::description("total bytes of closed journal segments")),
+		     sm::description("total bytes of closed journal segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("closed_ool_used_bytes", stats.closed_ool_used_bytes,
-		     sm::description("used bytes when close a ool segment")),
+		     sm::description("used bytes when close a ool segment"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("closed_ool_total_bytes", stats.closed_ool_total_bytes,
-		     sm::description("total bytes of closed ool segments")),
+		     sm::description("total bytes of closed ool segments"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_gauge("available_ratio",
                    [this] { return segments.get_available_ratio(); },
-                   sm::description("ratio of available space to total space")),
+                   sm::description("ratio of available space to total space"),
+                   {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_gauge("reclaim_ratio",
                    [this] { return get_reclaim_ratio(); },
-                   sm::description("ratio of reclaimable space to unavailable space")),
+                   sm::description("ratio of reclaimable space to unavailable space"),
+                   {sm::label_instance("shard_store_index", std::to_string(store_index))}),
 
     sm::make_histogram("segment_utilization_distribution",
 		       [this]() -> seastar::metrics::histogram& {
 		         return stats.segment_util;
 		       },
-		       sm::description("utilization distribution of all segments"))
+		       sm::description("utilization distribution of all segments"),
+           {sm::label_instance("shard_store_index", std::to_string(store_index))})
   });
 }
 
@@ -1009,6 +1110,7 @@ segment_id_t SegmentCleaner::allocate_segment(
     auto& segment_info = it->second;
     if (segment_info.is_empty()) {
       auto old_usage = calc_utilization(seg_id);
+      ceph_assert(is_rewrite_generation(generation, max_rewrite_generation));
       segments.mark_open(seg_id, seq, type, category, generation);
       if (type == segment_type_t::JOURNAL) {
         assert(trimmer != nullptr);
@@ -1024,8 +1126,93 @@ segment_id_t SegmentCleaner::allocate_segment(
   ERROR("out of space with {} {} {} {}",
         type, segment_seq_printer_t{seq}, category,
         rewrite_gen_printer_t{generation});
-  ceph_abort("seastore device size setting is too small");
+  ceph_abort_msg("seastore device size setting is too small");
   return NULL_SEG_ID;
+}
+
+void SegmentCleaner::maybe_adjust_thresholds()
+{
+  // Sample current open-segment count into the window peak each call.
+  peak_open_segments_window = std::max(
+      peak_open_segments_window, segments.get_num_open());
+
+  // Only recompute hard_limit every 30s.
+  LOG_PREFIX(SegmentCleaner::maybe_adjust_thresholds);
+  auto now = seastar::lowres_clock::now();
+  double elapsed_sec = 0.0;
+  if (adaptive_last_time != seastar::lowres_clock::time_point{}) {
+    elapsed_sec = std::chrono::duration<double>(
+        now - adaptive_last_time).count();
+    if (elapsed_sec < 30.0) {
+      return;
+    }
+  }
+  adaptive_last_time = now;
+  double old_hard_limit = config.available_ratio_hard_limit;
+  double old_gc_max = config.available_ratio_gc_max;
+
+  // Architectural floor: named writers (journal + hot/cold gens + metadata).
+  auto hot = crimson::common::get_conf<uint64_t>(
+      "seastore_hot_tier_generations");
+  auto cold = crimson::common::get_conf<uint64_t>(
+      "seastore_cold_tier_generations");
+  std::size_t named_writers = hot + cold + 2;
+  std::size_t seg_size = segments.get_segment_size();
+  std::size_t total_bytes = segments.get_total_bytes();
+  if (total_bytes == 0 || seg_size == 0) {
+    return;
+  }
+
+  double segment_ratio =
+      static_cast<double>(seg_size) /
+      static_cast<double>(total_bytes);
+
+  // hard_limit = (max(peak, named) + 1) * segment_ratio. "+1" is the minimum
+  // safety unit: allow one more open segment than ever observed.
+  std::size_t observed_peak =
+      std::max<std::size_t>(peak_open_segments_window, named_writers);
+  double new_hard_limit =
+      static_cast<double>(observed_peak + 1) * segment_ratio;
+
+  double crash_floor =
+      static_cast<double>(named_writers) * segment_ratio;
+  crash_floor = std::min(crash_floor, 0.95);
+  new_hard_limit = std::min(std::max(new_hard_limit, crash_floor), 0.95);
+
+  // Apply lazy decay covering elapsed time (allows gc_max to gradually fall
+  // when workload eases) so peaks fade even when the background process was
+  // idle and this hook went uncalled for many cycles.
+  if (elapsed_sec > 0.0) {
+    peak_projected_used_decayed *= std::pow(0.995, elapsed_sec / 30.0);
+  }
+
+  // gc_max decays halfway each window toward (hard_limit + recent peak burst).
+  double burst_floor_ratio =
+      peak_projected_used_decayed /
+      static_cast<double>(total_bytes);
+  double target_gc_max = new_hard_limit + burst_floor_ratio;
+  double decayed_gc_max =
+      (config.available_ratio_gc_max + target_gc_max) / 2.0;
+  config.available_ratio_gc_max = std::max(decayed_gc_max, target_gc_max);
+  if (config.available_ratio_gc_max <= new_hard_limit) {
+    config.available_ratio_gc_max = new_hard_limit + segment_ratio;
+  }
+  config.available_ratio_hard_limit = new_hard_limit;
+
+  if (old_hard_limit != new_hard_limit || old_gc_max != config.available_ratio_gc_max) {
+    INFO("[ADAPTIVE_GC] update: hard_limit {:.4f} -> {:.4f}, gc_max {:.4f} -> {:.4f} "
+         "(peak_open={} named={} peak_proj_decayed={:.0f} crash_floor={:.4f})",
+         old_hard_limit, new_hard_limit,
+         old_gc_max, config.available_ratio_gc_max,
+         peak_open_segments_window, named_writers,
+         peak_projected_used_decayed, crash_floor);
+  } else {
+    DEBUG("[ADAPTIVE_GC] no-op: hard_limit {:.4f}, gc_max {:.4f}",
+          old_hard_limit, old_gc_max);
+  }
+
+  // Reset per-window open-segment peak.
+  peak_open_segments_window = segments.get_num_open();
 }
 
 void SegmentCleaner::close_segment(segment_id_t segment)
@@ -1053,11 +1240,11 @@ double SegmentCleaner::calc_gc_benefit_cost(
 {
   double util = calc_utilization(id);
   ceph_assert(util >= 0 && util < 1);
-  if constexpr (gc_formula == gc_formula_t::GREEDY) {
+  if (gc_formula == gc_formula_t::GREEDY) {
     return 1 - util;
   }
 
-  if constexpr (gc_formula == gc_formula_t::COST_BENEFIT) {
+  if (gc_formula == gc_formula_t::COST_BENEFIT) {
     if (util == 0) {
       return std::numeric_limits<double>::max();
     }
@@ -1088,14 +1275,22 @@ double SegmentCleaner::calc_gc_benefit_cost(
           (2 * age_factor - 2) * util + 1);
 }
 
-SegmentCleaner::do_reclaim_space_ret
-SegmentCleaner::do_reclaim_space(
+using do_reclaim_space_ertr = base_ertr;
+using do_reclaim_space_ret = do_reclaim_space_ertr::future<>;
+do_reclaim_space_ret do_reclaim_space(
     const std::vector<CachedExtentRef> &backref_extents,
-    const backref_mapping_list_t &pin_list,
+    backref_mapping_list_t &pin_list,
     std::size_t &reclaimed,
-    std::size_t &runs)
+    std::size_t &runs,
+    ExtentCallbackInterface &extent_callback,
+    bool is_cold,
+    BackrefManager &backref_manager,
+    sea_time_point modify_time,
+    paddr_t start_pos,
+    paddr_t end_pos,
+    rewrite_gen_t target_generation)
 {
-  auto& shard_stats = extent_callback->get_shard_stats();
+  auto& shard_stats = extent_callback.get_shard_stats();
   if (is_cold) {
     ++(shard_stats.cleaner_cold_num);
   } else {
@@ -1112,8 +1307,10 @@ SegmentCleaner::do_reclaim_space(
   // 	tree doesn't match the extent's paddr
   // 3. the extent is physical and doesn't exist in the
   // 	lba tree, backref tree or backref cache;
-  return repeat_eagain([this, &backref_extents, &shard_stats,
-                        &pin_list, &reclaimed, &runs] {
+  return repeat_eagain([&extent_callback, &backref_extents,
+			&shard_stats, &pin_list, &reclaimed,
+			&runs, is_cold, &backref_manager,
+			modify_time, start_pos, end_pos, target_generation] {
     reclaimed = 0;
     runs++;
     transaction_type_t src;
@@ -1124,23 +1321,26 @@ SegmentCleaner::do_reclaim_space(
       src = Transaction::src_t::CLEANER_MAIN;
       ++(shard_stats.repeat_cleaner_main_num);
     }
-    return extent_callback->with_transaction_intr(
+    return extent_callback.with_transaction_intr(
       src,
       "clean_reclaim_space",
       CACHE_HINT_NOCACHE,
-      [this, &backref_extents, &pin_list, &reclaimed](auto &t)
+      [&extent_callback, &backref_extents, &pin_list, modify_time,
+      &backref_manager, &reclaimed, start_pos, end_pos,
+      target_generation](auto &t)
     {
       return seastar::do_with(
         std::vector<CachedExtentRef>(backref_extents),
-        [this, &t, &reclaimed, &pin_list](auto &extents)
+        [&extent_callback, &t, &reclaimed, &pin_list, modify_time,
+	&backref_manager, start_pos, end_pos, target_generation](auto &extents)
       {
         LOG_PREFIX(SegmentCleaner::do_reclaim_space);
         // calculate live extents
         auto cached_backref_entries =
-          backref_manager.get_cached_backref_entries_in_range(
-            reclaim_state->start_pos, reclaim_state->end_pos);
+          backref_manager.get_cached_backref_entries_in_range(start_pos, end_pos);
         backref_entry_query_set_t backref_entries;
         for (auto &pin : pin_list) {
+	  pin.renew_cursor(t);
           backref_entries.emplace(
             pin.get_key(),
             pin.get_val(),
@@ -1161,10 +1361,10 @@ SegmentCleaner::do_reclaim_space(
                t, backref_entries.size(), extents.size());
 	return seastar::do_with(
 	  std::move(backref_entries),
-	  [this, &extents, &t](auto &backref_entries) {
+	  [&extent_callback, &extents, &t](auto &backref_entries) {
 	  return trans_intr::parallel_for_each(
 	    backref_entries,
-	    [this, &extents, &t](auto &ent)
+	    [&extent_callback, &extents, &t](auto &ent)
 	  {
 	    LOG_PREFIX(SegmentCleaner::do_reclaim_space);
 	    TRACET("getting extent of type {} at {}~0x{:x}",
@@ -1172,7 +1372,7 @@ SegmentCleaner::do_reclaim_space(
 	      ent.type,
 	      ent.paddr,
 	      ent.len);
-	    return extent_callback->get_extents_if_live(
+	    return extent_callback.get_extents_if_live(
 	      t, ent.type, ent.paddr, ent.laddr, ent.len
 	    ).si_then([FNAME, &extents, &ent, &t](auto list) {
 	      if (list.empty()) {
@@ -1184,21 +1384,22 @@ SegmentCleaner::do_reclaim_space(
 	      }
 	    });
 	  });
-	}).si_then([FNAME, &extents, this, &reclaimed, &t] {
+	}).si_then([FNAME, &extents, &extent_callback,
+		    &reclaimed, &t, modify_time, target_generation] {
           DEBUGT("reclaim {} extents", t, extents.size());
           // rewrite live extents
-          auto modify_time = segments[reclaim_state->get_segment_id()].modify_time;
           return trans_intr::do_for_each(
             extents,
-            [this, modify_time, &t, &reclaimed](auto ext)
+            [&extent_callback, modify_time, &t,
+	    &reclaimed, target_generation](auto ext)
           {
             reclaimed += ext->get_length();
-            return extent_callback->rewrite_extent(
-                t, ext, reclaim_state->target_generation, modify_time);
+            return extent_callback.rewrite_extent(
+                t, ext, target_generation, modify_time);
           });
         });
-      }).si_then([this, &t] {
-        return extent_callback->submit_transaction_direct(t);
+      }).si_then([&extent_callback, &t] {
+        return extent_callback.submit_transaction_direct(t);
       });
     });
   }).finally([&shard_stats] {
@@ -1220,16 +1421,21 @@ SegmentCleaner::clean_space_ret SegmentCleaner::clean_space()
          space_tracker->calc_utilization(seg_id),
          sea_time_point_printer_t{segments.get_time_bound()});
     ceph_assert(segment_info.is_closed());
+    ceph_assert(is_rewrite_generation(
+	segment_info.generation, max_rewrite_generation));
     reclaim_state = reclaim_state_t::create(
         seg_id, segment_info.generation, segments.get_segment_size());
+    assert(is_target_rewrite_generation(
+	reclaim_state->target_generation, max_rewrite_generation));
   }
   reclaim_state->advance(config.reclaim_bytes_per_cycle);
 
-  DEBUG("reclaiming {} {}~{}",
+  double pavail_ratio = get_projected_available_ratio();
+  DEBUG("reclaiming {} {}~{}, projected_avail_ratio={}",
         rewrite_gen_printer_t{reclaim_state->generation},
         reclaim_state->start_pos,
-        reclaim_state->end_pos);
-  double pavail_ratio = get_projected_available_ratio();
+        reclaim_state->end_pos,
+        pavail_ratio);
   sea_time_point start = seastar::lowres_system_clock::now();
 
   // Backref-tree doesn't support tree-read during tree-updates with parallel
@@ -1286,7 +1492,14 @@ SegmentCleaner::clean_space_ret SegmentCleaner::clean_space()
           backref_extents,
           pin_list,
           reclaimed,
-          runs
+          runs,
+	  *extent_callback,
+	  is_cold,
+	  backref_manager,
+	  segments[reclaim_state->get_segment_id()].modify_time,
+	  reclaim_state->start_pos,
+	  reclaim_state->end_pos,
+	  reclaim_state->target_generation
       ).safe_then([this, FNAME, pavail_ratio, start, &reclaimed, &runs] {
         stats.reclaiming_bytes += reclaimed;
         auto d = seastar::lowres_system_clock::now() - start;
@@ -1304,9 +1517,9 @@ SegmentCleaner::clean_space_ret SegmentCleaner::clean_space()
           return sm_group->release_segment(segment_to_release
           ).handle_error(
             clean_space_ertr::pass_further{},
-            crimson::ct_error::assert_all{
+            crimson::ct_error::assert_all(
               "SegmentCleaner::clean_space encountered invalid error in release_segment"
-            }
+            )
           ).safe_then([this, FNAME, segment_to_release] {
             auto old_usage = calc_utilization(segment_to_release);
             if(unlikely(old_usage != 0)) {
@@ -1439,7 +1652,7 @@ SegmentCleaner::mount_ret SegmentCleaner::mount()
         return mount_ertr::now();
       }),
       crimson::ct_error::input_output_error::pass_further{},
-      crimson::ct_error::assert_all{"unexpected error"}
+      crimson::ct_error::assert_all("unexpected error")
     );
   }).safe_then([this, FNAME] {
     INFO("done, {}", segments);
@@ -1505,7 +1718,7 @@ SegmentCleaner::scan_extents_ret SegmentCleaner::scan_no_tail_segment(
   });
 }
 
-bool SegmentCleaner::check_usage()
+bool SegmentCleaner::check_usage(bool)
 {
   SpaceTrackerIRef tracker(space_tracker->make_empty());
   extent_callback->with_transaction_weak(
@@ -1620,13 +1833,13 @@ segment_id_t SegmentCleaner::get_next_reclaim_segment() const
   segment_id_t id = NULL_SEG_ID;
   double max_benefit_cost = 0;
   sea_time_point now_time;
-  if constexpr (gc_formula != gc_formula_t::GREEDY) {
+  if (gc_formula != gc_formula_t::GREEDY) {
     now_time = seastar::lowres_system_clock::now();
   } else {
     now_time = NULL_TIME;
   }
   sea_time_point bound_time;
-  if constexpr (gc_formula == gc_formula_t::BENEFIT) {
+  if (gc_formula == gc_formula_t::BENEFIT) {
     bound_time = segments.get_time_bound();
     if (bound_time == NULL_TIME) {
       WARN("BENEFIT -- bound_time is NULL_TIME");
@@ -1634,15 +1847,52 @@ segment_id_t SegmentCleaner::get_next_reclaim_segment() const
   } else {
     bound_time = NULL_TIME;
   }
+  // Track the configured formula's best-scoring candidate alongside the
+  // greedy choice (lowest utilization / highest free fraction).
+  // See doc/dev/crimson/seastore.rst#cleaner-gc-autotune.
+  segment_id_t greedy_id = NULL_SEG_ID;
+  double greedy_min_util = 1.0;
   for (auto& [_id, segment_info] : segments) {
     if (segment_info.is_closed() &&
         (trimmer == nullptr ||
          !segment_info.is_in_journal(trimmer->get_journal_tail()))) {
+      // Track the configured formula's best-scoring reclaim candidate.
       double benefit_cost = calc_gc_benefit_cost(_id, now_time, bound_time);
       if (benefit_cost > max_benefit_cost) {
         id = _id;
         max_benefit_cost = benefit_cost;
       }
+      // Track the greedy candidate (lowest utilization / highest free fraction).
+      double util = calc_utilization(_id);
+      if (util < greedy_min_util) {
+        greedy_id = _id;
+        greedy_min_util = util;
+      }
+    }
+  }
+  // Autotune override: prefer greedy when its pick would free far more.
+  // See doc/dev/crimson/seastore.rst#cleaner-gc-autotune.
+  const bool autotune_enabled =
+      crimson::common::get_conf<bool>(
+        "seastore_segment_cleaner_gc_autotune");
+  if (autotune_enabled &&
+      gc_formula != gc_formula_t::GREEDY &&
+      id != NULL_SEG_ID && greedy_id != NULL_SEG_ID && id != greedy_id) {
+    double picked_util = calc_utilization(id);
+    double picked_free = 1.0 - picked_util;
+    double greedy_free = 1.0 - greedy_min_util;
+    const double ratio = crimson::common::get_conf<double>(
+      "seastore_segment_cleaner_gc_autotune_ratio");
+    if (should_override_to_greedy(picked_free, greedy_free, ratio)) {
+      DEBUG("auto-tune: formula picked seg {} (util {:.3f}, free {:.3f}),"
+            " overriding with greedy seg {} (util {:.3f}, free {:.3f})",
+            id, picked_util, picked_free,
+            greedy_id, greedy_min_util, greedy_free);
+      id = greedy_id;
+      // Recompute the formula score for the chosen segment so the
+      // value logged below stays semantically consistent.
+      max_benefit_cost =
+          calc_gc_benefit_cost(greedy_id, now_time, bound_time);
     }
   }
   if (id != NULL_SEG_ID) {
@@ -1652,7 +1902,7 @@ segment_id_t SegmentCleaner::get_next_reclaim_segment() const
   } else {
     ceph_assert(get_segments_reclaimable() == 0);
     // see should_clean_space()
-    ceph_abort("impossible!");
+    ceph_abort_msg("impossible!");
     return NULL_SEG_ID;
   }
 }
@@ -1661,6 +1911,11 @@ bool SegmentCleaner::try_reserve_projected_usage(std::size_t projected_usage)
 {
   assert(background_callback->is_ready());
   stats.projected_used_bytes += projected_usage;
+  // Update decayed peak; the slow decay in maybe_adjust_thresholds() lets old
+  // peaks fade so gc_max can eventually re-discover lower floors.
+  peak_projected_used_decayed = std::max(
+      peak_projected_used_decayed,
+      static_cast<double>(stats.projected_used_bytes));
   if (should_block_io_on_clean()) {
     stats.projected_used_bytes -= projected_usage;
     return false;
@@ -1703,12 +1958,16 @@ void SegmentCleaner::print(std::ostream &os, bool is_detailed) const
 }
 
 RBMCleaner::RBMCleaner(
+  store_index_t store_index,
   RBMDeviceGroupRef&& rb_group,
   BackrefManager &backref_manager,
+  LBAManager &lba_manager,
   bool detailed)
-  : detailed(detailed),
+  : store_index(store_index),
+    detailed(detailed),
     rb_group(std::move(rb_group)),
-    backref_manager(backref_manager)
+    backref_manager(backref_manager),
+    lba_manager(lba_manager)
 {}
 
 void RBMCleaner::print(std::ostream &os, bool is_detailed) const
@@ -1772,6 +2031,27 @@ void RBMCleaner::commit_space_used(paddr_t addr, extent_len_t len)
 bool RBMCleaner::try_reserve_projected_usage(std::size_t projected_usage)
 {
   assert(background_callback->is_ready());
+
+  // Capacity check. Without this, concurrent transactions over-commit the
+  // RBM device: each reserves but the cleaner has no clean_space() yet, so
+  // a write that physically can't be served reaches the allocator and
+  // surfaces as `unexpected enospc` asserts in the data path (object_data
+  // _handler.cc et al.). Return false so the EPM BackgroundProcess blocks
+  // the IO until committed transactions release space.
+  //
+  // Headroom carves out room for metadata writes (LBA btree, backref) and
+  // for fragmentation slack the allocator can't pack into. 5% is a starting
+  // point; until RBMCleaner::clean_space() exists we cannot reclaim from
+  // fragmented free space, so headroom doubles as a fragmentation guard.
+  assert(get_total_bytes() > get_journal_bytes());
+  auto data_capacity = get_total_bytes() - get_journal_bytes();
+  auto headroom = data_capacity / 20;
+  auto committed_and_projected = stats.used_bytes
+                               + stats.projected_used_bytes
+                               + projected_usage;
+  if (committed_and_projected + headroom > data_capacity) {
+    return false;
+  }
   stats.projected_used_bytes += projected_usage;
   return true;
 }
@@ -1804,14 +2084,14 @@ RBMCleaner::mount_ret RBMCleaner::mount()
       return it->open(
       ).handle_error(
 	crimson::ct_error::input_output_error::pass_further(),
-	crimson::ct_error::assert_all{
-	"Invalid error when opening RBM"}
+	crimson::ct_error::assert_all(
+	"Invalid error when opening RBM")
       );
     });
   });
 }
 
-bool RBMCleaner::check_usage()
+bool RBMCleaner::check_usage(bool has_cold_tier)
 {
   assert(detailed);
   const auto& rbms = rb_group->get_rb_managers();
@@ -1819,39 +2099,56 @@ bool RBMCleaner::check_usage()
   extent_callback->with_transaction_weak(
       "check_usage",
       CACHE_HINT_NOCACHE,
-      [this, &tracker, &rbms](auto &t) {
-    return backref_manager.scan_mapped_space(
-      t,
-      [&tracker, &rbms](
-        paddr_t paddr,
-	paddr_t backref_key,
-        extent_len_t len,
-        extent_types_t type,
-        laddr_t laddr)
-    {
-      for (auto rbm : rbms) {
-	if (rbm->get_device_id() == paddr.get_device_id()) {
-	  if (is_backref_node(type)) {
-	    assert(laddr == L_ADDR_NULL);
-	    assert(backref_key.is_absolute_random_block()
-	           || backref_key == P_ADDR_MIN);
-	    tracker.allocate(
-	      paddr,
-	      len);
-	  } else if (laddr == L_ADDR_NULL) {
-	    assert(backref_key == P_ADDR_NULL);
-	    tracker.release(
-	      paddr,
-	      len);
-	  } else {
-	    assert(backref_key == P_ADDR_NULL);
-	    tracker.allocate(
-	      paddr,
-	      len);
-	  }
-	}
-      }
-    });
+      [this, &tracker, &rbms, has_cold_tier](auto &t) {
+    if (has_cold_tier) {
+      return backref_manager.scan_mapped_space(
+        t,
+        [&tracker, &rbms](
+          paddr_t paddr,
+          paddr_t backref_key,
+          extent_len_t len,
+          extent_types_t type,
+          laddr_t laddr)
+      {
+        for (auto rbm : rbms) {
+          if (rbm->get_device_id() == paddr.get_device_id()) {
+            if (is_backref_node(type)) {
+              assert(laddr == L_ADDR_NULL);
+              assert(backref_key.is_absolute_random_block()
+                     || backref_key == P_ADDR_MIN);
+              tracker.allocate(
+                paddr,
+                len);
+            } else if (laddr == L_ADDR_NULL) {
+              assert(backref_key == P_ADDR_NULL);
+              tracker.release(
+                paddr,
+                len);
+            } else {
+              assert(backref_key == P_ADDR_NULL);
+              tracker.allocate(
+                paddr,
+                len);
+            }
+          }
+        }
+      });
+    } else {
+      return lba_manager.scan_mapped_space(
+        t,
+        [&tracker, &rbms](
+          paddr_t paddr,
+          extent_len_t len,
+          extent_types_t type,
+          laddr_t laddr)
+      {
+        for (auto rbm : rbms) {
+          if (rbm->get_device_id() == paddr.get_device_id()) {
+            tracker.allocate(paddr, len);
+          }
+        }
+      });
+    }
   }).unsafe_get();
   return equals(tracker);
 }
@@ -1900,12 +2197,15 @@ void RBMCleaner::register_metrics()
   metrics.add_group("rbm_cleaner", {
     sm::make_counter("total_bytes",
 		     [this] { return get_total_bytes(); },
-		     sm::description("the size of the space")),
+		     sm::description("the size of the space"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("available_bytes",
 		     [this] { return get_total_bytes() - get_journal_bytes() - stats.used_bytes; },
-		     sm::description("the size of the space is available")),
+		     sm::description("the size of the space is available"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))}),
     sm::make_counter("used_bytes", stats.used_bytes,
-		     sm::description("the size of the space occupied by live extents")),
+		     sm::description("the size of the space occupied by live extents"),
+         {sm::label_instance("shard_store_index", std::to_string(store_index))})
   });
 }
 

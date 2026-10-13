@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -176,15 +177,17 @@ void MDSMap::mds_info_t::dump(std::ostream& o) const
   o << "]";
 }
 
-void MDSMap::mds_info_t::generate_test_instances(std::list<mds_info_t*>& ls)
+auto MDSMap::mds_info_t::generate_test_instances() -> std::list<mds_info_t>
 {
-  mds_info_t *sample = new mds_info_t();
-  ls.push_back(sample);
-  sample = new mds_info_t();
-  sample->global_id = 1;
-  sample->name = "test_instance";
-  sample->rank = 0;
-  ls.push_back(sample);
+  std::list<mds_info_t> ls;
+  mds_info_t sample;
+  ls.push_back(std::move(sample));
+  sample = mds_info_t();
+  sample.global_id = 1;
+  sample.name = "test_instance";
+  sample.rank = 0;
+  ls.push_back(std::move(sample));
+  return ls;
 }
 
 void MDSMap::dump(Formatter *f) const
@@ -274,20 +277,23 @@ void MDSMap::dump_flags_state(Formatter *f) const
     f->close_section();
 }
 
-void MDSMap::generate_test_instances(std::list<MDSMap*>& ls)
+std::list<MDSMap> MDSMap::generate_test_instances()
 {
-  MDSMap *m = new MDSMap();
-  m->max_mds = 1;
-  m->data_pools.push_back(0);
-  m->metadata_pool = 1;
-  m->cas_pool = 2;
-  m->compat = get_compat_set_all();
+  std::list<MDSMap> ls;
+  MDSMap m;
+  m.max_mds = 1;
+  m.data_pools.push_back(0);
+  m.metadata_pool = 1;
+  m.cas_pool = 2;
+  m.compat = get_compat_set_all();
 
   // these aren't the defaults, just in case anybody gets confused
-  m->session_timeout = 61;
-  m->session_autoclose = 301;
-  m->max_file_size = 1<<24;
-  ls.push_back(m);
+  m.session_timeout = 61;
+  m.session_autoclose = 301;
+  m.max_file_size = 1<<24;
+  ls.push_back(std::move(m));
+
+  return ls;
 }
 
 void MDSMap::print(ostream& out) const

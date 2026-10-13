@@ -1,15 +1,15 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
 #include "common/versioned_variant.h"
 #include "rgw_sal_fwd.h"
-#include "rgw_tools.h"
 #include "rgw_zone.h"
 #include "rgw_notify_event_type.h"
 #include <boost/container/flat_map.hpp>
 #include "rgw_s3_filter.h"
+#include <ranges>
 
 class XMLObj;
 
@@ -252,6 +252,16 @@ WRITE_CLASS_ENCODER(rgw_pubsub_s3_event)
 // setting a unique ID for an event based on object hash and timestamp
 void set_event_id(std::string& id, const std::string& hash, const utime_t& ts);
 
+using ShardNamesView = std::ranges::transform_view<std::ranges::iota_view<uint64_t, uint64_t>, std::function<std::string(uint64_t)>>; 
+
+namespace rgw::notify {
+  // Denotes that the topic has not overridden the global configurations for (time_to_live / max_retries / retry_sleep_duration)
+  // defaults: (rgw_topic_persistency_time_to_live / rgw_topic_persistency_max_retries / rgw_topic_persistency_sleep_duration)
+  constexpr uint32_t DEFAULT_GLOBAL_VALUE = UINT32_MAX;
+  // Used in case the topic is using the default global value for dumping in a formatter
+  constexpr static const std::string_view DEFAULT_CONFIG{"None"};
+} // namespace rgw::notify
+
 struct rgw_pubsub_dest {
   std::string push_endpoint;
   std::string push_endpoint_args;
@@ -260,12 +270,15 @@ struct rgw_pubsub_dest {
   bool persistent = false;
   // rados object name of the persistent queue in the 'notif' pool
   std::string persistent_queue;
-  uint32_t time_to_live;
-  uint32_t max_retries;
-  uint32_t retry_sleep_duration;
+  uint32_t time_to_live = rgw::notify::DEFAULT_GLOBAL_VALUE;
+  uint32_t max_retries = rgw::notify::DEFAULT_GLOBAL_VALUE;
+  uint32_t retry_sleep_duration = rgw::notify::DEFAULT_GLOBAL_VALUE;
+  // naming convention of sharded queues in the 'notif' pool -> persistent_queue, persistent_queue.1, persistent_queue.(num_shards -1)...
+  uint64_t num_shards = 1; // Default to 1 shard for backward compatibility with pre-sharding persistent topics.
 
+  
   void encode(bufferlist& bl) const {
-    ENCODE_START(7, 1, bl);
+    ENCODE_START(8, 1, bl);
     encode("", bl);
     encode("", bl);
     encode(push_endpoint, bl);
@@ -277,26 +290,27 @@ struct rgw_pubsub_dest {
     encode(max_retries, bl);
     encode(retry_sleep_duration, bl);
     encode(persistent_queue, bl);
+    encode(num_shards, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(7, bl);
+    DECODE_START(8, bl);
     std::string dummy;
     decode(dummy, bl);
     decode(dummy, bl);
     decode(push_endpoint, bl);
     if (struct_v >= 2) {
-        decode(push_endpoint_args, bl);
+      decode(push_endpoint_args, bl);
     }
     if (struct_v >= 3) {
-        decode(arn_topic, bl);
+      decode(arn_topic, bl);
     }
     if (struct_v >= 4) {
-        decode(stored_secret, bl);
+      decode(stored_secret, bl);
     }
     if (struct_v >= 5) {
-        decode(persistent, bl);
+      decode(persistent, bl);
     }
     if (struct_v >= 6) {
       decode(time_to_live, bl);
@@ -305,11 +319,17 @@ struct rgw_pubsub_dest {
     }
     if (struct_v >= 7) {
       decode(persistent_queue, bl);
-    } else if (persistent) {
+    } 
+    else if (persistent) {
       // persistent topics created before v7 did not support tenant namespacing.
       // continue to use 'arn_topic' alone as the queue's rados object name
       persistent_queue = arn_topic;
     }
+    if (struct_v >= 8) {
+      // for struct_v < 8, num_shards defaults to 1 (single shard for pre-sharding persistent topics)
+      decode(num_shards, bl);
+    }
+
     DECODE_FINISH(bl);
   }
 
@@ -317,6 +337,9 @@ struct rgw_pubsub_dest {
   void dump_xml(Formatter *f) const;
   std::string to_json_str() const;
   void decode_json(JSONObj* obj);
+
+  // get the names of the shards in the persistent queue
+  ShardNamesView get_shard_names() const; 
 };
 WRITE_CLASS_ENCODER(rgw_pubsub_dest)
 
@@ -593,11 +616,6 @@ public:
 };
 
 namespace rgw::notify {
-  // Denotes that the topic has not overridden the global configurations for (time_to_live / max_retries / retry_sleep_duration)
-  // defaults: (rgw_topic_persistency_time_to_live / rgw_topic_persistency_max_retries / rgw_topic_persistency_sleep_duration)
-  constexpr uint32_t DEFAULT_GLOBAL_VALUE = UINT32_MAX;
-  // Used in case the topic is using the default global value for dumping in a formatter
-  constexpr static const std::string_view DEFAULT_CONFIG{"None"};
   struct event_entry_t {
     rgw_pubsub_s3_event event;
     std::string push_endpoint;

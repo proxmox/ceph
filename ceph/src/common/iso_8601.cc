@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <iomanip>
 #include <sstream>
@@ -49,7 +49,7 @@ optional<real_time> calculate(const tm& t, uint32_t n = 0) {
 }
 
 optional<real_time> from_iso_8601(const string_view s,
-				  const bool ws_terminates) noexcept {
+				  const bool ws_terminates) {
   auto end = s.cend();
   auto read_digit = [end](sriter& c) mutable {
     if (c == end) {

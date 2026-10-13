@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "crimson/os/seastore/backref/btree_backref_manager.h"
 
@@ -77,9 +77,9 @@ BtreeBackrefManager::mkfs(
     return mkfs_iertr::now();
   }).handle_error_interruptible(
     mkfs_iertr::pass_further{},
-    crimson::ct_error::assert_all{
+    crimson::ct_error::assert_all(
       "Invalid error in BtreeBackrefManager::mkfs"
-    }
+    )
   );
 }
 
@@ -216,7 +216,7 @@ BtreeBackrefManager::new_mapping(
                    t, addr, len, key,
                    pos.get_key(), pos.get_val().len,
                    pos.get_val());
-	    ceph_abort("not possible for the backref tree");
+	    ceph_abort_msg("not possible for the backref tree");
 	    return BackrefBtree::iterate_repeat_ret_inner(
 	      interruptible::ready_future_marker{},
 	      seastar::stop_iteration::no);
@@ -226,7 +226,8 @@ BtreeBackrefManager::new_mapping(
 	    c,
 	    *state.insert_iter,
 	    state.last_end,
-	    val
+	    val,
+            nullptr
 	  ).si_then([&state, c, addr, len, key](auto &&p) {
 	    LOG_PREFIX(BtreeBackrefManager::new_mapping);
 	    auto [iter, inserted] = std::move(p);
@@ -296,7 +297,8 @@ BtreeBackrefManager::merge_cached_backrefs(
               DEBUGT("remove mapping: {}", t, backref_entry.paddr);
               return remove_mapping(
                 t,
-                backref_entry.paddr
+                backref_entry.paddr,
+                backref_entry.type
               ).si_then([](auto&&) {
                 return seastar::now();
               }).handle_error_interruptible(
@@ -454,7 +456,7 @@ BtreeBackrefManager::scan_mapped_space(
   });
 }
 
-BtreeBackrefManager::base_iertr::future<> _init_cached_extent(
+base_iertr::future<> _init_cached_extent(
   op_context_t c,
   const CachedExtentRef &e,
   BackrefBtree &btree,
@@ -500,16 +502,17 @@ BtreeBackrefManager::rewrite_extent(
 BtreeBackrefManager::remove_mapping_ret
 BtreeBackrefManager::remove_mapping(
   Transaction &t,
-  paddr_t addr)
+  paddr_t addr,
+  extent_types_t type)
 {
   auto c = get_context(t);
   return with_btree<BackrefBtree>(
     cache,
     c,
-    [c, addr](auto &btree) mutable {
+    [c, addr, type](auto &btree) mutable {
       return btree.lower_bound(
 	c, addr
-      ).si_then([&btree, c, addr](auto iter)
+      ).si_then([&btree, c, addr, type](auto iter)
 		-> remove_mapping_ret {
 	if (iter.is_end() || iter.get_key() != addr) {
 	  LOG_PREFIX(BtreeBackrefManager::remove_mapping);
@@ -519,14 +522,16 @@ BtreeBackrefManager::remove_mapping(
 	    remove_mapping_result_t>(remove_mapping_result_t());
 	}
 
+	auto val = iter.get_val();
+        ceph_assert(type == val.type);
 	auto ret = remove_mapping_result_t{
 	  iter.get_key(),
-	  iter.get_val().len,
-	  iter.get_val().laddr};
+	  val.len,
+	  val.laddr};
 	return btree.remove(
 	  c,
 	  iter
-	).si_then([ret] {
+	).si_then([ret](auto) {
 	  return ret;
 	});
       });

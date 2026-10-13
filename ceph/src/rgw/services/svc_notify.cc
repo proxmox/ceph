@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "include/random.h"
 #include "include/Context.h"
@@ -144,10 +144,7 @@ RGWSI_Notify::~RGWSI_Notify()
 
 string RGWSI_Notify::get_control_oid(int i)
 {
-  char buf[notify_oid_prefix.size() + 16];
-  snprintf(buf, sizeof(buf), "%s.%d", notify_oid_prefix.c_str(), i);
-
-  return string(buf);
+  return fmt::format("{}.{}", notify_oid_prefix, i);
 }
 
 // do not call pick_obj_control before init_watch

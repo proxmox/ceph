@@ -42,7 +42,8 @@ const BASE_URL = 'hosts';
   selector: 'cd-hosts',
   templateUrl: './hosts.component.html',
   styleUrls: ['./hosts.component.scss'],
-  providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }]
+  providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }],
+  standalone: false
 })
 export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit {
   private sub = new Subscription();
@@ -97,7 +98,7 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   isExecuting = false;
   errorMessage: string;
   enableMaintenanceBtn: boolean;
-  enableDrainBtn: boolean;
+  draining: boolean = false;
   bsModalRef: NgbModalRef;
 
   icons = Icons;
@@ -133,6 +134,9 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   ) {
     super();
     this.permissions = this.authStorageService.getPermissions();
+  }
+
+  ngOnInit() {
     this.expandClusterActions = [
       {
         name: this.actionLabels.ADD_STORAGE,
@@ -169,18 +173,14 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
         permission: 'update',
         icon: Icons.exit,
         click: () => this.hostDrain(),
-        disable: (selection: CdTableSelection) =>
-          this.getDisable('drain', selection) || !this.enableDrainBtn,
-        visible: () => !this.showGeneralActionsOnly && this.enableDrainBtn
+        visible: () => !this.showGeneralActionsOnly && !this.draining
       },
       {
         name: this.actionLabels.STOP_DRAIN,
         permission: 'update',
         icon: Icons.exit,
         click: () => this.hostDrain(true),
-        disable: (selection: CdTableSelection) =>
-          this.getDisable('drain', selection) || this.enableDrainBtn,
-        visible: () => !this.showGeneralActionsOnly && !this.enableDrainBtn
+        visible: () => !this.showGeneralActionsOnly && this.draining
       },
       {
         name: this.actionLabels.REMOVE,
@@ -212,9 +212,6 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
         visible: () => !this.showGeneralActionsOnly && this.enableMaintenanceBtn
       }
     ];
-  }
-
-  ngOnInit() {
     this.columns = [
       {
         name: $localize`Hostname`,
@@ -305,15 +302,14 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   updateSelection(selection: CdTableSelection) {
     this.selection = selection;
     this.enableMaintenanceBtn = false;
-    this.enableDrainBtn = false;
     if (this.selection.hasSelection) {
       if (this.selection.first().status === 'maintenance') {
         this.enableMaintenanceBtn = true;
       }
 
-      if (!this.selection.first().labels.includes('_no_schedule')) {
-        this.enableDrainBtn = true;
-      }
+      this.selection.first().labels.includes('_no_schedule')
+        ? (this.draining = true)
+        : (this.draining = false);
     }
   }
 

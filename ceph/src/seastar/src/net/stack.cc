@@ -19,23 +19,16 @@
  * Copyright 2015 Cloudius Systems
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/metrics_api.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/net/inet_address.hh>
-#endif
 
 namespace seastar {
 
@@ -77,7 +70,12 @@ future<> net::datagram_channel::send(const socket_address& dst, const char* msg)
 }
 
 future<> net::datagram_channel::send(const socket_address& dst, packet p) {
-    return _impl->send(dst, std::move(p));
+    auto bufs = std::move(p).release();
+    return _impl->send(dst, bufs);
+}
+
+future<> net::datagram_channel::send(const socket_address& dst, std::span<temporary_buffer<char>> bufs) {
+    return _impl->send(dst, bufs);
 }
 
 bool net::datagram_channel::is_closed() const {

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -161,12 +162,12 @@ void ECTransactionL::generate_transactions(
       }
 
       if (entry &&
-	  entry->is_modify() &&
-	  op.updated_snaps) {
-	bufferlist bl(op.updated_snaps->second.size() * 8 + 8);
-	encode(op.updated_snaps->second, bl);
-	entry->snaps.swap(bl);
-	entry->snaps.reassign_to_mempool(mempool::mempool_osd_pglog);
+          (entry->is_modify() || entry->is_replace()) &&
+          op.updated_snaps) {
+        bufferlist bl(op.updated_snaps->second.size() * 8 + 8);
+        encode(op.updated_snaps->second, bl);
+        entry->snaps.swap(bl);
+        entry->snaps.reassign_to_mempool(mempool::mempool_osd_pglog);
       }
 
       ldpp_dout(dpp, 20) << "generate_transactions: "

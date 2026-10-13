@@ -1,6 +1,14 @@
 #pragma once
 
 #include "ObjectModel.h"
+#include "common/io_exerciser/IoSequence.h"
+#include "erasure-code/consistency/ConsistencyChecker.h"
+#include "librados/AioCompletionImpl.h"
+#include "common/ceph_mutex.h"
+
+#include <random>
+
+namespace boost::asio { class io_context; }
 
 /* Overview
  *
@@ -17,6 +25,7 @@ namespace ceph {
 namespace io_exerciser {
 namespace data_generation {
 class DataGenerator;
+enum class GenerationType;
 }
 
 class RadosIo : public Model {
@@ -25,13 +34,16 @@ class RadosIo : public Model {
   boost::asio::io_context& asio;
   std::unique_ptr<ObjectModel> om;
   std::unique_ptr<ceph::io_exerciser::data_generation::DataGenerator> db;
+  std::unique_ptr<ceph::consistency::ConsistencyChecker> cc;
   std::string pool;
-  std::optional<std::vector<int>> cached_shard_order;
   int threads;
   ceph::mutex& lock;
   ceph::condition_variable& cond;
   librados::IoCtx io;
   int outstanding_io;
+  std::shared_ptr<ceph::io_exerciser::IoSequence> seq;
+  std::mt19937_64 rng;
+  int balanced_read_percentage;
 
   void start_io();
   void finish_io();
@@ -39,10 +51,12 @@ class RadosIo : public Model {
 
  public:
   RadosIo(librados::Rados& rados, boost::asio::io_context& asio,
-          const std::string& pool, const std::string& oid,
-          const std::optional<std::vector<int>>& cached_shard_order,
+          const std::string& pool, const std::string& primary_oid, const std::string& secondary_oid,
           uint64_t block_size, int seed, int threads, ceph::mutex& lock,
-          ceph::condition_variable& cond, bool ec_optimizations);
+          ceph::condition_variable& cond, bool is_replicated_pool,
+          bool ec_optimizations, int balanced_read_percentage,
+          ceph::io_exerciser::data_generation::GenerationType data_generation_type,
+          std::shared_ptr<ceph::io_exerciser::IoSequence> seq = nullptr, bool delete_objects = true);
 
   ~RadosIo();
 

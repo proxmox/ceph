@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -23,15 +24,16 @@
 #include <vector>
 
 #include "include/types.h"
-#include "Monitor.h"
 #include "PaxosFSMap.h"
 #include "PaxosService.h"
 #include "mds/MDSMap.h"
-#include "msg/Messenger.h"
 #include "messages/MMDSBeacon.h"
+#include "mon/mon_types.h" // for Metadata
 #include "CommandHandler.h"
 
+class Monitor;
 class FileSystemCommandHandler;
+struct Subscription;
 
 class MDSMonitor : public PaxosService, public PaxosFSMap, protected CommandHandler {
  public:
@@ -81,7 +83,7 @@ class MDSMonitor : public PaxosService, public PaxosFSMap, protected CommandHand
    */
   bool fail_mds_gid(FSMap &fsmap, mds_gid_t gid);
 
-  bool is_leader() const override { return mon.is_leader(); }
+  bool is_leader() const override;
 
  protected:
   using mds_info_t = MDSMap::mds_info_t;

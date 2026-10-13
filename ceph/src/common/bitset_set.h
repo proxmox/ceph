@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 /* The standard bitset library does not behave like a "std::set", making it
  * hard to use as a drop-in replacement. This templated class is intended to
@@ -39,7 +39,11 @@ class bitset_set {
     KeyT pos;
 
    public:
+    using value_type = const KeyT;
     using difference_type = std::int64_t;
+    using pointer = const value_type *;
+    using reference = const value_type &;
+    using iterator_category = std::forward_iterator_tag;
 
     const_iterator() : set(nullptr), pos(0) {
     }

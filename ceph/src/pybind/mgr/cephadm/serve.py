@@ -33,6 +33,8 @@ from cephadm.utils import forall_hosts, cephadmNoImage, is_repo_digest, \
 from mgr_module import MonCommandFailed
 from mgr_util import format_bytes
 from cephadm.services.service_registry import service_registry
+from cephadm.services.nfs import NFSService
+from cephadm.services.ingress import IngressService
 
 from . import utils
 from . import exchange
@@ -44,6 +46,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REQUIRES_POST_ACTIONS = ['grafana', 'iscsi', 'prometheus', 'alertmanager', 'rgw', 'nvmeof', 'mgmt-gateway']
+# Daemons not systemd-enabled on deploy, mgr start them when not user stopped
+DISABLED_SERVICES = ['nfs', 'keepalived']
 
 WHICH = ssh.RemoteExecutable('which')
 CEPHADM_EXE = ssh.RemoteExecutable('/usr/bin/cephadm')
@@ -119,6 +123,8 @@ class CephadmServe:
                     self._purge_deleted_services()
 
                     self._check_for_moved_osds()
+
+                    self._retry_failed_operations()
 
                     if self.mgr.agent_helpers._handle_use_agent_setting():
                         continue
@@ -252,8 +258,11 @@ class CephadmServe:
         @forall_hosts
         def refresh(host: str) -> None:
 
-            # skip hosts that are in maintenance - they could be powered off
-            if self.mgr.inventory._inventory[host].get("status", "").lower() == "maintenance":
+            # skip hosts that were removed or are in maintenance - they could be powered off
+            host_info = self.mgr.inventory._inventory.get(host)
+            if host_info is None:
+                return
+            if host_info.get("status", "").lower() == "maintenance":
                 return
 
             if self.mgr.use_agent:
@@ -443,6 +452,17 @@ class CephadmServe:
         self.mgr.cache.update_host_networks(host, networks)
         self.mgr.cache.save_host(host)
         return None
+
+    async def get_rdma_devices(self, host: str) -> List[Dict[str, Any]]:
+        """Return list of RDMA devices on host from cephadm list-rdma, or [] on error."""
+        try:
+            out = await self._run_cephadm_json(
+                host, 'mon', 'list-rdma', [], no_fsid=True,
+                log_output=self.mgr.log_refresh_metadata)
+            return out if isinstance(out, list) else []
+        except OrchestratorError as e:
+            self.log.error('Failed to get RDMA devices for host %s: %s', host, e)
+            return []
 
     def _refresh_host_osdspec_previews(self, host: str) -> Optional[str]:
         self.update_osdspec_previews(host)
@@ -689,7 +709,13 @@ class CephadmServe:
 
         ep = []
         protocol = 'https' if rgw_spec.ssl else 'http'
-        for s in self.mgr.cache.get_daemons_by_service(rgw_spec.service_name()):
+        daemons = self.mgr.cache.get_daemons_by_service(rgw_spec.service_name())
+        if not daemons:
+            self.log.debug(f'No rgw daemons found yet for \
+                service {rgw_spec.service_name()}, will retry')
+            return
+
+        for s in daemons:
             if s.ports:
                 for p in s.ports:
                     if s.hostname is not None:
@@ -697,6 +723,14 @@ class CephadmServe:
                         ep.append(f'{protocol}://{host_addr}:{p}')
                     else:
                         logger.error("Hostname is None for service: %s", s)
+
+        if not ep:
+            self.log.warning(
+                "Computed endpoints are empty for service %s; deferring zone update",
+                rgw_spec.service_name()
+            )
+            return
+
         zone_update_cmd = {
             'prefix': 'rgw zone modify',
             'realm_name': rgw_spec.rgw_realm,
@@ -713,6 +747,7 @@ class CephadmServe:
             self.mgr.set_health_warning('CEPHADM_RGW', 'Cannot update rgw endpoints, error: {err}', 1,
                                         [f'Cannot update rgw endpoints for daemon {rgw_spec.service_name()}, error: {err}'])
         else:
+            self.log.debug(f'Successfully updated rgw zone endpoints: {out}')
             self.mgr.remove_health_warning('CEPHADM_RGW')
 
     def _apply_service(self, spec: ServiceSpec) -> bool:
@@ -802,6 +837,14 @@ class CephadmServe:
                         )
                         found = True
                         break
+                if not found and ingress_spec.virtual_interface_networks:
+                    for subnet, ifaces in self.mgr.cache.networks.get(host, {}).items():
+                        if subnet in ingress_spec.virtual_interface_networks:
+                            logger.debug(
+                                f'{subnet} found in virtual_interface_networks list {list(ingress_spec.virtual_interface_networks)}'
+                            )
+                            found = True
+                            break
                 if not found:
                     self.log.info(
                         f"Filtered out host {host}: Host has no interface available for VIP: {vip}"
@@ -817,6 +860,17 @@ class CephadmServe:
         rank_map = None
         if svc.ranked(spec):
             rank_map = self.mgr.spec_store[spec.service_name()].rank_map or {}
+        related_service_required_count = None
+        if service_type == 'ingress':
+            ingress_spec = cast(IngressSpec, spec)
+            assert ingress_spec.backend_service
+            backend_spec = self.mgr.spec_store.active_specs.get(
+                ingress_spec.backend_service
+            )
+            if backend_spec and backend_spec.placement:
+                related_service_required_count = backend_spec.placement.get_target_count(
+                    self.mgr.cache.get_schedulable_hosts()
+                )
         host_selector = _host_selector(svc)
         ha = HostAssignment(
             spec=spec,
@@ -827,6 +881,7 @@ class CephadmServe:
             blocking_daemon_hosts=blocking_daemon_hosts,
             daemons=daemons,
             related_service_daemons=related_service_daemons,
+            related_service_required_count=related_service_required_count,
             networks=self.mgr.cache.networks,
             filter_new_host=host_filters.get(service_type, None),
             allow_colo=svc.allow_colo(),
@@ -839,8 +894,13 @@ class CephadmServe:
 
         try:
             all_slots, slots_to_add, daemons_to_remove = ha.place()
-            daemons_to_remove = [d for d in daemons_to_remove if (d.hostname and self.mgr.inventory._inventory[d.hostname].get(
-                'status', '').lower() not in ['maintenance', 'offline'] and d.hostname not in self.mgr.offline_hosts)]
+            daemons_to_remove = [
+                d for d in daemons_to_remove if (
+                    d.hostname
+                    and d.hostname in self.mgr.inventory._inventory
+                    and self.mgr.inventory._inventory.get(d.hostname, {}).get(
+                        'status', '').lower() not in ['maintenance', 'offline']
+                    and d.hostname not in self.mgr.offline_hosts)]
             self.log.debug('Add %s, remove %s' % (slots_to_add, daemons_to_remove))
         except OrchestratorError as e:
             msg = f'Failed to apply {spec.service_name()} spec {spec}: {str(e)}'
@@ -891,6 +951,9 @@ class CephadmServe:
 
         hosts_altered: Set[str] = set()
 
+        if service_type == 'nfs' and self.mgr.spec_store.needs_configuration(spec.service_name()):
+            svc.pre_daemon_service_config(spec)
+
         try:
             # assign names
             for i in range(len(slots_to_add)):
@@ -920,10 +983,11 @@ class CephadmServe:
                 for d in daemons_to_remove:
                     assert d.hostname is not None
                     self._remove_daemon(d.name(), d.hostname)
-                daemons_to_remove = []
 
                 # fence them
-                svc.fence_old_ranks(spec, rank_map, len(all_slots))
+                if daemons_to_remove:
+                    svc.fence_old_ranks(spec, rank_map, len(all_slots))
+                daemons_to_remove = []
 
             # create daemons
             daemon_place_fails = []
@@ -1116,39 +1180,30 @@ class CephadmServe:
             if dd.daemon_type in REQUIRES_POST_ACTIONS:
                 daemons_post[dd.daemon_type].append(dd)
 
-            if service_registry.get_service(daemon_type_to_service(dd.daemon_type)).get_active_daemon(
+            svc_type = daemon_type_to_service(dd.daemon_type)
+            svc_obj = service_registry.get_service(svc_type)
+            if svc_obj.get_active_daemon(
                self.mgr.cache.get_daemons_by_service(dd.service_name())).daemon_id == dd.daemon_id:
                 dd.is_active = True
             else:
                 dd.is_active = False
 
-            deps = self.mgr._calc_daemon_deps(spec, dd.daemon_type, dd.daemon_id)
+            deps = svc_obj.sorted_dependencies(self.mgr, spec, dd.daemon_type)
             last_deps, last_config = self.mgr.cache.get_daemon_last_config_deps(
                 dd.hostname, dd.name())
             if last_deps is None:
                 last_deps = []
-            action = self.mgr.cache.get_scheduled_daemon_action(dd.hostname, dd.name())
+            action = scheduled_action = (
+                self.mgr.cache.get_scheduled_daemon_action(
+                    dd.hostname, dd.name()
+                )
+            )
+            skip_restart_for_reconfig = False
+            send_signal_to_daemon = None
             if not last_config:
                 self.log.info('Reconfiguring %s (unknown last config time)...' % (
                     dd.name()))
                 action = 'reconfig'
-            elif last_deps != deps:
-                sym_diff = set(deps).symmetric_difference(last_deps)
-                self.log.info(f'Reconfiguring {dd.name()} deps {last_deps} -> {deps} (diff {sym_diff})')
-                action = 'reconfig'
-                # we need only redeploy if secure_monitoring_stack or mgmt-gateway value has changed:
-                # TODO(redo): check if we should just go always with redeploy (it's fast enough)
-                if dd.daemon_type in ['prometheus', 'node-exporter', 'alertmanager', 'ceph-exporter']:
-                    diff = list(set(last_deps).symmetric_difference(set(deps)))
-                    REDEPLOY_TRIGGERS = ['secure_monitoring_stack', 'mgmt-gateway']
-                    if any(svc in e for e in diff for svc in REDEPLOY_TRIGGERS):
-                        action = 'redeploy'
-                elif dd.daemon_type == 'jaeger-agent':
-                    # changes to jaeger-agent deps affect the way the unit.run for
-                    # the daemon is written, which we rewrite on redeploy, but not
-                    # on reconfig.
-                    action = 'redeploy'
-
             elif spec is not None and hasattr(spec, 'extra_container_args') and dd.extra_container_args != spec.extra_container_args:
                 self.log.debug(
                     f'{dd.name()} container cli args {dd.extra_container_args} -> {spec.extra_container_args}')
@@ -1161,26 +1216,98 @@ class CephadmServe:
                     f'{dd.name()} daemon entrypoint args {dd.extra_entrypoint_args} -> {spec.extra_entrypoint_args}')
                 dd.extra_entrypoint_args = spec.extra_entrypoint_args
                 action = 'redeploy'
-            elif self.mgr.last_monmap and \
-                    self.mgr.last_monmap > last_config and \
-                    dd.daemon_type in CEPH_TYPES:
-                self.log.info('Reconfiguring %s (monmap changed)...' % dd.name())
-                if self.mgr.upgrade.upgrade_state is not None and not self.mgr.upgrade.upgrade_state.paused:
-                    logger.debug('Skipping reconfig of %s for monmap change (upgrade in progress)' % dd.name())
-                else:
-                    logger.info('Reconfiguring %s (monmap changed)...' % dd.name())
-                    action = 'reconfig'
-            elif self.mgr.extra_ceph_conf_is_newer(last_config) and \
-                    dd.daemon_type in CEPH_TYPES:
-                self.log.info('Reconfiguring %s (extra config changed)...' % dd.name())
-                action = 'reconfig'
+            else:
+                # method uses new action enum type
+                _scheduled_action = utils.Action.create(scheduled_action)
+                _step = svc_obj.choose_next_action(
+                    _scheduled_action,
+                    dd.daemon_type,
+                    spec,
+                    curr_deps=deps,
+                    last_deps=last_deps,
+                    daemon=dd,
+                )
+                if _step.action is not _scheduled_action:
+                    self.log.info(
+                        (
+                            'Daemon %s chose new action %s (was %s)'
+                            ' (deps: %r, last_deps: %r)'
+                        ),
+                        dd.name(),
+                        _step.action,
+                        _scheduled_action,
+                        deps,
+                        last_deps,
+                    )
+                    # convert back to legacy str type
+                    action = str(_step.action)
+                skip_restart_for_reconfig = _step.skip_restart_for_reconfig
+                send_signal_to_daemon = _step.send_signal_to_daemon
+            action = _ceph_service_next_action(
+                action, dd.daemon_type, dd.name(), self.mgr, last_config
+            )
+
+            # If no action is specified, check whether we need to start the daemon
+            if not action and dd.daemon_type in DISABLED_SERVICES:
+                if dd.status == 0 and not dd.user_stopped:
+                    should_start = False
+                    if spec and service_registry.get_service(daemon_type_to_service(dd.daemon_type)).ranked(spec):
+                        # For ranked services, check if we should start this daemon
+                        same_rank_daemons = [
+                            d for d in self.mgr.cache.get_daemons_by_service(dd.service_name())
+                            if d.rank == dd.rank and d.daemon_type == dd.daemon_type
+                        ]
+                        self.log.debug(
+                            f'Start hightest rank_gen daemon of same rank daemons {same_rank_daemons}'
+                        )
+                        if len(same_rank_daemons) == 1:
+                            should_start = True
+                        else:
+                            # Multiple daemons exist for this rank, only start the highest generation
+                            highest_gen_daemon = max(same_rank_daemons,
+                                                     key=lambda d: d.rank_generation or 0)
+                            should_start = (dd == highest_gen_daemon)
+                    elif dd.daemon_type == 'keepalived' and spec is not None:
+                        should_start = IngressService.keepalived_should_auto_start(
+                            self.mgr, dd, spec
+                        )
+                    else:
+                        should_start = True
+                    if should_start:
+                        self.log.debug(f'Starting daemon {dd.name()}')
+                        action = 'start'
+
             if action:
-                if self.mgr.cache.get_scheduled_daemon_action(dd.hostname, dd.name()) == 'redeploy' \
-                        and action == 'reconfig':
+                if scheduled_action == 'redeploy' and action == 'reconfig':
                     action = 'redeploy'
+                # For OSD redeploy/reconfig that was NOT explicitly scheduled by
+                # the user (i.e. scheduled_action was None), check ok-to-stop
+                # before proceeding.  A redeploy/reconfig stops the OSD; running
+                # it when the cluster cannot afford to lose that OSD risks data
+                # unavailability.  If the OSD is not safe to stop right now,
+                # defer the action to the next serve-loop iteration.
+                if (
+                    dd.daemon_type == 'osd'
+                    and action in ('redeploy', 'reconfig')
+                    and not scheduled_action
+                ):
+                    r = svc_obj.ok_to_stop([dd.daemon_id])
+                    if r.retval:
+                        self.log.info(
+                            'Skipping %s of %s (not ok-to-stop: %s); '
+                            'will retry next serve loop',
+                            action, dd.name(), r.stderr,
+                        )
+                        continue
                 try:
                     daemon_spec = CephadmDaemonDeploySpec.from_daemon_description(dd)
-                    self.mgr._daemon_action(daemon_spec, action=action)
+                    reconfig_extras: dict[str, Any] = {}
+                    if skip_restart_for_reconfig:
+                        reconfig_extras['skip_restart_for_reconfig'] = True
+                    if send_signal_to_daemon:
+                        reconfig_extras['send_signal_to_daemon'] = send_signal_to_daemon
+                    self.mgr._daemon_action(daemon_spec, action=action, **reconfig_extras)
+
                     if self.mgr.cache.rm_scheduled_daemon_action(dd.hostname, dd.name()):
                         self.mgr.cache.save_host(dd.hostname)
                 except OrchestratorError as e:
@@ -1360,6 +1487,8 @@ class CephadmServe:
                              daemon_spec: CephadmDaemonDeploySpec,
                              reconfig: bool = False,
                              osd_uuid_map: Optional[Dict[str, Any]] = None,
+                             skip_restart_for_reconfig: bool = False,
+                             send_signal_to_daemon: Optional[str] = None,
                              ) -> str:
 
         daemon_params: Dict[str, Any] = {}
@@ -1409,6 +1538,10 @@ class CephadmServe:
 
                 if reconfig:
                     daemon_params['reconfig'] = True
+                if skip_restart_for_reconfig:
+                    daemon_params['skip_restart_for_reconfig'] = True
+                if send_signal_to_daemon:
+                    daemon_params['send_signal_to_daemon'] = send_signal_to_daemon
                 if self.mgr.allow_ptrace:
                     daemon_params['allow_ptrace'] = True
 
@@ -1427,6 +1560,14 @@ class CephadmServe:
                 self.log.info('%s daemon %s on %s' % (
                     'Reconfiguring' if reconfig else 'Deploying',
                     daemon_spec.name(), daemon_spec.host))
+
+                termination_grace_period = None
+                if daemon_spec.service_name in self.mgr.spec_store:
+                    svc_spec = self.mgr.spec_store[daemon_spec.service_name].spec
+                    termination_grace_period = getattr(svc_spec, 'termination_grace_period_seconds', None)
+
+                if termination_grace_period is not None:
+                    daemon_params['termination_grace_period_seconds'] = int(termination_grace_period)
 
                 out, err, code = await self._run_cephadm(
                     daemon_spec.host,
@@ -1688,6 +1829,9 @@ class CephadmServe:
         if image:
             final_args.extend(['--image', image])
 
+        cephadm_log_level = self.mgr.cephadm_binary_logging_level or 'debug'
+        final_args.extend(['--logging-level', cephadm_log_level])
+
         if not self.mgr.container_init:
             final_args += ['--no-container-init']
 
@@ -1836,15 +1980,15 @@ class CephadmServe:
         return r
 
     # function responsible for logging single host into custom registry
-    async def _registry_login(self, host: str, registry_json: Dict[str, str]) -> Optional[str]:
+    async def _registry_login(self, host: str, registry_json: Dict[str, list[Dict[str, str]]]) -> Optional[str]:
         self.log.debug(
-            f"Attempting to log host {host} into custom registry @ {registry_json['url']}")
+            f"Attempting to log host {host} into custom registries")
         # want to pass info over stdin rather than through normal list of args
         out, err, code = await self._run_cephadm(
             host, 'mon', 'registry-login',
             ['--registry-json', '-'], stdin=json.dumps(registry_json), error_ok=True)
         if code:
-            return f"Host {host} failed to login to {registry_json['url']} as {registry_json['username']} with given password"
+            return f"Host {host} failed to login to all registries"
         return None
 
     async def _deploy_cephadm_binary(self, host: str, addr: Optional[str] = None) -> None:
@@ -1853,8 +1997,56 @@ class CephadmServe:
         await self.mgr.ssh._write_remote_file(host, self.mgr.cephadm_binary_path,
                                               self.mgr._cephadm, addr=addr)
 
+    def _retry_failed_operations(self) -> None:
+        self.log.debug('_retry_failed_operations')
+        # retry nfs fencing for failed specs
+        failed_services = self.mgr.get_store('nfs_fencing_failed_services')
+        services = failed_services.split(',') if failed_services else []
+        to_remove = []
+        for service_name in services:
+            if service_name not in self.mgr.spec_store:
+                to_remove.append(service_name)
+                continue
+            spec = self.mgr.spec_store[service_name].spec
+            rank_map = self.mgr.spec_store[spec.service_name()].rank_map or {}
+            daemons = self.mgr.cache.get_daemons_by_service(service_name)
+            svc = service_registry.get_service('nfs')
+            self.log.debug('Retry NFS fence old rank for %s service', service_name)
+            svc.fence_old_ranks(spec, rank_map, len(daemons))
+        if to_remove:
+            self.log.debug('Remove NFS service from retry fence old ranks as services %s are removed', to_remove)
+            svc = cast(NFSService, service_registry.get_service('nfs'))
+            svc.update_failed_fencing_services_remove_missing(to_remove)
+
 
 def _host_selector(svc: Any) -> Optional[HostSelector]:
     if hasattr(svc, 'filter_host_candidates'):
         return cast(HostSelector, svc)
     return None
+
+
+def _ceph_service_next_action(
+    action: Optional[str],
+    daemon_type: str,
+    name: str,
+    mgr: 'CephadmOrchestrator',
+    last_config: Optional[datetime.datetime],
+) -> Optional[str]:
+    if daemon_type not in CEPH_TYPES:
+        return action
+    if last_config is None:
+        return action
+    if action in ['reconfig', 'redeploy']:
+        return action
+
+    if mgr.last_monmap and mgr.last_monmap > last_config:
+        if mgr.upgrade.upgrade_state is not None and not mgr.upgrade.upgrade_state.paused:
+            logger.debug('Skipping reconfig of %s for monmap change (upgrade in progress)' % name)
+        else:
+            logger.info('Reconfiguring %s (monmap changed)...' % name)
+            return 'reconfig'
+
+    if mgr.extra_ceph_conf_is_newer(last_config):
+        logger.info('Reconfiguring %s (extra config changed)...', name)
+        return 'reconfig'
+    return action

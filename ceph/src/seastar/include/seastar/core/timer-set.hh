@@ -16,13 +16,11 @@
 #include <seastar/core/bitset-iter.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/util/assert.hh>
-#ifndef SEASTAR_MODULE
 #include <boost/intrusive/list.hpp>
 #include <exception>
 #include <array>
 #include <bitset>
 #include <limits>
-#endif
 
 namespace seastar {
 
@@ -230,8 +228,7 @@ public:
         return exp;
     }
 
-    template <typename EnableFunc>
-    void complete(timer_list_t& expired_timers, EnableFunc&& enable_fn) noexcept(noexcept(enable_fn())) {
+    void complete(timer_list_t& expired_timers) noexcept {
         expired_timers = expire(this->now());
         for (auto& t : expired_timers) {
             t._expired = true;
@@ -257,7 +254,6 @@ public:
         // complete_timers() can be called from the context of run_tasks()
         // as well so we need to restore the previous scheduling group (set by run_tasks()).
         *internal::current_scheduling_group_ptr() = prev_sg;
-        enable_fn();
     }
 
     /**

@@ -1,90 +1,91 @@
 export enum Icons {
   /* Icons for Symbol */
-  add = 'fa fa-plus', // Create, Add
-  addCircle = 'fa fa-plus-circle', // Plus with Circle
-  minusCircle = 'fa fa-minus-circle', // Minus with Circle
-  edit = 'fa fa-pencil', // Edit, Edit Mode, Rename
-  destroy = 'fa fa-times', // Destroy, Remove, Delete
-  destroyCircle = 'fa fa-times-circle', // Destroy, Remove, Delete
-  exchange = 'fa fa-exchange', // Edit-Peer
-  copy = 'fa fa-copy', // Copy
-  clipboard = 'fa fa-clipboard', // Clipboard
-  flatten = 'fa fa-chain-broken', // Flatten, Link broken, Mark Lost
-  trash = 'fa fa-trash-o', // Move to trash
-  lock = 'fa fa-lock', // Protect
-  unlock = 'fa fa-unlock', // Unprotect
-  clone = 'fa fa-clone', // clone
-  undo = 'fa fa-undo', // Rollback, Restore
-  search = 'fa fa-search', // Search
-  start = 'fa fa-play', // Enable
-  stop = 'fa fa-stop', // Disable
-  analyse = 'fa fa-stethoscope', // Scrub
-  deepCheck = 'fa fa-cog', // Deep Scrub, Setting, Configuration
-  cogs = 'fa fa-cogs', // Multiple Settings, Configurations
-  reweight = 'fa fa-balance-scale', // Reweight
-  up = 'fa fa-arrow-up', // Up
-  left = 'fa fa-arrow-left', // Mark out
-  right = 'fa fa-arrow-right', // Mark in
-  down = 'fa fa-arrow-down', // Mark Down
-  erase = 'fa fa-eraser', // Purge  color: bd.$white;
+  add = 'add', // Create, Add
+  addCircle = 'add--filled', // Plus with Circle
+  minusCircle = 'subtract--alt', // Minus with Circle
+  edit = 'edit', // Edit, Edit Mode, Rename
+  destroy = 'close', // Destroy, Remove, Delete
+  exchange = 'arrows--horizontal', // Edit-Peer
+  copy = 'copy', // Copy
+  clipboard = 'copy--file', // Clipboard
+  flatten = 'unlink', // Flatten, Link broken, Mark Lost
+  trash = 'trash-can', // Move to trash
+  lock = 'locked', // Protect
+  unlock = 'unlocked', // Unprotect
+  clone = 'copy', // clone
+  undo = 'undo', // Rollback, Restore
+  search = 'search', // Search
+  start = 'play', // Enable
+  stop = 'stop--filled--alt', // Disable
+  analyse = 'stethoscope', // Scrub
+  deepCheck = 'settings', // Deep Scrub, Setting, Configuration
+  cogs = 'settings--adjust', // Multiple Settings, Configurations
+  reweight = 'scales', // Reweight
+  up = 'arrow--up', // Up
+  left = 'arrow--left', // Mark out
+  right = 'arrow--right', // Mark in
+  down = 'arrow--down', // Mark Down
+  erase = 'erase', // Purge  color: bd.$white;
   expand = 'maximize', // Expand cluster
-  user = 'fa fa-user', // User, Initiators
-  users = 'fa fa-users', // Users, Groups
-  share = 'fa fa-share-alt', // share
-  key = 'fa fa-key-modern', // S3 Keys, Swift Keys, Authentication
-  warning = 'fa fa-exclamation-triangle', // Notification warning
-  info = 'fa fa-info', // Notification information
-  infoCircle = 'fa fa-info-circle', // Info on landing page
-  questionCircle = 'fa fa-question-circle-o',
-  danger = 'fa fa-exclamation-circle',
-  success = 'fa fa-check-circle',
-  check = 'fa fa-check', // Notification check
-  show = 'fa fa-eye', // Show
-  paragraph = 'fa fa-paragraph', // Silence Matcher - Attribute name
-  terminal = 'fa fa-terminal', // Silence Matcher - Value
-  magic = 'fa fa-magic', // Silence Matcher - Regex checkbox
-  hourglass = 'fa fa-hourglass-o', // Task
-  filledHourglass = 'fa fa-hourglass', // Task
-  table = 'fa fa-table', // Table,
-  spinner = 'fa fa-spinner', // spinner, Load
-  refresh = 'fa fa-refresh', // Refresh
-  bullseye = 'fa fa-bullseye', // Target
-  disk = 'fa fa-hdd-o', // Hard disk, disks
-  server = 'fa fa-server', // Server, Portal
-  filter = 'fa fa-filter', // Filter
-  lineChart = 'fa fa-line-chart', // Line chart
-  signOut = 'fa fa-sign-out', // Sign Out
-  health = 'fa fa-heartbeat', // Health
-  circle = 'fa fa-circle', // Circle
-  bell = 'fa fa-bell', // Notification
-  mute = 'fa fa-bell-slash', // Mute or silence
-  tag = 'fa fa-tag', // Tag, Badge
-  leftArrow = 'fa fa-angle-left', // Left facing angle
-  rightArrow = 'fa fa-angle-right', // Right facing angle
-  leftArrowDouble = 'fa fa-angle-double-left', // Left facing Double angle
-  rightArrowDouble = 'fa fa-angle-double-right', // Left facing Double angle
-  flag = 'fa fa-flag', // OSD configuration
-  clearFilters = 'fa fa-window-close', // Clear filters, solid x
-  download = 'fa fa-download', // Download
-  upload = 'fa fa-upload', // Upload
-  close = 'fa fa-times', // Close
-  json = 'fa fa-file-code-o', // JSON file
-  text = 'fa fa-file-text', // Text file
-  wrench = 'fa fa-wrench', // Configuration Error
-  enter = 'fa fa-sign-in', // Enter
-  exit = 'fa fa-sign-out', // Exit
-  restart = 'fa fa-history', // Restart
-  deploy = 'fa fa-cube', // Deploy, Redeploy
-  cubes = 'fa fa-cubes', // Object storage
-  sitemap = 'fa fa-sitemap', // Cluster, network, connections
-  database = 'fa fa-database', // Database, Block storage
-  bars = 'fa fa-bars', // Stack, bars
-  navicon = 'fa fa-navicon', // Navigation
-  areaChart = 'fa fa-area-chart', // Area Chart, dashboard
-  eye = 'fa fa-eye', // Observability
-  calendar = 'fa fa-calendar',
-  externalUrl = 'fa fa-external-link', // links to external page
-  nfsExport = 'fa fa-server', // NFS export
+  user = 'user', // User, Initiators
+  users = 'user--multiple', // Users, Groups
+  share = 'share', // share
+  key = 'password', // S3 Keys, Swift Keys, Authentication
+  warning = 'warning--alt--filled', // Notification warning
+  info = 'information', // Notification information
+  infoCircle = 'information--filled', // Info on landing page
+  questionCircle = 'help',
+  danger = 'warning--filled',
+  success = 'checkmark--filled',
+  check = 'checkmark', // Notification check
+  show = 'view', // Show
+  paragraph = 'text-align-left', // Silence Matcher - Attribute name
+  terminal = 'terminal', // Silence Matcher - Value
+  magic = 'magic-wand', // Silence Matcher - Regex checkbox
+  hourglass = 'hourglass', // Task
+  filledHourglass = 'hourglass', // Task
+  table = 'data-table', // Table,
+  spinner = 'loading',
+  refresh = 'renew', // Refresh
+  bullseye = 'target', // Target
+  disk = 'hard--drive', // Hard disk, disks
+  server = 'server--rack', // Server, Portal
+  filter = 'filter', // Filter
+  lineChart = 'analytics', // Line chart
+  signOut = 'logout', // Sign Out
+  circle = 'dot-mark', // Circle
+  bell = 'notification', // Notification
+  mute = 'notification--off', // Mute or silence
+  leftArrow = 'caret--left', // Left facing angle
+  rightArrow = 'caret--right', // Right facing angle
+  downArrow = 'caret--down',
+  angleDoubleLeft = 'chevron--left', // Double left angle for pagination
+  angleDoubleRight = 'chevron--right', // Double right angle for pagination
+  square = 'checkbox', // Empty checkbox/square outline
+  flag = 'flag', // OSD configuration
+  clearFilters = 'close--filled', // Clear filters, solid x
+  download = 'download', // Download
+  upload = 'upload', // Upload
+  code = 'code', // JSON file
+  document = 'document', // Text file
+  wrench = 'tools', // Configuration Error
+  enter = 'login', // Enter
+  exit = 'logout', // Exit
+  restart = 'renew', // Restart
+  deploy = 'cube', // Deploy, Redeploy
+  cubes = 'cube', // Object storage
+  sitemap = 'network--3', // Cluster, network, connections
+  database = 'datastore', // Database, Block storage
+  bars = 'menu', // Stack, bars
+  navicon = 'menu', // Navigation
+  areaChart = 'chart--area', // Area Chart, dashboard
+  eye = 'view', // Observability
+  calendar = 'calendar',
+  externalUrl = 'launch', // links to external page
+  nfsExport = 'server--rack', // NFS export
+  launch = 'launch',
+  dataTable = 'data-table',
+  idea = 'idea',
   userAccessLocked = 'user--access-locked', // User access locked
   chevronDown = 'chevron--down',
   connect = 'connect',
@@ -94,16 +95,12 @@ export enum Icons {
   ibmCloudBareMetalServer = 'ibm-cloud--bare-metal-server',
   ibmCloudDedicatedHost = 'ibm-cloud--dedicated-host',
   clusterIcon = 'web-services--cluster',
-  /* Icons for special effect */
-  large = 'fa fa-lg', // icon becomes 33% larger
-  large2x = 'fa fa-2x', // icon becomes 50% larger
-  large3x = 'fa fa-3x', // icon becomes 3 times larger
-  stack = 'fa fa-stack', // To stack multiple icons
-  stack1x = 'fa fa-stack-1x', // To stack regularly sized icon
-  stack2x = 'fa fa-stack-2x', // To stack regularly sized icon
-  pulse = 'fa fa-pulse', // To have spinner rotate with 8 steps
-  spin = 'fa fa-spin', //  To get any icon to rotate
-  inverse = 'fa fa-inverse', // To get an alternative icon color
+  /* Icon sizes */
+  size16 = '16',
+  size20 = '20',
+  size24 = '24',
+  size32 = '32',
+  /* Icons - Use IconSize enum for sizing instead of these deprecated values */
   notification = 'notification',
   error = 'error--filled',
   notificationOff = 'notification--off',
@@ -125,7 +122,9 @@ export enum Icons {
   warningAlt = 'warning--alt',
   arrowUpRight = 'arrow--up-right',
   inProgress = 'in-progress',
-  arrowDown = 'arrow--down'
+  arrowDown = 'arrow--down',
+  locked = 'locked', // Access denied, locked state
+  cloudMonitoring = 'cloud--monitoring'
 }
 
 export enum IconSize {
@@ -136,16 +135,18 @@ export enum IconSize {
 }
 
 export const ICON_TYPE = {
+  check: 'check',
   copy: 'copy',
-  danger: 'warning--filled',
-  infoCircle: 'information--filled',
-  success: 'checkmark--filled',
+  danger: 'danger',
   deploy: 'deploy',
   edit: 'edit',
   error: 'error--filled',
+  infoCircle: 'info-circle',
   notification: 'notification',
   notificationOff: 'notification--off',
   notificationNew: 'notification--new',
+  success: 'success',
+  warning: 'warning',
   add: 'add',
   emptySearch: 'emptySearch',
   dataViewAlt: 'data--view--alt',
@@ -165,10 +166,19 @@ export const ICON_TYPE = {
   arrowUpRight: ' arrow--up-right',
   inProgress: 'in-progress',
   arrowDown: 'arrow--down',
-  warning: 'warning'
+  destroy: 'close',
+  launch: 'launch',
+  cubes: 'cube',
+  angleDoubleLeft: 'chevron--left',
+  angleDoubleRight: 'chevron--right',
+  leftArrow: 'caret--left',
+  rightArrow: 'caret--right',
+  locked: 'locked',
+  cloudMonitoring: 'cloud--monitoring'
 } as const;
 
 export const EMPTY_STATE_IMAGE = {
   default: 'assets/empty-state.png',
-  search: 'assets/empty-state-search.png'
+  search: 'assets/empty-state-search.png',
+  locked: 'assets/locked.png'
 } as const;

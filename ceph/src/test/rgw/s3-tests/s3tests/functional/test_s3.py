@@ -38,7 +38,7 @@ from .utils import _get_status
 
 from .policy import Policy, Statement, make_json_policy
 
-from .iam import iam_root
+from .iam import iam_root, nuke_role
 
 from . import (
     configfile,
@@ -86,6 +86,8 @@ from . import (
     get_cloud_regular_storage_class,
     get_cloud_target_path,
     get_cloud_target_storage_class,
+    get_cloud_target_by_bucket,
+    get_cloud_target_by_bucket_prefix,
     get_cloud_client,
     nuke_prefixed_buckets,
     configured_storage_classes,
@@ -95,6 +97,9 @@ from . import (
     get_restore_processor_period,
     get_read_through_days,
     create_iam_user_s3client,
+    get_iam_client,
+    get_sts_client,
+    get_parameter_name,
     )
 
 
@@ -1652,17 +1657,21 @@ def _make_objs_dict(key_names):
 
 def test_versioning_concurrent_multi_object_delete():
     num_objects = 5
+    num_versions_per_object = 3
+    total_num_objects_in_the_bucket = num_objects * num_versions_per_object
     num_threads = 5
     bucket_name = get_new_bucket()
 
     check_configure_versioning_retry(bucket_name, "Enabled", "Enabled")
 
     key_names = ["key_{:d}".format(x) for x in range(num_objects)]
-    bucket = _create_objects(bucket_name=bucket_name, keys=key_names)
+    for _ in range(num_versions_per_object):
+        bucket = _create_objects(bucket_name=bucket_name, keys=key_names)
+        assert bucket == bucket_name
 
     client = get_client()
     versions = client.list_object_versions(Bucket=bucket_name)['Versions']
-    assert len(versions) == num_objects
+    assert len(versions) == total_num_objects_in_the_bucket
     objs_dict = {'Objects': [dict((k, v[k]) for k in ["Key", "VersionId"]) for v in versions]}
     results = [None] * num_threads
 
@@ -1677,11 +1686,13 @@ def test_versioning_concurrent_multi_object_delete():
     _do_wait_completion(t)
 
     for response in results:
-        assert len(response['Deleted']) == num_objects
+        assert len(response['Deleted']) == total_num_objects_in_the_bucket
         assert 'Errors' not in response
 
-    response = client.list_objects(Bucket=bucket_name)
-    assert 'Contents' not in response
+    response_list_objects = client.list_objects(Bucket=bucket_name)
+    assert 'Contents' not in response_list_objects
+    response_list_versions = client.list_object_versions(Bucket=bucket_name)
+    assert 'Versions' not in response_list_versions and 'DeleteMarkers' not in response_list_versions
 
 def test_multi_object_delete():
     key_names = ['key0', 'key1', 'key2']
@@ -3529,6 +3540,34 @@ def test_object_raw_get_x_amz_expires_out_positive_range():
     res = requests.get(url, verify=get_config_ssl_verify()).__dict__
     assert res['status_code'] == 403
 
+def test_object_content_encoding_aws_chunked():
+    client = get_client()
+    bucket = get_new_bucket(client)
+    key = 'encoding'
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='gzip')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert response['ContentEncoding'] == 'gzip'
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='deflate, gzip')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert response['ContentEncoding'] == 'deflate, gzip'
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='gzip, aws-chunked')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert response['ContentEncoding'] == 'gzip'
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='aws-chunked, gzip')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert response['ContentEncoding'] == 'gzip'
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='aws-chunked')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert 'ContentEncoding' not in response
+
+    client.put_object(Bucket=bucket, Key=key, ContentEncoding='aws-chunked, aws-chunked')
+    response = client.head_object(Bucket=bucket, Key=key)
+    assert 'ContentEncoding' not in response
 
 def test_object_anon_put():
     bucket_name = get_new_bucket()
@@ -5360,6 +5399,33 @@ def test_list_buckets_bad_auth():
     status, error_code = _get_status_and_error_code(e.response)
     assert status == 403
 
+@pytest.mark.fails_on_dbstore
+def test_list_buckets_paginated():
+    client = get_client()
+
+    response = client.list_buckets(MaxBuckets=1)
+    assert len(response['Buckets']) == 0
+    assert 'ContinuationToken' not in response
+
+    bucket1 = get_new_bucket()
+
+    response = client.list_buckets(MaxBuckets=1)
+    assert len(response['Buckets']) == 1
+    assert response['Buckets'][0]['Name'] == bucket1
+    assert 'ContinuationToken' not in response
+
+    bucket2 = get_new_bucket()
+
+    response = client.list_buckets(MaxBuckets=1)
+    assert len(response['Buckets']) == 1
+    assert response['Buckets'][0]['Name'] == bucket1
+    continuation = response['ContinuationToken']
+
+    response = client.list_buckets(MaxBuckets=1, ContinuationToken=continuation)
+    assert len(response['Buckets']) == 1
+    assert response['Buckets'][0]['Name'] == bucket2
+    assert 'ContinuationToken' not in response
+
 @pytest.fixture
 def override_prefix_a():
     nuke_prefixed_buckets(prefix='a'+get_prefix())
@@ -5639,6 +5705,113 @@ def test_object_copy_replacing_metadata():
         assert metadata == response['Metadata']
         assert size == response['ContentLength']
 
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_retaining_tagging():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == [{'Key': 'key1', 'Value': 'value1'}, {'Key': 'key2', 'Value': 'value2'}]
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_tagging_directive_copy():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo', TaggingDirective='COPY')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == [{'Key': 'key1', 'Value': 'value1'}, {'Key': 'key2', 'Value': 'value2'}]
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_tagging_ignored_without_directive():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo', Tagging='key3=value3&key4=value4')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == [{'Key': 'key1', 'Value': 'value1'}, {'Key': 'key2', 'Value': 'value2'}]
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_replacing_metadata_and_copying_tagging():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo',
+                      Metadata={'old': 'metadata'},
+                      Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo',
+                       Metadata={'new': 'metadata'},
+                       MetadataDirective='REPLACE',
+                       TaggingDirective='COPY')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == [{'Key': 'key1', 'Value': 'value1'}, {'Key': 'key2', 'Value': 'value2'}]
+    response = client.get_object(Bucket=bucket_name, Key='bar321foo')
+    assert response['Metadata'] == {'new': 'metadata'}
+
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo-default',
+                       Metadata={'default': 'metadata'},
+                       MetadataDirective='REPLACE')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo-default')
+    assert response['TagSet'] == [{'Key': 'key1', 'Value': 'value1'}, {'Key': 'key2', 'Value': 'value2'}]
+    response = client.get_object(Bucket=bucket_name, Key='bar321foo-default')
+    assert response['Metadata'] == {'default': 'metadata'}
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_replacing_tagging():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo', TaggingDirective='REPLACE', Tagging='key3=value3&key4=value4')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == [{'Key': 'key3', 'Value': 'value3'}, {'Key': 'key4', 'Value': 'value4'}]
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_replacing_tagging_with_none():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    client.copy_object(Bucket=bucket_name, CopySource=copy_source, Key='bar321foo', TaggingDirective='REPLACE')
+
+    response = client.get_object_tagging(Bucket=bucket_name, Key='bar321foo')
+    assert response['TagSet'] == []
+
+@pytest.mark.tagging
+@pytest.mark.fails_on_dbstore
+def test_object_copy_to_itself_replacing_tagging():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    client.put_object(Bucket=bucket_name, Key='foo123bar', Body='foo', Tagging='key1=value1&key2=value2')
+
+    copy_source = {'Bucket': bucket_name, 'Key': 'foo123bar'}
+    e = assert_raises(ClientError, client.copy_object, Bucket=bucket_name, CopySource=copy_source, Key='foo123bar', TaggingDirective='REPLACE', Tagging='key3=value3&key4=value4')
+    status, error_code = _get_status_and_error_code(e.response)
+    assert status == 400
+    assert error_code == 'InvalidRequest'
+
 def test_object_copy_bucket_not_found():
     bucket_name = get_new_bucket()
     client = get_client()
@@ -5915,6 +6088,25 @@ def test_multipart_upload_empty():
     assert error_code == 'MalformedXML'
 
 @pytest.mark.fails_on_dbstore
+def test_multipart_upload_complete_without_create():
+    bucket_name = get_new_bucket()
+    client = get_client()
+
+    parts = {}
+    upload_opts = {
+        'Bucket': bucket_name,
+        'Key': 'mymultipart',
+        'UploadId': 'abc1234def',
+        'MultipartUpload': {'Parts': [
+            {'ETag': "1234", 'PartNumber': 1}
+        ]}
+    }
+    e = assert_raises(ClientError, client.complete_multipart_upload, **upload_opts)
+    status, error_code = _get_status_and_error_code(e.response)
+    assert status == 404
+    assert error_code == 'NoSuchUpload'
+
+@pytest.mark.fails_on_dbstore
 def test_multipart_upload_small():
     bucket_name = get_new_bucket()
     client = get_client()
@@ -6152,7 +6344,7 @@ def check_versioning(bucket_name, status):
     except KeyError:
         assert status == None
 
-# amazon is eventual consistent, retry a bit if failed
+# amazon is eventually consistent, retry a bit if failed
 def check_configure_versioning_retry(bucket_name, status, expected_string):
     client = get_client()
     client.put_bucket_versioning(Bucket=bucket_name, VersioningConfiguration={'Status': status})
@@ -6532,17 +6724,17 @@ def test_multipart_get_part():
     assert status == 404
     assert error_code == 'NoSuchKey'
 
-    client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
+    res = client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
     assert len(parts) == part_count
 
     for part, size in zip(parts, part_sizes):
         response = client.head_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'])
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
 
         response = client.get_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'])
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
         assert response['ContentLength'] == size
         # compare contents
         for chunk in response['Body'].iter_chunks():
@@ -6587,17 +6779,17 @@ def test_multipart_sse_c_get_part():
     assert status == 404
     assert error_code == 'NoSuchKey'
 
-    client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts}, **get_args)
+    res = client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
     assert len(parts) == part_count
 
     for part, size in zip(parts, part_sizes):
         response = client.head_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'], **get_args)
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
 
         response = client.get_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'], **get_args)
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
         assert response['ContentLength'] == size
         # compare contents
         for chunk in response['Body'].iter_chunks():
@@ -6609,6 +6801,40 @@ def test_multipart_sse_c_get_part():
     status, error_code = _get_status_and_error_code(e.response)
     assert status == 400
     assert error_code == 'InvalidPart'
+
+@pytest.mark.encryption
+@pytest.mark.checksum
+@pytest.mark.fails_on_dbstore
+def test_multipart_sse_c_checksum_complete():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    key = "mymultipart"
+    sse_args = {
+        'SSECustomerAlgorithm': 'AES256',
+        'SSECustomerKey': 'pO3upElrwuEXSoFwCfnZPdSsmt/xWeFa0N9KgDijwVs=',
+        'SSECustomerKeyMD5': 'DWygnHRtgiJ77HCm+1rvHw==',
+    }
+
+    response = client.create_multipart_upload(Bucket=bucket_name, Key=key, ChecksumAlgorithm='SHA256', **sse_args)
+    upload_id = response['UploadId']
+
+    body = FakeWriteFile(1024, 'A')
+    part_sha256sum = 'arcu6553sHVAiX4MjW0j7I7vD4w6R+Gz9Ok0Q9lTa+0='
+    response = client.upload_part(UploadId=upload_id, Bucket=bucket_name, Key=key, PartNumber=1, Body=body,
+                                  ChecksumAlgorithm='SHA256', ChecksumSHA256=part_sha256sum, **sse_args)
+    parts = [{'ETag': response['ETag'].strip('"'), 'ChecksumSHA256': response['ChecksumSHA256'], 'PartNumber': 1}]
+
+    # the key headers are required to complete a checksummed sse-c upload
+    e = assert_raises(ClientError, client.complete_multipart_upload,
+                      Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
+    status, error_code = _get_status_and_error_code(e.response)
+    assert status == 400
+    assert error_code == 'InvalidArgument'
+
+    composite_sha256sum = 'Ok6Cs5b96ux6+MWQkJO7UBT5sKPBeXBLwvj/hK89smg=-1'
+    response = client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id,
+                                                MultipartUpload={'Parts': parts}, **sse_args)
+    assert composite_sha256sum == response['ChecksumSHA256']
 
 @pytest.mark.fails_on_dbstore
 def test_multipart_single_get_part():
@@ -6629,17 +6855,17 @@ def test_multipart_single_get_part():
     assert status == 404
     assert error_code == 'NoSuchKey'
 
-    client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
+    res = client.complete_multipart_upload(Bucket=bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': parts})
     assert len(parts) == part_count
 
     for part, size in zip(parts, part_sizes):
         response = client.head_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'])
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
 
         response = client.get_object(Bucket=bucket_name, Key=key, PartNumber=part['PartNumber'])
         assert response['PartsCount'] == part_count
-        assert response['ETag'] == '"{}"'.format(part['ETag'])
+        assert response['ETag'] == res['ETag']
         assert response['ContentLength'] == size
         # compare contents
         for chunk in response['Body'].iter_chunks():
@@ -7846,6 +8072,11 @@ def test_versioning_obj_suspended_copy():
     copy_source = {'Bucket': bucket_name, 'Key': key1}
     client.copy_object(Bucket=bucket_name, Key=key2, CopySource=copy_source)
 
+    # copy to another non-versioned bucket
+    bucket_name2 = get_new_bucket()
+    copy_source = {'Bucket': bucket_name, 'Key': key1}
+    client.copy_object(Bucket=bucket_name2, Key=key1, CopySource=copy_source)
+
     # delete the source object. keep the 'null' entry in version_ids
     client.delete_object(Bucket=bucket_name, Key=key1)
 
@@ -7854,11 +8085,18 @@ def test_versioning_obj_suspended_copy():
     body = _get_body(response)
     assert body == content
 
+    # get the target object from the other bucket
+    response = client.get_object(Bucket=bucket_name2, Key=key1)
+    body = _get_body(response)
+    assert body == content
+
     # cleaning up
     client.delete_object(Bucket=bucket_name, Key=key2)
     client.delete_object(Bucket=bucket_name, Key=key2, VersionId='null')
-
     clean_up_bucket(client, bucket_name, key1, version_ids)
+
+    client.delete_object(Bucket=bucket_name2, Key=key1)
+    client.delete_bucket(Bucket=bucket_name2)
 
 def test_versioning_obj_create_versions_remove_all():
     bucket_name = get_new_bucket()
@@ -9938,6 +10176,212 @@ def test_lifecycle_cloud_transition_large_obj():
     expire1_key1_str = prefix + keys[1]
     verify_object(cloud_client, target_path, expire1_key1_str, data, target_sc)
 
+# Test for per-bucket cloud transition targeting (target_by_bucket=true)
+# When target_by_bucket is enabled:
+# 1. Each source bucket transitions to a dedicated target bucket
+# 2. Object keys are stored without the source bucket name prefix
+# 3. Target bucket names follow template: rgwx-${zonegroup}-${storage_class}-${bucket}
+@pytest.mark.lifecycle
+@pytest.mark.lifecycle_transition
+@pytest.mark.cloud_transition
+@pytest.mark.cloud_restore
+@pytest.mark.target_by_bucket
+@pytest.mark.fails_on_aws
+@pytest.mark.fails_on_dbstore
+def test_lifecycle_cloud_transition_target_by_bucket():
+    """
+    Test cloud transition with target_by_bucket=true.
+
+    Validates that when target_by_bucket is enabled:
+    1. Objects land in a bucket-specific target (not the shared target_path)
+    2. Object keys do NOT include the source bucket name as a prefix
+    3. Restore can locate and restore objects correctly
+    """
+    cloud_sc = get_cloud_storage_class()
+    if cloud_sc is None:
+        pytest.skip('[s3 cloud] section missing cloud_storage_class')
+
+    target_by_bucket = get_cloud_target_by_bucket()
+    if not target_by_bucket:
+        pytest.skip('[s3 cloud] target_by_bucket not enabled')
+
+    retain_head_object = get_cloud_retain_head_object()
+    target_sc = get_cloud_target_storage_class()
+    target_by_bucket_prefix = get_cloud_target_by_bucket_prefix()
+
+    client = get_client()
+    cloud_client = get_cloud_client()
+    lc_interval = get_lc_debug_interval()
+    restore_period = get_restore_processor_period()
+
+    # Create source bucket with test objects
+    bucket_name = get_new_bucket()
+    keys = ['file1.txt', 'subdir/file2.txt']
+
+    for key in keys:
+        client.put_object(Bucket=bucket_name, Key=key, Body=key)
+
+    # Configure lifecycle rule for cloud transition
+    rules = [{'ID': 'rule1',
+              'Transitions': [{'Days': 1, 'StorageClass': cloud_sc}],
+              'Prefix': '',
+              'Status': 'Enabled'}]
+    lifecycle = {'Rules': rules}
+    client.put_bucket_lifecycle_configuration(Bucket=bucket_name, LifecycleConfiguration=lifecycle)
+
+    # Verify initial state
+    response = client.list_objects(Bucket=bucket_name)
+    init_keys = _get_keys(response)
+    assert len(init_keys) == len(keys)
+
+    # Wait for transition to complete
+    time.sleep(15 * lc_interval)
+
+    # Verify objects have transitioned in source bucket
+    expire_keys = list_bucket_storage_class(client, bucket_name)
+    if retain_head_object and retain_head_object.lower() == "true":
+        assert len(expire_keys.get(cloud_sc, [])) == len(keys), \
+            f"Expected {len(keys)} objects in {cloud_sc}, got {len(expire_keys.get(cloud_sc, []))}"
+
+    # Derive expected target bucket name
+    # Default template: rgwx-${zonegroup}-${storage_class}-${bucket}
+    if target_by_bucket_prefix:
+        expected_target = target_by_bucket_prefix.replace('${zonegroup}', 'default')
+        expected_target = expected_target.replace('${storage_class}', cloud_sc.lower())
+        expected_target = expected_target.replace('${bucket}', bucket_name)
+    else:
+        expected_target = f"rgwx-default-{cloud_sc.lower()}-{bucket_name}"
+
+    # Allow time for cloud operations to complete
+    time.sleep(5 * lc_interval)
+
+    # Verify objects in target bucket
+    # With target_by_bucket=true, keys should NOT have bucket_name prefix
+    for key in keys:
+        verify_object(cloud_client, expected_target, key, key, target_sc)
+
+        # Verify the old format (with bucket prefix) is NOT used
+        old_format_key = bucket_name + "/" + key
+        try:
+            cloud_client.head_object(Bucket=expected_target, Key=old_format_key)
+            assert False, f"Found old format key '{old_format_key}' - target_by_bucket not working"
+        except ClientError as e:
+            assert e.response['Error']['Code'] in ('404', 'NoSuchKey'), \
+                f"Unexpected error: {e}"
+
+    # Test restore functionality
+    restore_key = keys[0]
+
+    # Verify object is transitioned before attempting restore
+    verify_transition(client, bucket_name, restore_key, cloud_sc)
+
+    # Delete lifecycle to prevent re-transition after restore
+    client.delete_bucket_lifecycle(Bucket=bucket_name)
+
+    # Restore object temporarily
+    client.restore_object(Bucket=bucket_name, Key=restore_key, RestoreRequest={'Days': 2})
+    time.sleep(3 * restore_period)
+
+    # Verify object is restored temporarily (storage class stays cloud_sc, but content is accessible)
+    verify_transition(client, bucket_name, restore_key, cloud_sc)
+    response = client.head_object(Bucket=bucket_name, Key=restore_key)
+    assert response['ContentLength'] == len(restore_key)
+
+@pytest.mark.lifecycle
+@pytest.mark.lifecycle_transition
+@pytest.mark.cloud_transition
+@pytest.mark.cloud_restore
+@pytest.mark.target_by_bucket
+@pytest.mark.fails_on_aws
+@pytest.mark.fails_on_dbstore
+def test_lifecycle_cloud_transition_target_by_bucket_multiple_buckets():
+    """
+    Test that target_by_bucket properly isolates objects between buckets.
+    Also tests restore functionality for one of the buckets.
+    """
+    cloud_sc = get_cloud_storage_class()
+    if cloud_sc is None:
+        pytest.skip('[s3 cloud] section missing cloud_storage_class')
+
+    target_by_bucket = get_cloud_target_by_bucket()
+    if not target_by_bucket:
+        pytest.skip('[s3 cloud] target_by_bucket not enabled')
+
+    target_sc = get_cloud_target_storage_class()
+    target_by_bucket_prefix = get_cloud_target_by_bucket_prefix()
+
+    client = get_client()
+    cloud_client = get_cloud_client()
+    lc_interval = get_lc_debug_interval()
+    restore_period = get_restore_processor_period()
+
+    # Create two source buckets
+    bucket_a = get_new_bucket()
+    bucket_b = get_new_bucket()
+
+    key_a = 'only-in-a.txt'
+    key_b = 'only-in-b.txt'
+    client.put_object(Bucket=bucket_a, Key=key_a, Body='content-a')
+    client.put_object(Bucket=bucket_b, Key=key_b, Body='content-b')
+
+    # Configure lifecycle for both buckets
+    rules = [{'ID': 'rule1',
+              'Transitions': [{'Days': 1, 'StorageClass': cloud_sc}],
+              'Prefix': '',
+              'Status': 'Enabled'}]
+    lifecycle = {'Rules': rules}
+    client.put_bucket_lifecycle_configuration(Bucket=bucket_a, LifecycleConfiguration=lifecycle)
+    client.put_bucket_lifecycle_configuration(Bucket=bucket_b, LifecycleConfiguration=lifecycle)
+
+    # Wait for transitions
+    time.sleep(20 * lc_interval)
+
+    # Derive expected target bucket names
+    if target_by_bucket_prefix:
+        expected_target_a = target_by_bucket_prefix.replace('${zonegroup}', 'default')
+        expected_target_a = expected_target_a.replace('${storage_class}', cloud_sc.lower())
+        expected_target_a = expected_target_a.replace('${bucket}', bucket_a)
+        expected_target_b = target_by_bucket_prefix.replace('${zonegroup}', 'default')
+        expected_target_b = expected_target_b.replace('${storage_class}', cloud_sc.lower())
+        expected_target_b = expected_target_b.replace('${bucket}', bucket_b)
+    else:
+        expected_target_a = f"rgwx-default-{cloud_sc.lower()}-{bucket_a}"
+        expected_target_b = f"rgwx-default-{cloud_sc.lower()}-{bucket_b}"
+
+    # Verify isolation: target_a should have key_a, NOT key_b
+    verify_object(cloud_client, expected_target_a, key_a, 'content-a', target_sc)
+    try:
+        cloud_client.head_object(Bucket=expected_target_a, Key=key_b)
+        assert False, f"Isolation violation: '{key_b}' found in target_a"
+    except ClientError as e:
+        assert e.response['Error']['Code'] in ('404', 'NoSuchKey'), \
+            f"Unexpected error: {e}"
+
+    # Verify isolation: target_b should have key_b, NOT key_a
+    verify_object(cloud_client, expected_target_b, key_b, 'content-b', target_sc)
+    try:
+        cloud_client.head_object(Bucket=expected_target_b, Key=key_a)
+        assert False, f"Isolation violation: '{key_a}' found in target_b"
+    except ClientError as e:
+        assert e.response['Error']['Code'] in ('404', 'NoSuchKey'), \
+            f"Unexpected error: {e}"
+
+    # Test restore functionality on bucket_a
+    # Verify object is transitioned before attempting restore
+    verify_transition(client, bucket_a, key_a, cloud_sc)
+
+    # Delete lifecycle to prevent re-transition after restore
+    client.delete_bucket_lifecycle(Bucket=bucket_a)
+
+    # Restore object temporarily
+    client.restore_object(Bucket=bucket_a, Key=key_a, RestoreRequest={'Days': 2})
+    time.sleep(3 * restore_period)
+
+    # Verify object is restored temporarily (storage class stays cloud_sc, but content is accessible)
+    verify_transition(client, bucket_a, key_a, cloud_sc)
+    response = client.head_object(Bucket=bucket_a, Key=key_a)
+    assert response['ContentLength'] == len('content-a')
+
 @pytest.mark.cloud_restore
 @pytest.mark.fails_on_aws
 @pytest.mark.fails_on_dbstore
@@ -10180,6 +10624,165 @@ def test_restore_noncur_obj():
     for num in range(1, 2):
         response = client.head_object(Bucket=bucket, Key=key, VersionId=version_ids[num])
         assert response['ContentLength'] == 0
+
+@pytest.mark.cloud_restore
+@pytest.mark.fails_on_aws
+@pytest.mark.fails_on_dbstore
+def test_list_objects_restore_status():
+    cloud_sc = get_cloud_storage_class()
+    if cloud_sc is None:
+        pytest.skip('[s3 cloud] section missing cloud_storage_class')
+
+    bucket = get_new_bucket()
+    client = get_client()
+    temp_key = 'test_restore_status_temp'
+    perm_key = 'test_restore_status_perm'
+    data = 'restore status listing data'
+
+    client.put_object(Bucket=bucket, Key=temp_key, Body=data)
+    client.put_object(Bucket=bucket, Key=perm_key, Body=data)
+
+    response = client.list_objects_v2(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    objs = response['Contents']
+    assert len(objs) == 2
+    for o in objs:
+        assert 'RestoreStatus' not in o
+
+    response = client.list_objects(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    objs = response['Contents']
+    assert len(objs) == 2
+    for o in objs:
+        assert 'RestoreStatus' not in o
+
+    rules = [{'ID': 'rule1', 'Transitions': [{'Days': 1, 'StorageClass': cloud_sc}], 'Prefix': '', 'Status': 'Enabled'}]
+    lifecycle = {'Rules': rules}
+    client.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration=lifecycle)
+
+    lc_interval = get_lc_debug_interval()
+    restore_period = get_restore_processor_period()
+    time.sleep(10 * lc_interval)
+
+    verify_transition(client, bucket, temp_key, cloud_sc)
+    verify_transition(client, bucket, perm_key, cloud_sc)
+
+    # delete lifecycle to prevent re-transition before restore check
+    client.delete_bucket_lifecycle(Bucket=bucket)
+
+    client.restore_object(Bucket=bucket, Key=temp_key, RestoreRequest={'Days': 20})
+    # permanent restore omits 'Days'
+    client.restore_object(Bucket=bucket, Key=perm_key, RestoreRequest={})
+    time.sleep(3 * restore_period)
+
+    response = client.list_objects_v2(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    objs = {o['Key']: o for o in response['Contents']}
+    assert len(objs) == 2
+    assert 'RestoreStatus' in objs[temp_key]
+    assert objs[temp_key]['RestoreStatus']['IsRestoreInProgress'] == False
+    assert 'RestoreExpiryDate' in objs[temp_key]['RestoreStatus']
+    assert 'RestoreStatus' in objs[perm_key]
+    assert objs[perm_key]['RestoreStatus']['IsRestoreInProgress'] == False
+    assert 'RestoreExpiryDate' not in objs[perm_key]['RestoreStatus']
+
+    response = client.list_objects(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    objs = {o['Key']: o for o in response['Contents']}
+    assert len(objs) == 2
+    assert 'RestoreStatus' in objs[temp_key]
+    assert objs[temp_key]['RestoreStatus']['IsRestoreInProgress'] == False
+    assert 'RestoreExpiryDate' in objs[temp_key]['RestoreStatus']
+    assert 'RestoreStatus' in objs[perm_key]
+    assert objs[perm_key]['RestoreStatus']['IsRestoreInProgress'] == False
+    assert 'RestoreExpiryDate' not in objs[perm_key]['RestoreStatus']
+
+    # without the header, RestoreStatus should not appear
+    response = client.list_objects_v2(Bucket=bucket)
+    objs = response['Contents']
+    assert len(objs) == 2
+    for o in objs:
+        assert 'RestoreStatus' not in o
+
+@pytest.mark.cloud_restore
+@pytest.mark.fails_on_aws
+@pytest.mark.fails_on_dbstore
+def test_list_object_versions_restore_status():
+    cloud_sc = get_cloud_storage_class()
+    if cloud_sc is None:
+        pytest.skip('[s3 cloud] section missing cloud_storage_class')
+
+    bucket = get_new_bucket()
+    client = get_client()
+
+    key = 'test1/a'
+    data = 'restore status versioned data'
+
+    # create initial version before enabling versioning
+    client.put_object(Bucket=bucket, Key=key, Body=data)
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+
+    # create a new version so the original becomes non-current
+    (version_ids, contents) = create_multiple_versions(client, bucket, key, 1)
+
+    response = client.list_object_versions(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    for v in response['Versions']:
+        assert 'RestoreStatus' not in v
+
+    # transition non-current versions to cloud
+    rules = [{
+        'ID': 'rule1',
+        'Prefix': 'test1/',
+        'Status': 'Enabled',
+        'NoncurrentVersionTransitions': [{
+            'NoncurrentDays': 2,
+            'StorageClass': cloud_sc
+        }],
+    }]
+    lifecycle = {'Rules': rules}
+    client.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration=lifecycle)
+
+    lc_interval = get_lc_debug_interval()
+    restore_period = get_restore_processor_period()
+    time.sleep(7 * lc_interval)
+
+    # find the non-current version
+    response = client.list_object_versions(Bucket=bucket)
+    noncur_id = None
+    for v in response['Versions']:
+        if not v['IsLatest']:
+            noncur_id = v['VersionId']
+            break
+    assert noncur_id is not None
+
+    verify_transition(client, bucket, key, cloud_sc, noncur_id)
+
+    # delete lifecycle to prevent re-transition before restore check
+    client.delete_bucket_lifecycle(Bucket=bucket)
+
+    client.restore_object(Bucket=bucket, Key=key, VersionId=noncur_id, RestoreRequest={'Days': 20})
+    time.sleep(3 * restore_period)
+
+    response = client.list_object_versions(
+        Bucket=bucket,
+        OptionalObjectAttributes=['RestoreStatus'])
+    for v in response['Versions']:
+        if v['VersionId'] == noncur_id:
+            assert 'RestoreStatus' in v
+            assert v['RestoreStatus']['IsRestoreInProgress'] == False
+            assert 'RestoreExpiryDate' in v['RestoreStatus']
+        else:
+            assert 'RestoreStatus' not in v
+
+    response = client.list_object_versions(Bucket=bucket)
+    for v in response['Versions']:
+        assert 'RestoreStatus' not in v
 
 @pytest.mark.encryption
 @pytest.mark.fails_on_dbstore
@@ -10689,7 +11292,7 @@ def test_encryption_sse_c_deny_algo_with_bucket_policy():
 
     client.put_bucket_policy(Bucket=bucket_name, Policy=policy_document)
 
-    check_access_denied(client.put_object, Bucket=bucket_name, Key='foo', Body='bar', SSECustomerAlgorithm='AES192')
+    check_access_denied(client.put_object, Bucket=bucket_name, Key='foo', SSECustomerAlgorithm='AES192')
 
     client.put_object(
         Bucket=bucket_name, Key='foo', Body='bar',
@@ -10804,6 +11407,24 @@ def test_sse_kms_not_declared():
     e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key=key, Body=data)
     status, error_code = _get_status_and_error_code(e.response)
     assert status == 400
+
+@pytest.mark.encryption
+def test_sse_empty_algorithm():
+    bucket_name = get_new_bucket()
+    client = get_client()
+    sse_client_headers = {
+        'x-amz-server-side-encryption': ''
+    }
+    data = 'A'*100
+    key = 'testobj'
+
+    lf = (lambda **kwargs: kwargs['params']['headers'].update(sse_client_headers))
+    client.meta.events.register('before-call.s3.PutObject', lf)
+
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key=key, Body=data)
+    status, error_code = _get_status_and_error_code(e.response)
+    assert status == 400
+    assert error_code == 'InvalidArgument'
 
 @pytest.mark.encryption
 @pytest.mark.fails_on_dbstore
@@ -13817,16 +14438,15 @@ def test_block_public_object_canned_acls():
 
     #FIXME: use empty body until #42208
     e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key='foo1', Body='', ACL='public-read')
-    status, error_code = _get_status_and_error_code(e.response)
-    assert status == 403
+    assert 403 == _get_status(e.response)
 
-    e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key='foo2', Body='', ACL='public-read')
-    status, error_code = _get_status_and_error_code(e.response)
-    assert status == 403
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key='foo2', Body='', ACL='public-read-write')
+    assert 403 == _get_status(e.response)
 
     e = assert_raises(ClientError, client.put_object, Bucket=bucket_name, Key='foo3', Body='', ACL='authenticated-read')
-    status, error_code = _get_status_and_error_code(e.response)
-    assert status == 403
+    assert 403 == _get_status(e.response)
+
+    client.put_object(Bucket=bucket_name, Key='foo4', Body='', ACL='private')
 
 
 def test_block_public_policy():
@@ -14558,6 +15178,54 @@ def test_multipart_checksum_sha256():
     response = client.head_object(Bucket=bucket, Key=key, ChecksumMode='ENABLED')
     assert composite_sha256sum == response['ChecksumSHA256']
 
+@pytest.mark.checksum
+@pytest.mark.fails_on_dbstore
+def test_multipart_reupload_checksum_and_etag():
+    bucket = get_new_bucket()
+    client = get_client()
+
+    key = "mymultipart"
+    response = client.create_multipart_upload(Bucket=bucket, Key=key, ChecksumAlgorithm='SHA256')
+    assert 'SHA256' == response['ChecksumAlgorithm']
+    upload_id = response['UploadId']
+
+    size = 5 * 1024 * 1024 # each part but the last must be at least 5M
+
+    # code to compute checksums for these is in unittest_rgw_cksum
+    body1 = FakeWriteFile(size, 'A')
+    body2 = FakeWriteFile(size, 'B')
+    body3 = FakeWriteFile(size, 'C')
+
+    # known MD5/etag and sha256 checksum values
+    part1_sha256sum = '275VF5loJr1YYawit0XSHREhkFXYkkPKGuoK0x9VKxI='
+    part2_sha256sum = 'mrHwOfjTL5Zwfj74F05HOQGLdUb7E5szdCbxgUSq6NM='
+    part3_sha256sum = 'Vw7oB/nKQ5xWb3hNgbyfkvDiivl+U+/Dft48nfJfDow='
+
+    composite_etag = 'b2add96cc9702bbf4efb0ccdfc6b7747-3'
+    composite_sha256sum = 'uWBwpe1dxI4Vw8Gf0X9ynOdw/SS6VBzfWm9giiv1sf4=-3'
+
+    response1 = client.upload_part(UploadId=upload_id, Bucket=bucket, Key=key, PartNumber=1, Body=body1, ChecksumAlgorithm='SHA256', ChecksumSHA256=part1_sha256sum)
+    response2 = client.upload_part(UploadId=upload_id, Bucket=bucket, Key=key, PartNumber=2, Body=body2, ChecksumAlgorithm='SHA256', ChecksumSHA256=part2_sha256sum)
+    response3 = client.upload_part(UploadId=upload_id, Bucket=bucket, Key=key, PartNumber=3, Body=body3, ChecksumAlgorithm='SHA256', ChecksumSHA256=part3_sha256sum)
+
+    res1 = client.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id, ChecksumSHA256=composite_sha256sum, MultipartUpload={'Parts': [
+        {'ETag': response1['ETag'].strip('"'), 'ChecksumSHA256': response1['ChecksumSHA256'], 'PartNumber': 1},
+        {'ETag': response2['ETag'].strip('"'), 'ChecksumSHA256': response2['ChecksumSHA256'], 'PartNumber': 2},
+        {'ETag': response3['ETag'].strip('"'), 'ChecksumSHA256': response3['ChecksumSHA256'], 'PartNumber': 3}]})
+
+    assert composite_etag == res1['ETag'].strip('"')
+    assert composite_sha256sum == res1['ChecksumSHA256']
+
+    # validate the headers on the (idempotent) attempt to retry completion--they should match for ETag and Checksum (if any)
+    res2 = client.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id, ChecksumSHA256=composite_sha256sum, MultipartUpload={'Parts': [
+        {'ETag': response1['ETag'].strip('"'), 'ChecksumSHA256': response1['ChecksumSHA256'], 'PartNumber': 1},
+        {'ETag': response2['ETag'].strip('"'), 'ChecksumSHA256': response2['ChecksumSHA256'], 'PartNumber': 2},
+        {'ETag': response3['ETag'].strip('"'), 'ChecksumSHA256': response3['ChecksumSHA256'], 'PartNumber': 3}]})
+
+    # assert just validated final etag and checksum values match
+    assert res1['ETag'] == res2['ETag']
+    assert res1['ChecksumSHA256'] == res2['ChecksumSHA256']
+
 def multipart_checksum_3parts_helper(key=None, checksum_algo=None, checksum_type=None, **kwargs):
 
     bucket = get_new_bucket()
@@ -14606,6 +15274,18 @@ def multipart_checksum_3parts_helper(key=None, checksum_algo=None, checksum_type
                                              ObjectAttributes=request_attributes)
     assert response3['Checksum']['ChecksumType'] == checksum_type
     assert response3['Checksum'][cksum_arg_name] == kwargs['composite_cksum']
+
+    response4 = client.get_object(Bucket=bucket, Key=key, PartNumber=1)
+    assert response4['ChecksumType'] == checksum_type
+    assert response4[cksum_arg_name] == kwargs['part1_cksum']
+
+    response5 = client.get_object(Bucket=bucket, Key=key, PartNumber=2)
+    assert response5['ChecksumType'] == checksum_type
+    assert response5[cksum_arg_name] == kwargs['part2_cksum']
+
+    response6 = client.get_object(Bucket=bucket, Key=key, PartNumber=3)
+    assert response6['ChecksumType'] == checksum_type
+    assert response6[cksum_arg_name] == kwargs['part3_cksum']
 
 @pytest.mark.checksum
 @pytest.mark.fails_on_dbstore
@@ -15325,7 +16005,7 @@ def test_bucket_logging_bucket_auth_type():
     assert _verify_records(body, src_bucket_name, 'REST.GET.OBJECT', [key], "Standard", 1)
     assert _verify_record_field(body, src_bucket_name, 'REST.GET.OBJECT', key, "Standard", "AuthType", "-")
 
-    #AuthType "QueryString" (presigned)
+    #AuthType "QueryString" (presigned SigV4)
     params = {'Bucket': src_bucket_name, 'Key': key}
     url = client.generate_presigned_url(ClientMethod='get_object', Params=params, ExpiresIn=100000, HttpMethod='GET')
 
@@ -15344,6 +16024,150 @@ def test_bucket_logging_bucket_auth_type():
     body = _get_body(response)
     assert _verify_records(body, src_bucket_name, 'REST.GET.OBJECT', [key], "Standard", 1)
     assert _verify_record_field(body, src_bucket_name, 'REST.GET.OBJECT', key, "Standard", "AuthType", "QueryString")
+    assert _verify_record_field(body, src_bucket_name, 'REST.GET.OBJECT', key, "Standard", "SigVersion", "SigV4")
+
+    #AuthType "QueryString" (presigned SigV2)
+    client_v2 = get_v2_client()
+    params = {'Bucket': src_bucket_name, 'Key': key}
+    url = client_v2.generate_presigned_url(ClientMethod='get_object', Params=params, ExpiresIn=100000, HttpMethod='GET')
+
+    res = requests.options(url, verify=get_config_ssl_verify()).__dict__
+    assert res['status_code'] == 400
+
+    res = requests.get(url, verify=get_config_ssl_verify()).__dict__
+    assert res['status_code'] == 200
+
+    _flush_logs(client, src_bucket_name)
+    response = client.list_objects_v2(Bucket=log_bucket_name)
+    log_keys = _get_keys(response)
+
+    log_key = log_keys[-1]
+    response = client.get_object(Bucket=log_bucket_name, Key=log_key)
+    body = _get_body(response)
+    assert _verify_records(body, src_bucket_name, 'REST.GET.OBJECT', [key], "Standard", 1)
+    assert _verify_record_field(body, src_bucket_name, 'REST.GET.OBJECT', key, "Standard", "AuthType", "QueryString")
+    assert _verify_record_field(body, src_bucket_name, 'REST.GET.OBJECT', key, "Standard", "SigVersion", "SigV2")
+
+@pytest.mark.bucket_logging
+@pytest.mark.fails_on_aws
+def test_bucket_logging_request_id():
+    """verify that the standard access log RequestID field matches the x-amz-request-id response header"""
+    src_bucket_name = get_new_bucket_name()
+    src_bucket = get_new_bucket_resource(name=src_bucket_name)
+    log_bucket_name = get_new_bucket_name()
+    log_bucket = get_new_bucket_resource(name=log_bucket_name)
+    client = get_client()
+    prefix = 'log/'
+    key = 'my-test-object'
+    _set_log_bucket_policy(client, log_bucket_name, [src_bucket_name], [prefix])
+
+    # enable standard logging
+    logging_enabled = {'TargetBucket': log_bucket_name, 'TargetPrefix': prefix}
+    response = client.put_bucket_logging(Bucket=src_bucket_name, BucketLoggingStatus={
+        'LoggingEnabled': logging_enabled,
+    })
+    assert response['ResponseMetadata']['HTTPStatusCode'] == 200
+
+    # capture x-amz-request-id from the put_object response
+    response = client.put_object(Bucket=src_bucket_name, Key=key, Body=randcontent())
+    request_id = response['ResponseMetadata']['HTTPHeaders'].get('x-amz-request-id')
+    assert request_id is not None, 'failed to read x-amz-request-id from response headers'
+
+    _flush_logs(client, src_bucket_name)
+    response = client.list_objects_v2(Bucket=log_bucket_name)
+    log_keys = _get_keys(response)
+    assert len(log_keys) == 1
+
+    for log_key in log_keys:
+        response = client.get_object(Bucket=log_bucket_name, Key=log_key)
+        body = _get_body(response)
+        assert _verify_records(body, src_bucket_name, 'REST.PUT.OBJECT', [key], "Standard", 1)
+        assert _verify_record_field(body, src_bucket_name, 'REST.PUT.OBJECT', key, "Standard", "RequestID", request_id)
+
+
+@pytest.mark.bucket_logging
+@pytest.mark.fails_on_aws
+@pytest.mark.fails_on_dbstore
+def test_bucket_logging_requester_assumed_role():
+    """verify the standard access log Requester field contains the assumed-role ARN
+    for requests made with STS temporary credentials"""
+    iam_client = get_iam_client()
+    sts_client = get_sts_client()
+    alt_user_id = get_alt_user_id()
+    default_endpoint = get_config_endpoint()
+    role_session_name = get_parameter_name()
+
+    # create an IAM role assumable by the alt user
+    trust_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"AWS": [f"arn:aws:iam:::user/{alt_user_id}"]},
+            "Action": ["sts:AssumeRole"]
+        }]
+    })
+    role_name = get_parameter_name()
+    role_response = iam_client.create_role(Path='/', RoleName=role_name, AssumeRolePolicyDocument=trust_policy)
+    role_arn = role_response['Role']['Arn']
+
+    try:
+        role_policy = json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:*",
+                "Resource": "*"
+            }]
+        })
+        iam_client.put_role_policy(RoleName=role_name, PolicyName='S3FullAccess', PolicyDocument=role_policy)
+
+        # assume the role
+        resp = sts_client.assume_role(RoleArn=role_arn, RoleSessionName=role_session_name)
+
+        assert resp['ResponseMetadata']['HTTPStatusCode'] == 200
+        creds = resp['Credentials']
+        role_s3 = boto3.client(
+            's3',
+            aws_access_key_id=creds['AccessKeyId'],
+            aws_secret_access_key=creds['SecretAccessKey'],
+            aws_session_token=creds['SessionToken'],
+            endpoint_url=default_endpoint,
+            region_name='')
+
+        src_bucket_name = get_new_bucket_name()
+        log_bucket_name = get_new_bucket_name()
+        role_s3.create_bucket(Bucket=src_bucket_name)
+        role_s3.create_bucket(Bucket=log_bucket_name)
+        prefix = 'log/'
+        _set_log_bucket_policy_tenant(role_s3, "", log_bucket_name, "", alt_user_id, [src_bucket_name], [prefix])
+
+        logging_enabled = {'TargetBucket': log_bucket_name, 'TargetPrefix': prefix}
+        role_s3.put_bucket_logging(Bucket=src_bucket_name, BucketLoggingStatus={'LoggingEnabled': logging_enabled})
+
+        key = 'my-test-object'
+        role_s3.put_object(Bucket=src_bucket_name, Key=key, Body=randcontent())
+
+        _flush_logs(role_s3, src_bucket_name)
+        response = role_s3.list_objects_v2(Bucket=log_bucket_name)
+        log_keys = _get_keys(response)
+        assert len(log_keys) == 1
+
+        response = role_s3.get_object(Bucket=log_bucket_name, Key=log_keys[0])
+        body = _get_body(response)
+        expected_substring = f'assumed-role/{role_name}/{role_session_name}'
+        found = False
+        for record in body.splitlines():
+            if src_bucket_name not in record or 'REST.PUT.OBJECT' not in record or key not in record:
+                continue
+            parsed = _parse_log_record(record, "Standard")
+            requester = parsed['Requester']
+            assert requester.startswith('arn:aws:sts::'), f"Requester should be an STS ARN, got: {requester}"
+            assert expected_substring in requester, f"Requester missing {expected_substring}, got: {requester}"
+            found = True
+            break
+        assert found, "no PUT log record found for the assumed-role request"
+    finally:
+        nuke_role(iam_client, role_name)
 
 
 def _bucket_logging_key_filter(log_type):
@@ -17317,7 +18141,7 @@ def test_bucket_logging_roll_time():
     time.sleep(11)
     response = client.list_objects_v2(Bucket=log_bucket_name)
     keys = _get_keys(response)
-    len(keys) == 1
+    assert len(keys) == 1
 
     key = keys[0]
     assert key.startswith('log/')
@@ -18627,6 +19451,131 @@ def test_get_object_attributes():
     assert response['StorageClass'] == 'STANDARD'
     assert 'ObjectParts' not in response
 
+
+def test_upload_part_copy_percent_encoded_key():
+    
+    s3_client = get_client()
+    bucket_name = get_new_bucket()
+    key = "anyfile.txt"
+    encoded_key = "anyfilename%25.txt"
+    raw_key = "anyfilename%.txt"
+
+    ## PutObject: the copy source
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=encoded_key,
+        Body=b"foo",
+        ContentType="text/plain"
+    )
+
+    # Upload the target object (initial state)
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=key,
+        Body=b"foo",
+        ContentType="text/plain"
+    )
+
+    # Initiate multipart upload
+    mp_response = s3_client.create_multipart_upload(
+        Bucket=bucket_name,
+        Key=key
+    )
+    upload_id = mp_response["UploadId"]
+
+    # The following operation is expected to fail
+    with pytest.raises(s3_client.exceptions.ClientError) as exc_info:
+        s3_client.upload_part_copy(
+            Bucket=bucket_name,
+            Key=key,
+            PartNumber=1,
+            UploadId=upload_id,
+            CopySource={'Bucket': bucket_name, 'Key': raw_key}
+        )
+
+    # Download the object and verify content
+    final_obj = s3_client.get_object(Bucket=bucket_name, Key=key)
+    content = final_obj['Body'].read()
+    assert content == b"foo"
+
+def check_delete_marker(client, bucket, key, status):
+    dm_header_val = 'none'
+
+    try:
+        res = client.head_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        response_headers = e.response['ResponseMetadata']['HTTPHeaders']
+        dm_header_val = response_headers['x-amz-delete-marker']
+
+    assert dm_header_val == status
+
+@pytest.mark.delete_marker
+@pytest.mark.fails_on_dbstore
+def test_delete_marker_nonversioned():
+    bucket = get_new_bucket()
+    client = get_client()
+    key = "frodo.txt"
+    body = "body version %s" % (key)
+    # no versioning case
+    res = client.put_object(Bucket=bucket, Key=key, Body=body)
+    res = client.delete_object(Bucket=bucket, Key=key)
+    check_delete_marker(client, bucket, key, 'false')
+
+@pytest.mark.delete_marker
+@pytest.mark.fails_on_dbstore
+def test_delete_marker_versioned():
+    bucket = get_new_bucket()
+    client = get_client()
+    key = "bilbo.txt"
+    body = "body version %s" % (key)
+    # versioning case
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+    res = client.put_object(Bucket=bucket, Key=key, Body=body)
+    res = client.delete_object(Bucket=bucket, Key=key)
+    check_delete_marker(client, bucket, key, 'true')
+
+@pytest.mark.delete_marker
+@pytest.mark.fails_on_dbstore
+def test_delete_marker_suspended():
+    bucket = get_new_bucket()
+    client = get_client()
+    key = "ringo.txt"
+    body = "body version %s" % (key)
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+    res = client.put_object(Bucket=bucket, Key=key, Body=body)
+    check_configure_versioning_retry(bucket, "Suspended", "Suspended")
+    res = client.delete_object(Bucket=bucket, Key=key)
+    check_delete_marker(client, bucket, key, 'true')
+
+@pytest.mark.delete_marker
+@pytest.mark.lifecycle
+@pytest.mark.lifecycle_expiration
+@pytest.mark.fails_on_dbstore
+def test_delete_marker_expiration():
+    bucket = get_new_bucket()
+    client = get_client()
+    key = "nugent.ted"
+    body = "body version %s" % (key)
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+    res = client.put_object(Bucket=bucket, Key=key, Body=body)
+    res = client.delete_object(Bucket=bucket, Key=key)
+    # object should be a delete marker
+    check_delete_marker(client, bucket, key, 'true')
+
+    # to observe delete marker expiration, we must expire any existing
+    # noncurrent version, as these inhibit delete marker expiration
+    lifecycle = {
+        'Rules': [{'Expiration': {'ExpiredObjectDeleteMarker': True}, 'ID': 'dm-1-days', 'Prefix': '', 'Status': 'Enabled'}, {'ID': 'noncur-1-days', 'Prefix': '', 'Status': 'Enabled', 'NoncurrentVersionExpiration': {'NoncurrentDays': 1}}]
+    }
+    response = client.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration=lifecycle)
+    assert response['ResponseMetadata']['HTTPStatusCode'] == 200
+
+    lc_interval = get_lc_debug_interval()
+    time.sleep(6*lc_interval)
+
+    # delete marker should have expired
+    check_delete_marker(client, bucket, key, 'false')
+
 @pytest.mark.conditional_write
 @pytest.mark.fails_on_dbstore
 def test_put_object_if_match():
@@ -18780,7 +19729,6 @@ def test_multipart_put_current_object_if_none_match():
 
     client.delete_object(Bucket=bucket, Key=key)
 
-
 @pytest.mark.conditional_write
 @pytest.mark.fails_on_dbstore
 def test_put_current_object_if_match():
@@ -18865,6 +19813,57 @@ def test_put_object_current_if_match():
     assert (404, 'NoSuchKey') == _get_status_and_error_code(e.response)
 
     client.put_object(Bucket=bucket, Key=key, IfNoneMatch=etag)
+
+@pytest.mark.conditional_write
+@pytest.mark.fails_on_dbstore
+@pytest.mark.versioning
+def test_put_object_suspended_if_match():
+    client = get_client()
+    bucket = get_new_bucket(client)
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+    check_configure_versioning_retry(bucket, "Suspended", "Suspended")
+    key = 'obj'
+
+    etag = client.put_object(Bucket=bucket, Key=key, IfNoneMatch='*')['ETag']
+
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket, Key=key, IfNoneMatch='*')
+    assert (412, 'PreconditionFailed') == _get_status_and_error_code(e.response)
+
+    client.put_object(Bucket=bucket, Key=key, IfMatch=etag)
+
+    response = client.delete_object(Bucket=bucket, Key=key)
+    assert response['DeleteMarker']
+
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket, Key=key, IfMatch='*')
+    assert (404, 'NoSuchKey') == _get_status_and_error_code(e.response)
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket, Key=key, IfMatch='badetag')
+    assert (404, 'NoSuchKey') == _get_status_and_error_code(e.response)
+
+    response = client.put_object(Bucket=bucket, Key=key, IfNoneMatch='*')
+    assert 200 == response['ResponseMetadata']['HTTPStatusCode']
+
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket, Key=key, IfNoneMatch='*')
+    assert (412, 'PreconditionFailed') == _get_status_and_error_code(e.response)
+
+@pytest.mark.conditional_write
+@pytest.mark.fails_on_dbstore
+@pytest.mark.versioning
+def test_multipart_put_object_suspended_if_none_match():
+    client = get_client()
+    bucket = get_new_bucket(client)
+    check_configure_versioning_retry(bucket, "Enabled", "Enabled")
+    check_configure_versioning_retry(bucket, "Suspended", "Suspended")
+    key = 'obj'
+
+    successful_conditional_multipart_upload(client, bucket, key, IfNoneMatch='*')
+
+    failing_conditional_multipart_upload((412, 'PreconditionFailed'), client, bucket, key, IfNoneMatch='*')
+
+    response = client.delete_object(Bucket=bucket, Key=key)
+    assert response['DeleteMarker']
+
+    response = successful_conditional_multipart_upload(client, bucket, key, IfNoneMatch='*')
+    assert 200 == response['ResponseMetadata']['HTTPStatusCode']
 
 @pytest.mark.fails_on_aws # only supported for directory buckets
 @pytest.mark.conditional_write
@@ -19298,6 +20297,279 @@ def test_delete_objects_version_if_match_size():
     response = client.delete_objects(Bucket=bucket, Delete={'Objects': [{'Key': key, 'VersionId': version, 'Size': badsize}]})
     assert 200 == response['ResponseMetadata']['HTTPStatusCode']
 
+def public_bucket_policy(bucket):
+    return json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"AWS": "*"},
+            "Action": "*",
+            "Resource": [
+                f"arn:aws:s3:::{bucket}",
+                f"arn:aws:s3:::{bucket}/*"
+            ]
+        }]
+    })
+
+def get_object_acl_owner(client, bucket, key):
+    response = client.get_object_acl(Bucket=bucket, Key=key)
+    return response['Owner']['ID'], response['Owner']['DisplayName']
+
+def get_multipart_acl_owner(client, bucket, key, upload_id):
+    response = client.list_parts(Bucket=bucket, Key=key, UploadId=upload_id)
+    return response['Owner']['ID'], response['Owner']['DisplayName']
+
+def _test_object_ownership_bucket_owner_enforced(client, bucket, bucket_owner):
+    # put_object() succeeds without ACL
+    client.put_object(Bucket=bucket, Key='put-object-no-acl')
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'put-object-no-acl')
+    # put_object() succeeds with ACL=bucket-owner-full-control
+    client.put_object(Bucket=bucket, Key='put-object-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'put-object-bucket-owner-full-control')
+    # put_object() fails with other ACL
+    e = assert_raises(ClientError, client.put_object, Bucket=bucket, Key='put-object-private', ACL='private')
+    assert (400, 'AccessControlListNotSupported') == _get_status_and_error_code(e.response)
+
+    # create_multipart_upload() succeeds without ACL
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-no-acl')
+    assert bucket_owner == get_multipart_acl_owner(client, bucket, 'create-multipart-upload-no-acl', response['UploadId'])
+    # create_multipart_upload() succeeds with ACL=bucket-owner-full-control
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner == get_multipart_acl_owner(client, bucket, 'create-multipart-upload-bucket-owner-full-control', response['UploadId'])
+    # create_multipart_upload() fails with other ACL
+    e = assert_raises(ClientError, client.create_multipart_upload, Bucket=bucket, Key='create-multipart-upload-private', ACL='private')
+    assert (400, 'AccessControlListNotSupported') == _get_status_and_error_code(e.response)
+
+    # copy_object() succeeds without ACL
+    client.copy_object(Bucket=bucket, Key='copy-object-no-acl', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'})
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'copy-object-no-acl')
+    # copy_object() succeeds with ACL=bucket-owner-full-control
+    client.copy_object(Bucket=bucket, Key='copy-object-bucket-owner-full-control', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='bucket-owner-full-control')
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'copy-object-bucket-owner-full-control')
+    # copy_object() fails with other ACL
+    e = assert_raises(ClientError, client.copy_object, Bucket=bucket, Key='copy-object-private', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='private')
+    assert (400, 'AccessControlListNotSupported') == _get_status_and_error_code(e.response)
+
+    # put_bucket_acl() fails
+    e = assert_raises(ClientError, client.put_bucket_acl, Bucket=bucket, ACL='private')
+    assert (400, 'AccessControlListNotSupported') == _get_status_and_error_code(e.response)
+    # put_object_acl() fails
+    e = assert_raises(ClientError, client.put_object_acl, Bucket=bucket, Key='put-object-no-acl', ACL='private')
+    assert (400, 'AccessControlListNotSupported') == _get_status_and_error_code(e.response)
+
+def _test_object_ownership_bucket_owner_preferred(client, bucket, bucket_owner):
+    # put_object() without ACL owned by client
+    client.put_object(Bucket=bucket, Key='put-object-no-acl')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'put-object-no-acl')
+    # put_object() with ACL=bucket-owner-full-control owned by bucket owner
+    client.put_object(Bucket=bucket, Key='put-object-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'put-object-bucket-owner-full-control')
+    # put_object() with other ACL owned by client
+    client.put_object(Bucket=bucket, Key='put-object-private', ACL='private')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'put-object-private')
+
+    # create_multipart_upload() without ACL owned by client
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-no-acl')
+    assert bucket_owner != get_multipart_acl_owner(client, bucket, 'create-multipart-upload-no-acl', response['UploadId'])
+    # create_multipart_upload() with ACL=bucket-owner-full-control owned by bucket owner
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner == get_multipart_acl_owner(client, bucket, 'create-multipart-upload-bucket-owner-full-control', response['UploadId'])
+    # create_multipart_upload() with other ACL owned by client
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-private', ACL='private')
+    assert bucket_owner != get_multipart_acl_owner(client, bucket, 'create-multipart-upload-private', response['UploadId'])
+
+    # copy_object() without ACL owned by client
+    client.copy_object(Bucket=bucket, Key='copy-object-no-acl', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'})
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'copy-object-no-acl')
+    # copy_object() with ACL=bucket-owner-full-control owned by bucket owner
+    client.copy_object(Bucket=bucket, Key='copy-object-bucket-owner-full-control', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='bucket-owner-full-control')
+    assert bucket_owner == get_object_acl_owner(client, bucket, 'copy-object-bucket-owner-full-control')
+    # copy_object() with other ACL owned by client
+    client.copy_object(Bucket=bucket, Key='copy-object-private', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='private')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'copy-object-private')
+
+    # put_bucket_acl() and put_object_acl() succeed
+    client.put_bucket_acl(Bucket=bucket, ACL='private')
+    client.put_object_acl(Bucket=bucket, Key='put-object-no-acl', ACL='private')
+
+def _test_object_ownership_object_writer(client, bucket, bucket_owner):
+    # put_object() without ACL owned by client
+    client.put_object(Bucket=bucket, Key='put-object-no-acl')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'put-object-no-acl')
+    # put_object() with ACL=bucket-owner-full-control owned by client
+    client.put_object(Bucket=bucket, Key='put-object-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'put-object-bucket-owner-full-control')
+    # put_object() with other ACL owned by client
+    client.put_object(Bucket=bucket, Key='put-object-private', ACL='private')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'put-object-private')
+
+    # create_multipart_upload() without ACL owned by client
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-no-acl')
+    assert bucket_owner != get_multipart_acl_owner(client, bucket, 'create-multipart-upload-no-acl', response['UploadId'])
+    # create_multipart_upload() with ACL=bucket-owner-full-control owned by client
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-bucket-owner-full-control', ACL='bucket-owner-full-control')
+    assert bucket_owner != get_multipart_acl_owner(client, bucket, 'create-multipart-upload-bucket-owner-full-control', response['UploadId'])
+    # create_multipart_upload() with other ACL owned by client
+    response = client.create_multipart_upload(Bucket=bucket, Key='create-multipart-upload-private', ACL='private')
+    assert bucket_owner != get_multipart_acl_owner(client, bucket, 'create-multipart-upload-private', response['UploadId'])
+
+    # copy_object() without ACL owned by client
+    client.copy_object(Bucket=bucket, Key='copy-object-no-acl', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'})
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'copy-object-no-acl')
+    # copy_object() with ACL=bucket-owner-full-control owned by client
+    client.copy_object(Bucket=bucket, Key='copy-object-bucket-owner-full-control', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='bucket-owner-full-control')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'copy-object-bucket-owner-full-control')
+    # copy_object() with other ACL owned by client
+    client.copy_object(Bucket=bucket, Key='copy-object-private', CopySource={'Bucket': bucket, 'Key': 'put-object-no-acl'}, ACL='private')
+    assert bucket_owner != get_object_acl_owner(client, bucket, 'copy-object-private')
+
+    # put_bucket_acl() and put_object_acl() succeed
+    client.put_bucket_acl(Bucket=bucket, ACL='private')
+    client.put_object_acl(Bucket=bucket, Key='put-object-no-acl', ACL='private')
+
+def get_bucket_ownership(client, bucket):
+    response = client.get_bucket_ownership_controls(Bucket=bucket)
+    assert 1 == len(response['OwnershipControls']['Rules'])
+    return response['OwnershipControls']['Rules'][0]['ObjectOwnership']
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_aws # aws defaults to BucketOwnerEnforced
+def test_create_bucket_no_ownership_controls():
+    client = get_client()
+    bucket = get_new_bucket()
+    e = assert_raises(ClientError, client.get_bucket_ownership_controls, Bucket=bucket)
+    assert (404, 'OwnershipControlsNotFoundError') == _get_status_and_error_code(e.response)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_create_bucket_bucket_owner_enforced():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket_name()
+    client.create_bucket(Bucket=bucket, ObjectOwnership='BucketOwnerEnforced')
+    assert 'BucketOwnerEnforced' == get_bucket_ownership(client, bucket)
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_bucket_owner_enforced(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_create_bucket_bucket_owner_preferred():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket_name()
+    client.create_bucket(Bucket=bucket, ObjectOwnership='BucketOwnerPreferred')
+    assert 'BucketOwnerPreferred' == get_bucket_ownership(client, bucket)
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_bucket_owner_preferred(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_create_bucket_object_writer():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket_name()
+    client.create_bucket(Bucket=bucket, ObjectOwnership='ObjectWriter')
+    assert 'ObjectWriter' == get_bucket_ownership(client, bucket)
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_object_writer(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_put_bucket_ownership_bucket_owner_enforced():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket_name()
+    ownership = {'Rules': [{'ObjectOwnership': 'BucketOwnerEnforced'}]}
+
+    # expect PutBucketOwnershipControls to fail with public-read ACL
+    client.create_bucket(Bucket=bucket, ACL='public-read')
+    e = assert_raises(ClientError, client.put_bucket_ownership_controls,
+                      Bucket=bucket, OwnershipControls=ownership)
+    status, error_code = _get_status_and_error_code(e.response)
+    assert status == 400
+    assert error_code == 'InvalidBucketAclWithObjectOwnership'
+
+    # expect success with default private ACL
+    client.put_bucket_acl(Bucket=bucket, ACL='private')
+    client.put_bucket_ownership_controls(Bucket=bucket, OwnershipControls=ownership)
+    assert 'BucketOwnerEnforced' == get_bucket_ownership(client, bucket)
+
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_bucket_owner_enforced(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_put_bucket_ownership_bucket_owner_preferred():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket(client)
+    ownership = {'Rules': [{'ObjectOwnership': 'BucketOwnerPreferred'}]}
+    client.put_bucket_ownership_controls(Bucket=bucket, OwnershipControls=ownership)
+    assert 'BucketOwnerPreferred' == get_bucket_ownership(client, bucket)
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_bucket_owner_preferred(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+@pytest.mark.fails_on_dbstore
+def test_put_bucket_ownership_object_writer():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket(client)
+    ownership = {'Rules': [{'ObjectOwnership': 'ObjectWriter'}]}
+    client.put_bucket_ownership_controls(Bucket=bucket, OwnershipControls=ownership)
+    assert 'ObjectWriter' == get_bucket_ownership(client, bucket)
+    # add public bucket policy and test with 'alt' user
+    client.put_bucket_policy(Bucket=bucket, Policy=public_bucket_policy(bucket))
+    _test_object_ownership_object_writer(get_alt_client(), bucket, bucket_owner)
+
+@pytest.mark.object_ownership
+def test_bucket_create_delete_bucket_ownership():
+    client = get_client()
+    bucket_owner = (get_main_user_id(), get_main_display_name())
+    bucket = get_new_bucket(client)
+    ownership = {'Rules': [{'ObjectOwnership': 'BucketOwnerEnforced'}]}
+    client.put_bucket_ownership_controls(Bucket=bucket, OwnershipControls=ownership)
+    assert 'BucketOwnerEnforced' == get_bucket_ownership(client, bucket)
+
+    client.delete_bucket_ownership_controls(Bucket=bucket)
+
+    e = assert_raises(ClientError, client.get_bucket_ownership_controls, Bucket=bucket)
+    assert (404, 'OwnershipControlsNotFoundError') == _get_status_and_error_code(e.response)
+
+    client.delete_bucket_ownership_controls(Bucket=bucket)
+
+def test_head_object_404_with_policy_prefix():
+    client = get_client()
+    bucket = get_new_bucket(client)
+
+    policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"AWS": "*"},
+            "Action": "s3:ListBucket",
+            "Resource": f"arn:aws:s3:::{bucket}",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": "public/*"
+                }
+            }
+        }]
+    })
+    client.put_bucket_policy(Bucket=bucket, Policy=policy)
+
+    alt_client = get_alt_client()
+    # expect 404 NoSuchKey for names that match the s3:prefix
+    e = assert_raises(ClientError, alt_client.head_object, Bucket=bucket, Key='public/object')
+    assert 404 == _get_status(e.response)
+    # expect 403 Forbidden for names that don't match
+    e = assert_raises(ClientError, alt_client.head_object, Bucket=bucket, Key='private/object')
+    assert 403 == _get_status(e.response)
 
 #########################
 # COPY ENCRYPTION TESTS #
@@ -19521,14 +20793,6 @@ def _test_copy_part_enc(file_size, source_mode_key, dest_mode_key, source_sc=Non
     })
 
     if dest_mode_key == 'sse-c':
-        # make sure api is verifying the SSE-C headers
-        e = assert_raises(ClientError, client.complete_multipart_upload,
-                          Bucket=dest_bucket_name, Key='testobj2',
-                          UploadId=upload_id, MultipartUpload={'Parts': parts})
-        status, _ = _get_status_and_error_code(e.response)
-        assert status == 400
-
-        # and the key would be the same as the one used in upload part
         # use the source key to complete the upload
         # this is not allowed, so we expect an error
         source_sse_c_args = _copy_enc_source_modes['sse-c']['args']

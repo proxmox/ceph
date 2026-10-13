@@ -49,18 +49,18 @@ Alternatively, you may use the ``CEPH_ARGS`` environment variable to avoid
 re-entry of the user name and secret.
 
 For details on configuring the Ceph Storage Cluster to use authentication, see
-`Cephx Config Reference`_. For details on the architecture of Cephx, see
-`Architecture - High Availability Authentication`_.
+:ref:`rados-cephx-config-ref`. For details on the architecture of Cephx, see
+:ref:`arch_high_availability_authentication`.
 
 Background
 ==========
 
 No matter what type of Ceph client is used (for example: Block Device, Object
 Storage, Filesystem, native API), Ceph stores all data as RADOS objects within
-`pools`_.  Ceph users must have access to a given pool in order to read and
+:ref:`rados_pools`.  Ceph users must have access to a given pool in order to read and
 write data, and Ceph users must have execute permissions in order to use Ceph's
 administrative commands. The following concepts will help you understand
-Ceph['s] user management.
+Ceph's user management.
 
 .. _rados-ops-user:
 
@@ -72,8 +72,8 @@ Creating users allows you to control who (or what) can access your Ceph Storage
 Cluster, its pools, and the data within those pools.
 
 Ceph has the concept of a ``type`` of user. For purposes of user management,
-the type will always be ``client``. Ceph identifies users in a "period-
-delimited form" that consists of the user type and the user ID: for example,
+the type will always be ``client``. Ceph identifies users in a "period-delimited
+form" that consists of the user type and the user ID: for example,
 ``TYPE.ID``, ``client.admin``, or ``client.user1``. The reason for user typing
 is that the Cephx protocol is used not only by clients but also non-clients,
 such as Ceph Monitors, OSDs, and Metadata Servers. Distinguishing the user type
@@ -222,8 +222,8 @@ The following entries describe access capabilities.
 
 ``class-read``
 
-:Descriptions: Gives the user the capability to call class read methods.
-               Subset of ``x``.
+:Description: Gives the user the capability to call class read methods.
+              Subset of ``x``.
 
 
 ``class-write``
@@ -763,11 +763,11 @@ results to a keyring file, and then import the keyring into your main
 Key rotation
 ------------
 
-To rotate the secret for an entity, run a command of the following form:
+To rotate the secret for an entity, use:
 
 .. prompt:: bash #
 
-   ceph auth rotate <entity>
+    ceph auth rotate <entity>
 
 This avoids the need to delete and recreate the entity when its key is
 compromised, lost, or scheduled for rotation.
@@ -822,8 +822,6 @@ Ceph supports the following usage for user name and secret:
                  sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage
 
 
-.. _pools: ../pools
-
 Limitations
 ===========
 
@@ -865,5 +863,3 @@ encryption. Anyone storing sensitive data in Ceph should consider
 encrypting their data before providing it to the Ceph system.
 
 
-.. _Architecture - High Availability Authentication: ../../../architecture#high-availability-authentication
-.. _Cephx Config Reference: ../../configuration/auth-config-ref

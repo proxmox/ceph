@@ -1,14 +1,17 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "svc_zone.h"
+#include "common/admin_socket.h"
 #include "svc_sys_obj.h"
 #include "svc_sync_modules.h"
 
-#include "rgw_tools.h"
+#include "driver/rados/rgw_tools.h"
 #include "rgw_zone.h"
 #include "rgw_rest_conn.h"
 #include "rgw_bucket_sync.h"
+#include "rgw_sal.h"
+#include "rgw_sal_config.h"
 
 #include "common/errno.h"
 #include "include/random.h"
@@ -18,8 +21,190 @@
 using namespace std;
 using namespace rgw_zone_defaults;
 
-RGWSI_Zone::RGWSI_Zone(CephContext *cct, const rgw::SiteConfig* _site)
-        : RGWServiceInstance(cct), site(_site)
+
+// Admin socket hook for zone connection information
+class RGWSI_Zone_ASocketHook : public AdminSocketHook {
+  RGWSI_Zone *svc;
+
+  static constexpr std::string_view admin_commands[][2] = {
+    {
+      "zone connections",
+      "zone connections: list zone connections with endpoints and IP health status"
+    }
+  };
+
+public:
+  RGWSI_Zone_ASocketHook(RGWSI_Zone *_svc) : svc(_svc) {}
+
+  int start();
+  void shutdown();
+
+  int call(std::string_view command, const cmdmap_t& cmdmap,
+           const bufferlist&,
+           Formatter *f,
+           std::ostream& ss,
+           bufferlist& out) override;
+};
+
+int RGWSI_Zone_ASocketHook::start()
+{
+  auto admin_socket = svc->ctx()->get_admin_socket();
+  for (auto cmd : admin_commands) {
+    int r = admin_socket->register_command(cmd[0], this, cmd[1]);
+    if (r < 0) {
+      ldout(svc->ctx(), 0) << "ERROR: fail to register admin socket command (r="
+        << r << ")" << dendl;
+      return r;
+    }
+  }
+  return 0;
+}
+
+void RGWSI_Zone_ASocketHook::shutdown()
+{
+  auto admin_socket = svc->ctx()->get_admin_socket();
+  admin_socket->unregister_commands(this);
+}
+
+static void dump_resolved_ip(Formatter *f, const ResolvedIP& ip,
+                             double timeout_secs) {
+  f->open_object_section("ip");
+  f->dump_string("connect_to", ip.connect_to);
+  auto last_fail = ip.last_failure.load();
+  if (ceph::real_clock::is_zero(last_fail)) {
+    f->dump_string("status", "up");
+    f->dump_string("last_failure", "");
+  } else {
+    // Check if failure has expired based on timeout
+    auto now = ceph::real_clock::now();
+    auto diff = ceph::to_seconds<double>(now - last_fail);
+    if (diff >= timeout_secs) {
+      f->dump_string("status", "retry-ready");  // Timeout expired, eligible for retry but unknown if actually up
+    } else {
+      f->dump_string("status", "down");
+    }
+    f->dump_string("last_failure", ceph::to_iso_8601(last_fail));
+  }
+  f->close_section();
+}
+
+static void dump_resolved_endpoint(Formatter *f, const ResolvedEndpoint& ep,
+                                   double timeout_secs) {
+  f->open_object_section("endpoint");
+  f->dump_string("url", ep.url);
+  f->dump_string("scheme", ep.scheme);
+  f->dump_string("host", ep.host);
+  f->dump_int("port", ep.port);
+  f->dump_string("last_failure_time",
+                 ceph::real_clock::is_zero(ep.last_failure_time.load())
+                   ? "" : ceph::to_iso_8601(ep.last_failure_time.load()));
+
+  f->open_array_section("resolved_ips");
+  for (const auto& ip : ep.resolved_ips) {
+    dump_resolved_ip(f, ip, timeout_secs);
+  }
+  f->close_section();
+
+  f->close_section();
+}
+
+static void dump_rest_conn(Formatter *f, const std::string& name,
+                           RGWRESTConn* conn) {
+  if (!conn) return;
+
+  f->open_object_section(name);
+  f->dump_string("remote_id", conn->get_remote_id());
+  f->dump_unsigned("endpoint_count", conn->get_endpoint_count());
+
+  double timeout_secs = conn->get_ctx()->_conf->rgw_rest_conn_ip_fail_timeout_secs;
+
+  const auto& endpoints = conn->get_resolved_endpoints();
+  f->open_array_section("endpoints");
+  for (const auto& ep : endpoints) {
+    dump_resolved_endpoint(f, ep, timeout_secs);
+  }
+  f->close_section();
+
+  f->close_section();
+}
+
+int RGWSI_Zone_ASocketHook::call(
+  std::string_view command, const cmdmap_t& cmdmap,
+  const bufferlist&,
+  Formatter *f,
+  std::ostream& ss,
+  bufferlist& out)
+{
+  if (command == "zone connections"sv) {
+    f->open_object_section("zone_connections");
+
+    f->dump_string("current_time", ceph::to_iso_8601(ceph::real_clock::now()));
+    f->dump_string("current_zone_id", svc->zone_id().id);
+    f->dump_string("current_zone_name", svc->zone_name());
+
+    auto* master_conn = svc->get_master_conn();
+    if (master_conn) {
+      dump_rest_conn(f, "master_conn", master_conn);
+    }
+
+    // Zone connections map
+    auto& zone_conn_map = svc->get_zone_conn_map();
+    f->open_object_section("zone_conn_map");
+    for (auto& [zone_id, conn] : zone_conn_map) {
+      dump_rest_conn(f, zone_id.id, conn);
+    }
+    f->close_section();
+
+    // Only show zonegroup_conn_map if it has connections beyond the master
+    auto& zonegroup_conn_map = svc->get_zonegroup_conn_map();
+    bool zg_differs_from_master = false;
+    if (!master_conn) {
+      zg_differs_from_master = !zonegroup_conn_map.empty();
+    } else if (zonegroup_conn_map.size() > 1) {
+      zg_differs_from_master = true;
+    } else if (zonegroup_conn_map.size() == 1) {
+      auto& [zg_name, conn] = *zonegroup_conn_map.begin();
+      zg_differs_from_master = (conn->get_remote_id() != master_conn->get_remote_id());
+    }
+    if (zg_differs_from_master) {
+      f->open_object_section("zonegroup_conn_map");
+      for (auto& [zg_name, conn] : zonegroup_conn_map) {
+        dump_rest_conn(f, zg_name, conn);
+      }
+      f->close_section();
+    }
+
+    // Only show zone_data_notify_to_map if it differs from zone_conn_map
+    auto& notify_map = svc->get_zone_data_notify_to_map();
+    bool notify_differs = false;
+    if (notify_map.size() != zone_conn_map.size()) {
+      notify_differs = true;
+    } else {
+      for (auto& [zone_id, conn] : notify_map) {
+        auto it = zone_conn_map.find(zone_id);
+        if (it == zone_conn_map.end() || it->second != conn) {
+          notify_differs = true;
+          break;
+        }
+      }
+    }
+    if (notify_differs) {
+      f->open_object_section("zone_data_notify_to_map");
+      for (auto& [zone_id, conn] : notify_map) {
+        dump_rest_conn(f, zone_id.id, conn);
+      }
+      f->close_section();
+    }
+
+    f->close_section();
+    return 0;
+  }
+
+  return -ENOSYS;
+}
+
+RGWSI_Zone::RGWSI_Zone(CephContext *cct, rgw::sal::ConfigStore* _cfgstore, const rgw::SiteConfig* _site)
+        : RGWServiceInstance(cct), cfgstore(_cfgstore), site(_site)
 {
 }
 
@@ -90,10 +275,8 @@ int RGWSI_Zone::do_start(optional_yield y, const DoutPrefixProvider *dpp)
 
   assert(sysobj_svc->is_started()); /* if not then there's ordering issue */
 
-  ret = realm->init(dpp, cct, sysobj_svc, y);
-  if (ret < 0 && ret != -ENOENT) {
-    ldpp_dout(dpp, 0) << "failed reading realm info: ret "<< ret << " " << cpp_strerror(-ret) << dendl;
-    return ret;
+  if (site->get_realm().has_value()) {
+    *realm = site->get_realm().value();
   }
   if (site->get_period().has_value()) {
     *current_period = site->get_period().value();
@@ -122,7 +305,7 @@ int RGWSI_Zone::do_start(optional_yield y, const DoutPrefixProvider *dpp)
     }
     // read period_config into current_period
     auto& period_config = current_period->get_config();
-    ret = period_config.read(dpp, sysobj_svc, zonegroup->realm_id, y);
+    ret = cfgstore->read_period_config(dpp, y, zonegroup->realm_id, period_config);
     if (ret < 0 && ret != -ENOENT) {
       ldout(cct, 0) << "ERROR: failed to read period config: "
           << cpp_strerror(ret) << dendl;
@@ -212,11 +395,20 @@ int RGWSI_Zone::do_start(optional_yield y, const DoutPrefixProvider *dpp)
   ldpp_dout(dpp, 20) << "started zone id=" << zone_params->get_id() << " (name=" << zone_params->get_name() << 
         ") with tier type = " << zone_public_config->tier_type << dendl;
 
+
+  // Initialize admin socket hook
+  asocket_hook = std::make_unique<RGWSI_Zone_ASocketHook>(this);
+  asocket_hook->start();
   return 0;
 }
 
 void RGWSI_Zone::shutdown()
 {
+  // Shutdown admin socket hook
+  if (asocket_hook) {
+    asocket_hook->shutdown();
+  }
+
   delete rest_master_conn;
 
   for (auto& item : zone_conn_map) {
@@ -256,7 +448,7 @@ int RGWSI_Zone::list_zones(const DoutPrefixProvider *dpp, list<string>& zones)
 
 int RGWSI_Zone::list_realms(const DoutPrefixProvider *dpp, list<string>& realms)
 {
-  RGWRealm realm(cct, sysobj_svc);
+  RGWRealm realm;
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(realm.get_pool(cct));
 
   return syspool.list_prefixed_objs(dpp, realm_names_oid_prefix, &realms);
@@ -291,7 +483,7 @@ int RGWSI_Zone::list_periods(const DoutPrefixProvider *dpp, const string& curren
   string period_id = current_period;
   while(!period_id.empty()) {
     RGWPeriod period(period_id);
-    ret = period.init(dpp, cct, sysobj_svc, y);
+    ret = cfgstore->read_period(dpp, y, period_id, std::nullopt, period);
     if (ret < 0) {
       return ret;
     }
@@ -331,11 +523,6 @@ int RGWSI_Zone::init_zg_from_period(const DoutPrefixProvider *dpp, optional_yiel
   if (iter != current_period->get_map().zonegroups.end()) {
     ldpp_dout(dpp, 20) << "using current period zonegroup " << zonegroup->get_name() << dendl;
     *zonegroup = iter->second;
-    int ret = zonegroup->init(dpp, cct, sysobj_svc, y, false);
-    if (ret < 0) {
-      ldpp_dout(dpp, 0) << "failed init zonegroup: " << " " << cpp_strerror(-ret) << dendl;
-      return ret;
-    }
   }
   for (iter = current_period->get_map().zonegroups.begin();
        iter != current_period->get_map().zonegroups.end(); ++iter){
@@ -353,20 +540,22 @@ int RGWSI_Zone::init_zg_from_period(const DoutPrefixProvider *dpp, optional_yiel
 	  master->second.name << " id:" << master->second.id << " as master" << dendl;
 	if (zonegroup->get_id() == zg.get_id()) {
 	  zonegroup->master_zone = master->second.id;
-	  int ret = zonegroup->update(dpp, y);
+	  int ret = cfgstore->create_zonegroup(dpp, y, false, *zonegroup, nullptr);
 	  if (ret < 0) {
 	    ldpp_dout(dpp, 0) << "error updating zonegroup : " << cpp_strerror(-ret) << dendl;
 	    return ret;
 	  }
 	} else {
 	  RGWZoneGroup fixed_zg(zg.get_id(),zg.get_name());
-	  int ret = fixed_zg.init(dpp, cct, sysobj_svc, y);
+    std::string_view zonegroup_id = zonegroup->get_id();
+    std::string_view zonegroup_name = zonegroup->get_name();
+    int ret = rgw::read_zonegroup(dpp, y, cfgstore, zonegroup_id, zonegroup_name, *zonegroup);
 	  if (ret < 0) {
 	    ldpp_dout(dpp, 0) << "error initializing zonegroup : " << cpp_strerror(-ret) << dendl;
 	    return ret;
 	  }
 	  fixed_zg.master_zone = master->second.id;
-	  ret = fixed_zg.update(dpp, y);
+    ret = cfgstore->create_zonegroup(dpp, y, false, fixed_zg, nullptr);
 	  if (ret < 0) {
 	    ldpp_dout(dpp, 0) << "error initializing zonegroup : " << cpp_strerror(-ret) << dendl;
 	    return ret;
@@ -402,7 +591,7 @@ int RGWSI_Zone::init_zg_from_local(const DoutPrefixProvider *dpp, optional_yield
 	ldpp_dout(dpp, 0) << "zonegroup " << zonegroup->get_name() << " missing master_zone, setting zone " <<
 	  master->second.name << " id:" << master->second.id << " as master" << dendl;
 	zonegroup->master_zone = master->second.id;
-	int ret = zonegroup->update(dpp, y);
+	int ret = cfgstore->create_zonegroup(dpp, y, false, *zonegroup, nullptr);
 	if (ret < 0) {
 	  ldpp_dout(dpp, 0) << "error initializing zonegroup : " << cpp_strerror(-ret) << dendl;
 	  return ret;
@@ -428,11 +617,6 @@ const RGWZoneParams& RGWSI_Zone::get_zone_params() const
 const RGWZone& RGWSI_Zone::get_zone() const
 {
   return *zone_public_config;
-}
-
-const RGWZoneGroup& RGWSI_Zone::get_zonegroup() const
-{
-  return *zonegroup;
 }
 
 int RGWSI_Zone::get_zonegroup(const string& id, RGWZoneGroup& zg) const
@@ -517,11 +701,6 @@ bool RGWSI_Zone::need_to_sync() const
   return !(zonegroup->master_zone.empty() ||
 	   !rest_master_conn ||
 	   current_period->get_id().empty());
-}
-
-bool RGWSI_Zone::need_to_log_data() const
-{
-  return (zone_public_config->log_data && sync_module_exports_data());
 }
 
 bool RGWSI_Zone::is_meta_master() const
@@ -684,7 +863,7 @@ int RGWSI_Zone::select_bucket_placement(const DoutPrefixProvider *dpp, const RGW
                                     pselected_rule, rule_info, y);
 }
 
-bool RGWSI_Zone::get_redirect_zone_endpoint(string *endpoint)
+bool RGWSI_Zone::get_redirect_zone_endpoint_url(string *url)
 {
   if (zone_public_config->redirect_zone.empty()) {
     return false;
@@ -698,11 +877,13 @@ bool RGWSI_Zone::get_redirect_zone_endpoint(string *endpoint)
 
   RGWRESTConn *conn = iter->second;
 
-  int ret = conn->get_url(*endpoint);
+  RGWEndpoint ep{*url};
+  int ret = conn->get_endpoint(ep);
   if (ret < 0) {
     ldout(cct, 0) << "ERROR: redirect zone, conn->get_endpoint() returned ret=" << ret << dendl;
     return false;
   }
+  *url = ep.get_url();
 
   return true;
 }

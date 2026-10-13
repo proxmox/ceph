@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -17,6 +18,7 @@
 #include "Mantle.h"
 #include "msg/Messenger.h"
 #include "common/Clock.h"
+#include "common/dout.h"
 #include "CInode.h"
 
 /* Note, by default debug_mds_balancer is 1/5. For debug messages 1<lvl<=5,
@@ -47,15 +49,17 @@ static int dout_wrapper(lua_State *L)
   return 0;
 }
 
-int Mantle::balance(std::string_view script,
-                    mds_rank_t whoami,
-                    const std::vector<std::map<std::string, double>> &metrics,
-                    std::map<mds_rank_t, double> &my_targets)
+int
+Mantle::balance(
+    const std::string& script,
+    mds_rank_t whoami,
+    const std::vector<std::map<std::string, double>>& metrics,
+    std::map<mds_rank_t, double>& my_targets)
 {
   lua_settop(L, 0); /* clear the stack */
 
   /* load the balancer */
-  if (luaL_loadstring(L, script.data())) {
+  if (luaL_loadstring(L, script.c_str())) {
     mantle_dout(0) << "WARNING: mantle could not load balancer: "
             << lua_tostring(L, -1) << mantle_dendl;
     return -EINVAL;

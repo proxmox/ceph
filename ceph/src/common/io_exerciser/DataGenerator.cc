@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #include "DataGenerator.h"
 
 #include <chrono>
@@ -49,7 +50,8 @@ bufferlist DataGenerator::generate_wrong_data(uint64_t offset,
 }
 
 bool DataGenerator::validate(bufferlist& bufferlist, uint64_t offset,
-                             uint64_t length) {
+                             uint64_t length, std::string_view pool,
+                             ceph::io_exerciser::Sequence seq, int step) {
   return bufferlist.contents_equal(generate_data(offset, length));
 }
 
@@ -73,7 +75,7 @@ ceph::bufferptr SeededRandomGenerator::generate_block(uint64_t block_offset) {
     size_t remainingBytes = block_size % (generation_length * 2);
     if (remainingBytes > generation_length) {
       size_t remainingBytes2 = remainingBytes - generation_length;
-      std::memcpy(buffer + block_size - remainingBytes, &rand1, remainingBytes);
+      std::memcpy(buffer + block_size - remainingBytes, &rand1, generation_length);
       std::memcpy(buffer + block_size - remainingBytes2, &rand2,
                   remainingBytes2);
     } else if (remainingBytes > 0) {
@@ -105,7 +107,7 @@ ceph::bufferptr SeededRandomGenerator::generate_wrong_block(
   size_t remainingBytes = block_size % (generation_length * 2);
   if (remainingBytes > generation_length) {
     size_t remainingBytes2 = remainingBytes - generation_length;
-    std::memcpy(buffer + block_size - remainingBytes, &rand1, remainingBytes);
+    std::memcpy(buffer + block_size - remainingBytes, &rand1, generation_length);
     std::memcpy(buffer + block_size - remainingBytes2, &rand2, remainingBytes2);
   } else if (remainingBytes > 0) {
     std::memcpy(buffer + block_size - remainingBytes, &rand1, remainingBytes);
@@ -211,8 +213,9 @@ HeaderedSeededRandomGenerator::readDateTime(uint64_t block_offset,
   return read_time;
 }
 
-bool HeaderedSeededRandomGenerator::validate(bufferlist& bufferlist,
-                                             uint64_t offset, uint64_t length) {
+bool HeaderedSeededRandomGenerator::validate(bufferlist& bufferlist, uint64_t offset, 
+                                             uint64_t length, std::string_view pool,
+                                             Sequence seq, int step) {
   std::vector<uint64_t> invalid_block_offsets;
 
   for (uint64_t block_offset = offset; block_offset < offset + length;
@@ -226,8 +229,12 @@ bool HeaderedSeededRandomGenerator::validate(bufferlist& bufferlist,
   }
 
   if (!invalid_block_offsets.empty()) {
-    dout(0) << "Miscompare for read of " << m_model.get_oid() <<
-      " offset=" << offset << " length=" << length << dendl;
+    dout(0) << "Miscompare for read of oid=" << m_model.get_primary_oid() <<
+      " offset=" << offset << " length=" << length << " pool=" << pool <<
+      (seq != Sequence::SEQUENCE_END ? " sequence=" : "") <<
+      (seq != Sequence::SEQUENCE_END ? std::to_string((int)seq) : "") <<
+      (step != -1 ? " step=" : "") <<
+      (step != -1 ? std::to_string(step) : "") << dendl;
     printDebugInformationForOffsets(offset, invalid_block_offsets, bufferlist);
   }
 

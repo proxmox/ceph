@@ -1,10 +1,14 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.22.1)
 
 project(ceph
-  VERSION 20.2.4
+  VERSION 21.1.2
   LANGUAGES CXX C ASM)
 
-foreach(policy CMP0127 CMP0135 CMP0175)
+foreach(policy CMP0127 CMP0135
+  CMP0144 # Ensure taking `BOOST_ROOT` keeps working. Otherwise,
+	  # config-based `find_package` will take `Boost_ROOT`.
+  CMP0167 # Use Boost's own CMake config files instead of FindBoost module.
+  CMP0175)
   if(POLICY ${policy})
     cmake_policy(SET ${policy} NEW)
   endif()
@@ -76,10 +80,8 @@ if(WITH_CCACHE)
   if(CMAKE_C_COMPILER_LAUNCHER OR CMAKE_CXX_COMPILER_LAUNCHER)
     message(WARNING "Compiler launcher already set. stop configuring ccache")
   else()
-    find_program(CCACHE_EXECUTABLE ccache)
-    if(NOT CCACHE_EXECUTABLE)
-      message(FATAL_ERROR "Can't find ccache. Is it installed?")
-    endif()
+    find_program(CCACHE_EXECUTABLE ccache
+      REQUIRED)
     message(STATUS "Building with ccache: ${CCACHE_EXECUTABLE}, CCACHE_DIR=$ENV{CCACHE_DIR}")
     set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_EXECUTABLE})
     set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_EXECUTABLE})
@@ -88,10 +90,8 @@ endif(WITH_CCACHE)
 
 option(WITH_SCCACHE "Build with sccache.")
 if(WITH_SCCACHE)
-  find_program(SCCACHE_EXECUTABLE sccache)
-  if(NOT SCCACHE_EXECUTABLE)
-    message(FATAL_ERROR "Can't find sccache. Is it installed?")
-  endif()
+  find_program(SCCACHE_EXECUTABLE sccache
+    REQUIRED)
   if(NOT NINJA_MAX_COMPILE_JOBS)
     if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
       execute_process(
@@ -123,10 +123,8 @@ endif(WITH_SCCACHE)
 option(WITH_MANPAGE "Build man pages." ON)
 if(WITH_MANPAGE)
   find_program(SPHINX_BUILD
-    NAMES sphinx-build sphinx-build-3)
-  if(NOT SPHINX_BUILD)
-    message(FATAL_ERROR "Can't find sphinx-build.")
-  endif(NOT SPHINX_BUILD)
+    NAMES sphinx-build sphinx-build-3
+    REQUIRED)
 endif(WITH_MANPAGE)
 
 include_directories(
@@ -247,12 +245,18 @@ endif()
 
 option(WITH_BLUESTORE "Bluestore OSD backend" ON)
 if(WITH_BLUESTORE)
+  if(FREEBSD)
+    # POSIX AIO is integrated into FreeBSD kernel, and exposed by libc.
+    set(HAVE_POSIXAIO ON)
+  endif()
+endif()
+
+option(WITH_CRIMSON "Build Crimson components" OFF)
+
+if(WITH_BLUESTORE OR WITH_CRIMSON)
   if(LINUX)
     find_package(aio)
     set(HAVE_LIBAIO ${AIO_FOUND})
-  elseif(FREEBSD)
-    # POSIX AIO is integrated into FreeBSD kernel, and exposed by libc.
-    set(HAVE_POSIXAIO ON)
   endif()
 endif()
 
@@ -270,12 +274,12 @@ endif()
 
 include(CMakeDependentOption)
 
-CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" ON
-  "WITH_BLUESTORE;HAVE_LIBAIO" OFF)
+CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring for bluestore backend or crimson" ON
+  "HAVE_LIBAIO" OFF)
 set(HAVE_LIBURING ${WITH_LIBURING})
 
 CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_LIBURING "Require and build with system liburing" OFF
-  "HAVE_LIBAIO;WITH_BLUESTORE" OFF)
+  "HAVE_LIBAIO" OFF)
 
 if(WITH_LIBURING)
   if(WITH_SYSTEM_LIBURING)
@@ -283,11 +287,6 @@ if(WITH_LIBURING)
   else()
     include(Builduring)
     build_uring()
-  endif()
-  # enable uring in boost::asio
-
-  if(CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL "5.10")
-    add_compile_definitions("BOOST_ASIO_HAS_IO_URING")
   endif()
 endif()
 
@@ -327,13 +326,18 @@ if(WITH_BLUESTORE_PMEM)
 endif()
 
 CMAKE_DEPENDENT_OPTION(WITH_SPDK "Enable SPDK" OFF
-  "CMAKE_SYSTEM_PROCESSOR MATCHES i386|i686|amd64|x86_64|AMD64|aarch64" OFF)
+  "CMAKE_SYSTEM_PROCESSOR MATCHES i386|i686|amd64|x86_64|AMD64|aarch64|riscv64" OFF)
+option(WITH_SYSTEM_SPDK "Require a system SPDK instead of building bundled src/spdk" OFF)
 if(WITH_SPDK)
   if(NOT WITH_BLUESTORE)
     message(SEND_ERROR "Please enable WITH_BLUESTORE for using SPDK")
   endif()
-  include(BuildSPDK)
-  build_spdk()
+  if(WITH_SYSTEM_SPDK)
+    find_package(spdk REQUIRED)
+  else()
+    include(BuildSPDK)
+    build_spdk()
+  endif()
   set(HAVE_SPDK TRUE)
 endif(WITH_SPDK)
 
@@ -359,12 +363,12 @@ if(WITH_QATDRV)
   find_package(QatDrv REQUIRED COMPONENTS qat_s usdm_drv_s)
   set(HAVE_QAT TRUE)
 elseif(WITH_QATLIB)
-  if(NOT WITH_SYSTEM_QAT)
+  if(NOT WITH_SYSTEM_QATLIB)
     include(BuildQAT)
     build_qat()
   endif()
   find_package(QAT REQUIRED)
-  if(NOT WITH_SYSTEM_QAT)
+  if(NOT WITH_SYSTEM_QATLIB)
     add_dependencies(QAT::qat qatlib_ext)
     add_dependencies(QAT::usdm qatlib_ext)
   endif()
@@ -436,6 +440,8 @@ endif(WITH_LZ4)
 
 CMAKE_DEPENDENT_OPTION(WITH_CEPH_DEBUG_MUTEX "Use debug ceph::mutex with lockdep" ON
   "CMAKE_BUILD_TYPE STREQUAL Debug" OFF)
+
+option(WITH_CPUTRACE "Enable Cputrace support via the admin socket" OFF)
 
 #if allocator is set on command line make sure it matches below strings
 set(ALLOCATOR "" CACHE STRING
@@ -520,6 +526,44 @@ if(WITH_JAEGER)
   set(HAVE_JAEGER TRUE)
 endif()
 
+# Catch2 C++ Unit Test support:
+# This needs to come before any tests using Catch2.
+option(WITH_CATCH2 "Enable Catch2 unit tests" ON)
+option(WITH_SYSTEM_CATCH2 "Enable Catch2 unit tests (require system packages)" OFF)
+
+if(WITH_CATCH2)
+  # Save pre-existing definitions (if any):
+  set(ORIG_CPM_LOCAL_PACKAGES_ONLY ${CPM_USE_LOCAL_PACKAGES_ONLY})
+
+    if(WITH_SYSTEM_CATCH2)
+   set(CPM_LOCAL_PACKAGES_ONLY ON)
+  endif()
+
+  include(${CMAKE_MODULE_PATH}/CPM.cmake)
+  CPMAddPackage("gh:catchorg/Catch2@3.8.1")
+
+  # Restore the original CPM settings in case someone else wants to use the module:
+  set(CPM_USE_LOCAL_PACKAGES_ONLY, ${ORIG_CPM_USE_LOCAL_PACKAGES_ONLY})
+
+  # CPM skips the fetch silently if downloads are disabled,
+  # e.g. with FETCHCONTENT_FULLY_DISCONNECTED=ON on deb builds
+  if(NOT TARGET Catch2::Catch2WithMain)
+    message(WARNING "Catch2 unavailable, disabling Catch2 tests")
+    set(WITH_CATCH2 OFF)
+  else()
+    message("-- Enabled Catch2 support")
+  endif()
+endif()
+
+# enable breakpad unless win32 or power
+# ppc64le port tracked in https://issues.chromium.org/issues/41479970
+CMAKE_DEPENDENT_OPTION(WITH_BREAKPAD "Build with Google Breakpad crash reporter" ON
+  "NOT (WIN32 OR CMAKE_SYSTEM_PROCESSOR MATCHES ppc64le)" OFF)
+if(WITH_BREAKPAD)
+  set(HAVE_BREAKPAD ON)
+  message("-- Enabled Google Breakpad crash reporter")
+endif()
+
 #option for RGW
 option(WITH_RADOSGW "RADOS Gateway is enabled" ON)
 option(WITH_RADOSGW_BEAST_OPENSSL "RADOS Gateway's Beast frontend uses OpenSSL" ON)
@@ -530,7 +574,8 @@ option(WITH_RADOSGW_DBSTORE "DBStore backend for RADOS Gateway" ON)
 option(WITH_RADOSGW_MOTR "CORTX-Motr backend for RADOS Gateway" OFF)
 option(WITH_RADOSGW_DAOS "DAOS backend for RADOS Gateway" OFF)
 option(WITH_RADOSGW_D4N "D4N wrapper for RADOS Gateway" ON)
-option(WITH_RADOSGW_POSIX "POSIX backend for Rados Gateway" ON)
+cmake_dependent_option(WITH_RADOSGW_POSIX "POSIX backend for RADOS Gateway" ON WITH_RADOSGW_DBSTORE OFF) # posix depends on dbstore
+option(WITH_RADOSGW_RADOS "RADOS backend for Rados Gateway" ON)
 option(WITH_RADOSGW_SELECT_PARQUET "Support for s3 select on parquet objects" ON)
 option(WITH_RADOSGW_ARROW_FLIGHT "Build arrow flight when not using system-provided arrow" OFF)
 option(WITH_RADOSGW_BACKTRACE_LOGGING "Enable backtraces in rgw logs" OFF)
@@ -636,10 +681,8 @@ option(WITH_LTTNG "LTTng tracing is enabled" ON)
 if(${WITH_LTTNG})
   find_package(LTTngUST REQUIRED)
   find_program(LTTNG_GEN_TP
-    lttng-gen-tp)
-  if(NOT LTTNG_GEN_TP)
-    message(FATAL_ERROR "Can't find lttng-gen-tp.")
-  endif()
+    lttng-gen-tp
+    REQUIRED)
 endif(${WITH_LTTNG})
 
 option(WITH_OSD_INSTRUMENT_FUNCTIONS OFF)
@@ -702,21 +745,24 @@ if(sanitizers)
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${sanitiers_compile_flags}")
 endif()
 
+# Jerasure & GF-Complete
+option(WITH_SYSTEM_JERASURE "require and build with system jerasure and gf-complete" OFF)
+if(WITH_SYSTEM_JERASURE)
+  find_package(Jerasure REQUIRED)
+endif()
+
 # Rocksdb
 option(WITH_SYSTEM_ROCKSDB "require and build with system rocksdb" OFF)
 if (WITH_SYSTEM_ROCKSDB)
   find_package(RocksDB 5.14 REQUIRED)
 endif()
 
-option(WITH_CRIMSON "Build seastar components")
-set(HAVE_SEASTAR ${WITH_CRIMSON})
-
 # Boost
 option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 
 # Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
-  atomic chrono thread system regex random program_options date_time
+  atomic chrono headers thread regex random program_options date_time
   iostreams context coroutine url)
 set(BOOST_HEADER_COMPONENTS container)
 
@@ -735,6 +781,10 @@ endif()
 if(WITH_LIBCEPHFS OR WITH_FUSE)
   find_package(ICU REQUIRED COMPONENTS uc i18n)
   list(APPEND BOOST_COMPONENTS locale)
+endif()
+
+if(WITH_CEPHFS)
+  list(APPEND BOOST_COMPONENTS filesystem)
 endif()
 
 set(Boost_USE_MULTITHREADED ON)
@@ -769,15 +819,20 @@ else()
     COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
 endif()
 include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
+add_library(Boost::asio INTERFACE IMPORTED)
+if(WITH_LIBURING AND CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL "5.10")
+  # enable uring in boost::asio
+  set_target_properties(Boost::asio PROPERTIES
+    INTERFACE_COMPILE_DEFINITIONS "BOOST_ASIO_HAS_IO_URING"
+    INTERFACE_LINK_LIBRARIES "Boost::headers;uring::uring")
+endif()
 
 # dashboard angular2 frontend
 option(WITH_MGR_DASHBOARD_FRONTEND "Build the mgr/dashboard frontend using `npm`" ON)
 option(WITH_SYSTEM_NPM "Assume that dashboard build tools already installed through packages" OFF)
 if(WITH_SYSTEM_NPM)
-  find_program(NPM_EXECUTABLE npm)
-  if(NOT NPM_EXECUTABLE)
-    message(FATAL_ERROR "Can't find npm.")
-  endif()
+  find_program(NPM_EXECUTABLE npm
+    REQUIRED)
 endif()
 set(DASHBOARD_FRONTEND_LANGS "ALL" CACHE STRING
   "List of comma separated ceph-dashboard frontend languages to build. \
@@ -838,3 +893,4 @@ add_tags(ctags
   EXCLUDE_OPTS ${CTAG_EXCLUDES}
   EXCLUDES "*.js" "*.css" ".tox" "python-common/build")
 add_custom_target(tags DEPENDS ctags)
+

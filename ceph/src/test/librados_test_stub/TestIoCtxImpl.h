@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_TEST_IO_CTX_IMPL_H
 #define CEPH_TEST_IO_CTX_IMPL_H
@@ -105,7 +105,7 @@ public:
 
   virtual int create(const std::string& oid, bool exclusive,
                      const SnapContext &snapc) = 0;
-  virtual int exec(const std::string& oid, TestClassHandler *handler,
+  virtual int exec_internal(const std::string& oid, TestClassHandler *handler,
                    const char *cls, const char *method,
                    bufferlist& inbl, bufferlist* outbl,
                    uint64_t snap_id, const SnapContext &snapc);

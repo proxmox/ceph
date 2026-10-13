@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_RBD_MIRROR_TYPES_H
 #define CEPH_RBD_MIRROR_TYPES_H
@@ -156,7 +156,7 @@ struct PeerSpec {
       return cluster_name < rhs.cluster_name;
     } else if (client_name != rhs.client_name) {
       return client_name < rhs.client_name;
-    } else if (mon_host < rhs.mon_host) {
+    } else if (mon_host != rhs.mon_host) {
       return mon_host < rhs.mon_host;
     } else {
       return key < rhs.key;

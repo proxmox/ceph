@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include <exception>
 #include <ranges>
@@ -91,13 +91,15 @@ void rgw_data_change::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("gen", gen, obj);
 }
 
-void rgw_data_change::generate_test_instances(std::list<rgw_data_change *>& l) {
-  l.push_back(new rgw_data_change{});
-  l.push_back(new rgw_data_change);
-  l.back()->entity_type = ENTITY_TYPE_BUCKET;
-  l.back()->key = "bucket_name";
-  l.back()->timestamp = ceph::real_clock::zero();
-  l.back()->gen = 0;
+std::list<rgw_data_change> rgw_data_change::generate_test_instances() {
+  std::list<rgw_data_change> l;
+  l.emplace_back();
+  l.emplace_back();
+  l.back().entity_type = ENTITY_TYPE_BUCKET;
+  l.back().key = "bucket_name";
+  l.back().timestamp = ceph::real_clock::zero();
+  l.back().gen = 0;
+  return l;
 }
 
 void rgw_data_change_log_entry::dump(Formatter *f) const
@@ -120,6 +122,13 @@ void rgw_data_notify_entry::dump(Formatter *f) const
 {
   encode_json("key", key, f);
   encode_json("gen", gen, f);
+}
+
+boost::intrusive_ptr<RGWDataChangesBE> DataLogBackends::head() {
+  std::unique_lock l(m);
+  auto i = end();
+  --i;
+  return i->second;
 }
 
 void rgw_data_notify_entry::decode_json(JSONObj *obj) {
@@ -201,13 +210,14 @@ public:
 			 << err.what() << dendl;
       throw;
     } catch (const sys::system_error& e) {
-      if (e.code() == sys::errc::no_such_file_or_directory) {
-	co_return std::make_tuple(entries.first(0), std::string{});
+      if (e.code() == sys::errc::no_such_file_or_directory ||
+          e.code() == ceph::buffer::errc::end_of_buffer) {
+        co_return std::make_tuple(entries.first(0), std::string{});
       } else {
-	ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
-			   << ": failed to list " << oids[shard]
-			   << ": " << e.what() << dendl;
-	throw;
+        ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+              << ": failed to list " << oids[shard]
+              << ": " << e.what() << dendl;
+	      throw;
       }
     }
   }
@@ -219,7 +229,8 @@ public:
       co_return RGWDataChangesLogInfo{.marker = header.max_marker,
 				      .last_update = header.max_time};
     } catch (const sys::system_error& e) {
-      if (e.code() == sys::errc::no_such_file_or_directory) {
+      if (e.code() == sys::errc::no_such_file_or_directory || 
+          e.code() == ceph::buffer::errc::end_of_buffer) {
 	co_return RGWDataChangesLogInfo{};
       }
       ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
@@ -235,7 +246,8 @@ public:
 			  asio::use_awaitable);
       co_return;
     } catch (const sys::system_error& e) {
-      if (e.code() == sys::errc::no_such_file_or_directory) {
+      if (e.code() == sys::errc::no_such_file_or_directory || 
+          e.code() == ceph::buffer::errc::end_of_buffer) {
 	co_return;
       } else {
 	ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
@@ -259,7 +271,8 @@ public:
 	  co_return false;
 	}
       } catch (const sys::system_error& e) {
-	if (e.code() == sys::errc::no_such_file_or_directory) {
+	if (e.code() == sys::errc::no_such_file_or_directory || 
+      e.code() == ceph::buffer::errc::end_of_buffer) {
 	  continue;
 	}
       }
@@ -451,6 +464,7 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 {
   log_data = zone->log_data;
   try {
+    // Blocking in startup code, not ideal, but won't hurt anything.
     asio::co_spawn(executor,
 		   start(dpp, zoneparams.log_pool,
 			 background_tasks, background_tasks,
@@ -480,10 +494,6 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
   down_flag = false;
   ran_background = (recovery || watch || renew);
 
-  auto defbacking = to_log_type(
-    cct->_conf.get_val<std::string>("rgw_default_data_log_backing"));
-  // Should be guaranteed by `set_enum_allowed`
-  ceph_assert(defbacking);
   try {
     loc = co_await rgw::init_iocontext(dpp, *rados, log_pool,
 				       rgw::create, asio::use_awaitable);
@@ -499,7 +509,7 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
       dpp, *rados, metadata_log_oid(), loc,
       [this](uint64_t gen_id, int shard) {
 	return get_oid(gen_id, shard);
-      }, num_shards, *defbacking, *this);
+      }, num_shards, log_type::fifo, *this);
   } catch (const std::exception& e) {
     ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
 		       << ": Error initializing backends: " << e.what()
@@ -895,7 +905,7 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 				  const rgw::bucket_log_layout_generation& gen,
 				  int shard_id, asio::yield_context y)
 {
-  if (!log_data) {
+  if (!log_data || down_flag) {
     return;
   }
 
@@ -1472,7 +1482,8 @@ RGWDataChangesLog::read_sems(int index, std::string cursor) {
 				       &out, &cursor)),
       nullptr, asio::use_awaitable);
   } catch (const sys::system_error& e) {
-    if (e.code() != sys::errc::no_such_file_or_directory) {
+    if (e.code() != sys::errc::no_such_file_or_directory || 
+        e.code() == ceph::buffer::errc::end_of_buffer) {
       throw;
     }
   }
@@ -1703,7 +1714,8 @@ RGWDataChangesLog::admin_sem_list(std::optional<int> req_shard,
 	mkeep = marker;
       }
     } catch (const sys::system_error& e) {
-      if (e.code() == sys::errc::no_such_file_or_directory) {
+      if (e.code() == sys::errc::no_such_file_or_directory || 
+          e.code() == ceph::buffer::errc::end_of_buffer) {
 	if (!req_shard) {
 	  begin_next = true;
 	  ++shard;

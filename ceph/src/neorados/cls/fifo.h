@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -360,7 +361,7 @@ public:
   template<boost::asio::completion_token_for<
     void(boost::system::error_code, rados::cls::fifo::info,
 	 uint32_t, uint32_t)> CompletionToken>
-  static auto get_meta(neorados::RADOS rados, Object obj, IOContext ioc,
+  static auto get_meta(neorados::RADOS& rados, Object obj, IOContext ioc,
 		       std::optional<rados::cls::fifo::objv> objv,
 		       CompletionToken&& token) {
 

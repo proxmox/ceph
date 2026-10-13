@@ -6,11 +6,8 @@
   position: fixed;
   right: -350px;
   top: vv.$navbar-height + 10px;
-
   transition: all 0.6s;
-
   width: 350px;
-
   z-index: 9;
 }
 
@@ -41,10 +38,6 @@ ngx-simplebar {
 
 .btn-block {
   width: 98%;
-}
-
-.btn-link .fa-trash-o {
-  color: vv.$black;
 }
 
 table {

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=2 sw=2 expandtab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=2 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -661,6 +661,7 @@ class DaosObject : public StoreObject {
 			   uint64_t olh_epoch,
 			   std::optional<uint64_t> days,
 		           bool& in_progress,
+		           uint64_t& size,
 			   const DoutPrefixProvider* dpp,
 			   optional_yield y) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1,
@@ -1039,12 +1040,14 @@ class DaosStore : public StoreDriver {
   int store_oidc_provider(const DoutPrefixProvider* dpp,
                           optional_yield y,
                           const RGWOIDCProviderInfo& info,
-                          bool exclusive) override;
+                          bool exclusive,
+                          RGWObjVersionTracker* objv_tracker) override;
   int load_oidc_provider(const DoutPrefixProvider* dpp,
                          optional_yield y,
                          std::string_view tenant,
                          std::string_view url,
-                         RGWOIDCProviderInfo& info) override;
+                         RGWOIDCProviderInfo& info,
+                         RGWObjVersionTracker* objv_tracker) override;
   int delete_oidc_provider(const DoutPrefixProvider* dpp,
                            optional_yield y,
                            std::string_view tenant,

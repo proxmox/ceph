@@ -1,11 +1,12 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_CLS_REFCOUNT_OPS_H
 #define CEPH_CLS_REFCOUNT_OPS_H
 
 #include "include/types.h"
 #include "common/hobject.h"
+#include "include/rados/cls_traits.hpp"
 
 struct cls_refcount_get_op {
   std::string tag;
@@ -27,7 +28,7 @@ struct cls_refcount_get_op {
     DECODE_FINISH(bl);
   }
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_refcount_get_op*>& ls);
+  static std::list<cls_refcount_get_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_refcount_get_op)
 
@@ -53,7 +54,7 @@ struct cls_refcount_put_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_refcount_put_op*>& ls);
+  static std::list<cls_refcount_put_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_refcount_put_op)
 
@@ -75,7 +76,7 @@ struct cls_refcount_set_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_refcount_set_op*>& ls);
+  static std::list<cls_refcount_set_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_refcount_set_op)
 
@@ -98,7 +99,7 @@ struct cls_refcount_read_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_refcount_read_op*>& ls);
+  static std::list<cls_refcount_read_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_refcount_read_op)
 
@@ -120,7 +121,7 @@ struct cls_refcount_read_ret {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_refcount_read_ret*>& ls);
+  static std::list<cls_refcount_read_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_refcount_read_ret)
 
@@ -147,8 +148,19 @@ struct obj_refcount {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<obj_refcount*>& ls);
+  static std::list<obj_refcount> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(obj_refcount)
 
+namespace cls::refcount {
+struct ClassId {
+  static constexpr auto name = "refcount";
+};
+namespace method {
+constexpr auto get = ClsMethod<RdWrTag, ClassId>("get");
+constexpr auto put = ClsMethod<RdWrTag, ClassId>("put");
+constexpr auto set = ClsMethod<RdWrTag, ClassId>("set");
+constexpr auto read = ClsMethod<RdTag, ClassId>("read");
+}
+}
 #endif

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "PG.h"
 #include "Session.h"
@@ -11,6 +11,17 @@
 
 using std::map;
 using std::set;
+
+Backoff::Backoff(spg_t pgid, PGRef pg, ceph::ref_t<Session> s,
+                 uint64_t i,
+                 const hobject_t& b, const hobject_t& e)
+: RefCountedObject(g_ceph_context),
+  pgid(pgid),
+  id(i),
+  pg(pg),
+  session(std::move(s)),
+  begin(b),
+  end(e) {}
 
 void Session::clear_backoffs()
 {

@@ -196,6 +196,7 @@ cmake -D CMAKE_PREFIX_PATH=$depsDirs \
       -D ENABLE_SHARED=$ENABLE_SHARED -D WITH_RBD=ON -D BUILD_GMOCK=ON \
       -D WITH_CEPHFS=OFF -D WITH_MANPAGE=OFF \
       -D WITH_MGR_DASHBOARD_FRONTEND=OFF -D WITH_SYSTEMD=OFF -D WITH_TESTS=ON \
+      -D WITH_NVMEOF_GATEWAY_MONITOR_CLIENT=OFF \
       -D LZ4_INCLUDE_DIR=$lz4Include -D LZ4_LIBRARY=$lz4Lib \
       -D Backtrace_INCLUDE_DIR="$backtraceDir/include" \
       -D Backtrace_LIBRARY="$backtraceDir/lib/libbacktrace.a" \
@@ -221,7 +222,7 @@ if [[ -z $SKIP_BUILD ]]; then
     # TODO: do we actually need the ceph compression libs?
     ninja_targets+=" compressor ceph_lz4 ceph_snappy ceph_zlib ceph_zstd"
     if [[ -z $SKIP_TESTS ]]; then
-      ninja_targets+=" tests ceph_radosacl ceph_scratchtool "
+      ninja_targets+=" tests ceph_scratchtool "
       ninja_targets+=`ninja -t targets | grep ceph_test | cut -d ":" -f 1 | grep -v exe`
     fi
 
@@ -233,8 +234,8 @@ if [[ -z $SKIP_DLL_COPY ]]; then
     required_dlls=(
         $zlibDir/zlib1.dll
         $lz4Dir/lib/dll/liblz4-1.dll
-        $sslDir/bin/libcrypto-1_1-x64.dll
-        $sslDir/bin/libssl-1_1-x64.dll
+        $sslDir/bin/libcrypto-3-x64.dll
+        $sslDir/bin/libssl-3-x64.dll
         $mingwLibpthreadDir/libwinpthread-1.dll)
     if [[ $ENABLE_SHARED == "ON" ]]; then
         required_dlls+=(

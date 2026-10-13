@@ -1,8 +1,8 @@
 .performance-card-wrapper {
   .overview-storage-card-dropdown {
-    align-items: flex-end;
     display: flex;
     justify-content: flex-end;
+    align-items: flex-end;
 
     .cds--label {
       padding-right: var(--cds-spacing-03);
@@ -25,22 +25,22 @@
   .performance-card-empty-msg {
     display: flex;
     flex-direction: column;
+    justify-content: flex-end;
     gap: var(--cds-spacing-05);
     height: 350px;
-    justify-content: flex-end;
 
     p {
       font-size: 12px !important;
     }
 
     img {
-      height: 100px !important;
       width: 100px !important;
+      height: 100px !important;
     }
   }
 
   .performance-card-latency-chart {
-    margin-left: 10px;
     margin-right: 10px;
+    margin-left: 10px;
   }
 }

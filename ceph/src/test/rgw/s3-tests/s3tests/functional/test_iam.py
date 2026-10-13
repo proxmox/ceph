@@ -13,9 +13,11 @@ from . import (
     get_alt_client,
     get_iam_client,
     get_iam_root_client,
+    get_iam_root_account_id,
     get_iam_alt_root_client,
     get_iam_alt_root_user_id,
     get_iam_alt_root_email,
+    get_iam_alt_root_account_id,
     make_iam_name,
     get_iam_path_prefix,
     get_new_bucket,
@@ -2342,8 +2344,7 @@ def test_account_role_policy_allow_create_bucket(iam_root, iam_alt_root):
     s3_main = get_iam_root_client(service_name='s3')
     response = s3_main.get_bucket_acl(Bucket=bucket_name)
 
-    main_arn = iam_root.get_user()['User']['Arn']
-    account_id = main_arn.removeprefix('arn:aws:iam::').removesuffix(':root')
+    account_id = get_iam_root_account_id()
     assert response['Owner']['ID'] == account_id
     assert response['Grants'][0]['Grantee']['ID'] == account_id
 
@@ -2736,9 +2737,9 @@ def test_cross_account_user_bucket_policy_allow_account_id(iam_root, iam_alt_roo
     roots3 = get_iam_root_client(service_name='s3')
     path = get_iam_path_prefix()
     user_name = make_iam_name('AltUser')
-    response = iam_alt_root.create_user(UserName=user_name, Path=path)
-    user_arn = response['User']['Arn']
-    account_id = user_arn.removeprefix('arn:aws:iam::').removesuffix(f':user{path}{user_name}')
+    iam_alt_root.create_user(UserName=user_name, Path=path)
+
+    account_id = get_iam_alt_root_account_id()
     _test_cross_account_user_bucket_policy(roots3, iam_alt_root, user_name, account_id)
 
 @pytest.mark.iam_account
@@ -2747,9 +2748,9 @@ def test_cross_account_bucket_user_policy_allow_account_id(iam_root, iam_alt_roo
     roots3 = get_iam_root_client(service_name='s3')
     path = get_iam_path_prefix()
     user_name = make_iam_name('AltUser')
-    response = iam_alt_root.create_user(UserName=user_name, Path=path)
-    user_arn = response['User']['Arn']
-    account_id = user_arn.removeprefix('arn:aws:iam::').removesuffix(f':user{path}{user_name}')
+    iam_alt_root.create_user(UserName=user_name, Path=path)
+
+    account_id = get_iam_alt_root_account_id()
     _test_cross_account_bucket_user_policy(roots3, iam_alt_root, user_name, account_id)
 
 
@@ -2923,8 +2924,8 @@ def test_cross_account_root_bucket_policy_allow_account_arn(iam_root, iam_alt_ro
 def test_cross_account_root_bucket_policy_allow_account_id(iam_root, iam_alt_root):
     roots3 = get_iam_root_client(service_name='s3')
     alts3 = get_iam_alt_root_client(service_name='s3')
-    alt_arn = iam_alt_root.get_user()['User']['Arn']
-    account_id = alt_arn.removeprefix('arn:aws:iam::').removesuffix(':root')
+
+    account_id = get_iam_alt_root_account_id()
     _test_cross_account_root_bucket_policy(roots3, alts3, account_id)
 
 # test root cross-account access with bucket acls
@@ -2961,3 +2962,46 @@ def test_cross_account_root_bucket_acl_grant_account_email(iam_root, iam_alt_roo
     grantee = 'emailAddress=' + get_iam_alt_root_email()
     _test_cross_account_root_bucket_acl(roots3, alts3, grantee)
 
+@pytest.mark.iam_account
+def test_get_account_summary_root(iam_root):
+  summary = iam_root.get_account_summary()['SummaryMap']
+  assert 'Users' in summary
+  assert 'Groups' in summary
+  assert 'UsersQuota' in summary
+  assert 'GroupsQuota' in summary
+  assert 'AccessKeysPerUserQuota' in summary
+
+@pytest.mark.iam_account
+def test_get_account_summary_policy(iam_root):
+  path = get_iam_path_prefix()
+  user_name = make_iam_name('MyUser')
+  iam_root.create_user(UserName=user_name, Path=path)['User']
+
+  policy_name = "AllowIamAction"
+  policy_document = {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": "iam:GetAccountSummary",
+        "Resource": "*"
+      }
+    ]
+  }
+
+  iam_root.put_user_policy(
+    UserName=user_name,
+    PolicyName=policy_name,
+    PolicyDocument=json.dumps(policy_document)
+  )
+  
+  key = iam_root.create_access_key(UserName=user_name)['AccessKey']
+  iam_client = get_iam_client(aws_access_key_id=key['AccessKeyId'],
+                        aws_secret_access_key=key['SecretAccessKey']) 
+
+  summary = iam_client.get_account_summary()['SummaryMap']
+  assert 'Users' in summary
+  assert 'Groups' in summary
+  assert 'UsersQuota' in summary
+  assert 'GroupsQuota' in summary
+  assert 'AccessKeysPerUserQuota' in summary

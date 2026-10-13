@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -373,6 +373,7 @@ class StoreObject : public Object {
 			   CephContext* cct,
 		           std::optional<uint64_t> days,
 			   bool& in_progress,
+			   uint64_t& size,
 			   const DoutPrefixProvider* dpp,
 			   optional_yield y) override {
       return -1;
@@ -429,7 +430,7 @@ public:
 
 class StoreMPSerializer : public MPSerializer {
 protected:
-  bool locked;
+  std::atomic<bool> locked;
   std::string oid;
 public:
   StoreMPSerializer() : locked(false) {}
@@ -518,6 +519,7 @@ class StoreZone : public Zone {
 class StoreLuaManager : public LuaManager {
 protected:
   std::string _luarocks_path;
+  rgw::lua::Background* lua_background;
 public:
   const std::string& luarocks_path() const override {
     return _luarocks_path;
@@ -525,9 +527,14 @@ public:
   void set_luarocks_path(const std::string& path) override {
     _luarocks_path = path;
   }
+
+  void set_lua_background(rgw::lua::Background* background) override {
+    lua_background = background;
+  }
+
   StoreLuaManager() = default;
   StoreLuaManager(const std::string& __luarocks_path) :
-    _luarocks_path(__luarocks_path) {}
+    _luarocks_path(__luarocks_path), lua_background(nullptr) {}
   virtual ~StoreLuaManager() = default;
 };
 

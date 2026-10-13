@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -101,7 +102,6 @@ struct old_rgw_bucket {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<old_rgw_bucket*>& o);
 
   bool operator<(const old_rgw_bucket& b) const {
     return name.compare(b.name) < 0;
@@ -236,9 +236,7 @@ public:
       return std::string("_") + orig_obj;
     };
 
-    char buf[ns.size() + 16];
-    snprintf(buf, sizeof(buf), "_%s_", ns.c_str());
-    return std::string(buf) + orig_obj;
+    return fmt::format("_{}_{}", ns, orig_obj);
   };
 
   void from_index_key(old_rgw_bucket& b, const rgw_obj_key& key) {

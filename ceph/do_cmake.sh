@@ -2,7 +2,7 @@
 set -ex
 
 if [ -d .git ]; then
-    git submodule update --init --recursive --progress --recommend-shallow
+    git submodule update --init --recursive --recommend-shallow
 fi
 
 : ${BUILD_DIR:=build}
@@ -19,7 +19,9 @@ if [ -r /etc/os-release ]; then
   source /etc/os-release
   case "$ID" in
       fedora)
-          if [ "$VERSION_ID" -ge "41" ] ; then
+          if [ "$VERSION_ID" -ge "43" ] ; then
+            PYBUILD="3.14"
+          elif [ "$VERSION_ID" -ge "41" ] ; then
             PYBUILD="3.13"
           elif [ "$VERSION_ID" -ge "39" ] ; then
             PYBUILD="3.12"
@@ -45,7 +47,9 @@ if [ -r /etc/os-release ]; then
           ;;
       ubuntu)
           MAJOR_VER=$(echo "$VERSION_ID" | sed -e 's/\..*$//')
-          if [ "$MAJOR_VER" -ge "24" ] ; then
+          if [ "$MAJOR_VER" -ge "26" ] ; then
+              PYBUILD="3.14"
+          elif [ "$MAJOR_VER" -ge "24" ] ; then
               PYBUILD="3.12"
           elif [ "$MAJOR_VER" -ge "22" ] ; then
               PYBUILD="3.10"
@@ -87,10 +91,18 @@ ARGS+=" -DCMAKE_C_COMPILER=$c_compiler"
 
 mkdir $BUILD_DIR
 cd $BUILD_DIR
-if type cmake3 > /dev/null 2>&1 ; then
-    CMAKE=cmake3
-else
-    CMAKE=cmake
+
+# Only set CMAKE variable if not already set by user/environment.
+# This allows users to override with a custom cmake binary via environment variable.
+# Priority order: cmake 4.x+ (if available) -> cmake3 -> cmake (fallback)
+if [ -z "${CMAKE}" ]; then
+  if type cmake > /dev/null 2>&1 && cmake --version | grep -qE 'cmake version [4-9]\.'; then
+      CMAKE=cmake
+  elif type cmake3 > /dev/null 2>&1; then
+      CMAKE=cmake3
+  else
+      CMAKE=cmake
+  fi
 fi
 ${CMAKE} $ARGS "$@" $CEPH_GIT_DIR || exit 1
 set +x

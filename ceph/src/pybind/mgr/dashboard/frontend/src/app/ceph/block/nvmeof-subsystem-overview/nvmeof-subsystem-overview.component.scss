@@ -5,10 +5,10 @@
 }
 
 .details-grid {
-  column-gap: layout.$spacing-07;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   row-gap: layout.$spacing-06;
+  column-gap: layout.$spacing-07;
 }
 
 .detail-item {

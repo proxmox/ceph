@@ -1,9 +1,13 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
+#include <functional>
 #include <vector>
+
+#include <boost/asio/spawn.hpp>
+
 #include "rgw_xml.h"
 #include "rgw_common.h"
 
@@ -66,3 +70,24 @@ public:
   RGWMultiDelXMLParser() {}
   ~RGWMultiDelXMLParser() override {}
 };
+
+namespace rgw::multi_delete {
+
+struct Item {
+  rgw_obj_key key;
+  size_t index{0};
+};
+
+using Exec = std::function<void(const Item& item,
+                                bool skip_update_olh,
+                                boost::asio::yield_context yield)>;
+using OnDispatch = std::function<void()>;
+
+void dispatch(const std::vector<Item>& items,
+              bool bucket_versioned,
+              uint32_t max_aio,
+              boost::asio::yield_context yield,
+              Exec exec,
+              OnDispatch on_dispatch = {});
+
+} // namespace rgw::multi_delete

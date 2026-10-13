@@ -24,11 +24,8 @@
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/future.hh>
 #include <seastar/util/assert.hh>
-#include <seastar/util/modules.hh>
-#ifndef SEASTAR_MODULE
 #include <optional>
 #include <queue>
-#endif
 
 namespace seastar {
 
@@ -39,7 +36,6 @@ namespace seastar {
 /// Note: queue requires the data type T to be nothrow move constructible as it's
 /// returned as future<T> by \ref pop_eventually and seastar futurized data type
 /// are required to be nothrow move-constructible.
-SEASTAR_MODULE_EXPORT
 template <typename T>
 requires std::is_nothrow_move_constructible_v<T>
 class queue {
@@ -221,14 +217,11 @@ T queue<T>::pop() noexcept {
 }
 
 template <typename T>
+// seastar allows only nothrow_move_constructible types
+// to be returned as future<T>
 requires std::is_nothrow_move_constructible_v<T>
 inline
 future<T> queue<T>::pop_eventually() noexcept {
-    // seastar allows only nothrow_move_constructible types
-    // to be returned as future<T>
-    static_assert(std::is_nothrow_move_constructible_v<T>,
-                  "Queue element type must be no-throw move constructible");
-
     if (_ex) {
         return make_exception_future<T>(_ex);
     }

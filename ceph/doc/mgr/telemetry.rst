@@ -65,7 +65,7 @@ parameters that help the project develop a better understanding of the way Ceph
 is used.
 
 Data is sent secured to
-`https://telemetry.ceph.com<https://telemetry.ceph.com>`_.
+`https://telemetry.ceph.com <https://telemetry.ceph.com>`_.
 
 Individual channels can be enabled or disabled by running the following
 commands:
@@ -108,7 +108,7 @@ List all channels with:
 
   ceph telemetry channel ls
 
-::
+.. code-block:: none
 
   NAME      ENABLED    DEFAULT    DESC
   basic     ON         ON         Share basic cluster information (size, version)
@@ -156,10 +156,9 @@ If telemetry is disabled, run the following command to preview a sample report:
 
    ceph telemetry preview
 
-The generation of a sample report might take a few moments in big clusters
-(clusters with hundreds of OSDs or more).
+The generation of a sample report for larger clusters might take some time.
 
-To protect your privacy, device reports are generated separately. Data
+To protect sensitive information, device reports are generated separately. Data
 including  hostnames and device serial numbers are anonymized. The device
 telemetry is sent to a different endpoint and does not associate the device
 data with a particular cluster. To see a preview of the device report, run the
@@ -227,7 +226,7 @@ To list all collections, run the following command:
 
    ceph telemetry collection ls
 
-::
+.. code-block:: none
 
   NAME                            STATUS                                               DESC
   basic_base                      NOT REPORTING: NOT OPTED-IN                          Basic information about the cluster (capacity, number and type of daemons, version, etc.)
@@ -236,7 +235,7 @@ To list all collections, run the following command:
   basic_pool_options_bluestore    NOT REPORTING: NOT OPTED-IN                          Per-pool bluestore config options
   basic_pool_usage                NOT REPORTING: NOT OPTED-IN                          Default pool application and usage statistics
   basic_rook_v01                  NOT REPORTING: NOT OPTED-IN                          Basic Rook deployment data
-  basic_stretch_cluster           NOT REPORTING: NOT OPTED-IN                          Stretch Mode information for stretch clusters deployments
+  basic_stretch_cluster           NOT REPORTING: NOT OPTED-IN                          Stretch mode information for stretch clusters
   basic_usage_by_class            NOT REPORTING: NOT OPTED-IN                          Default device class usage statistics
   crash_base                      NOT REPORTING: NOT OPTED-IN                          Information about daemon crashes (daemon type and version, backtrace, etc.)
   device_base                     NOT REPORTING: NOT OPTED-IN                          Information about device health metrics
@@ -249,22 +248,21 @@ Where:
 .. glossary:: 
 
         NAME
-                Collection name; prefix indicates the channel the collection
-                belongs to.
+                Collection name. The prefix indicates the channel to which the
+                collection belongs.
 
         STATUS
-                Indicates whether the collection metrics are reported; this is
-                determined by the status (enabled / disabled) of the channel
-                the collection belongs to, along with the enrollment status of
-                the collection (whether the user is opted-in to this
-                collection).
+                Indicates whether the collection metrics are reported. This is
+                determined by the status (``enabled`` or ``disabled``) to which
+                the channel of the collection belongs, along with the
+                enrollment status of the collection (whether the user is
+                opted-in to this collection).
 
         DESC
                 General description of the collection.
 
-To print the diff that displays the differences between (1) the collections you
-are enrolled to and (2) the new, available collections, run the following
-command:
+To display any difference between the currenty-enrolled collections and any new
+or available collections, run the following command:
 
 .. prompt:: bash #
 
@@ -276,8 +274,8 @@ To enroll to the most recent collections, run the following command:
 
    ceph telemetry on
 
-Enable a new channel that is disabled by running a command of the following
-form:
+Enable a new channel that is currently disabled by running a command of the
+following form:
 
 .. prompt:: bash #
 

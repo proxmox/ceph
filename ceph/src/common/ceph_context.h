@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -18,12 +19,12 @@
 #include <atomic>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
 #include <typeinfo>
 #include <typeindex>
+#include <vector>
 
 #include <boost/intrusive_ptr.hpp>
 
@@ -36,15 +37,19 @@
 #include "msg/msg_types.h"
 #ifdef WITH_CRIMSON
 #include "crimson/common/config_proxy.h"
-#include "crimson/common/perf_counters_collection.h"
 #else
 #include "common/config_proxy.h"
 #include "include/spinlock.h"
-#include "common/perf_counters_collection.h"
 #endif
 
 
 #include "crush/CrushLocation.h"
+
+#ifdef HAVE_BREAKPAD
+namespace google_breakpad {
+  class ExceptionHandler;
+}
+#endif
 
 class AdminSocket;
 class AdminSocketHook;
@@ -94,7 +99,7 @@ public:
   void put();
 private:
   std::unique_ptr<CryptoRandom> _crypto_random;
-  unsigned nref;
+  unsigned nref = 1;
   ceph::PluginRegistry* _plugin_registry;
 };
 }
@@ -141,6 +146,13 @@ public:
 
   ConfigProxy _conf;
   ceph::logging::Log *_log;
+#ifdef HAVE_BREAKPAD
+  std::unique_ptr<google_breakpad::ExceptionHandler> _ex_handler;
+  static_assert(sizeof(std::unique_ptr<google_breakpad::ExceptionHandler>) == sizeof(std::unique_ptr<char>));
+#else
+  // Reserve the space for the case when part of ceph is compiled with and other without HAVE_BREAKPAD
+  std::unique_ptr<char> _ex_handler;
+#endif
 
   /* init ceph::crypto */
   void init_crypto();
@@ -201,7 +213,7 @@ public:
 				       bool drop_on_fork,
 				       Args&&... args) {
     static_assert(sizeof(T) <= largest_singleton,
-		  "Please increase largest singleton.");
+		  "Please increase largest_singleton.");
     std::lock_guard lg(associated_objs_lock);
     std::type_index type = typeid(T);
 
@@ -272,6 +284,7 @@ public:
     _fork_watchers.push_back(w);
   }
 
+  void drop_temp_messenger_obj();
   void notify_pre_fork();
   void notify_post_fork();
 

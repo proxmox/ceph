@@ -3,6 +3,7 @@ import { TearsheetStep } from '../../models/tearsheet-step';
 
 @Component({
   selector: 'cd-tearsheet-step',
+  standalone: false,
   templateUrl: './tearsheet-step.component.html',
   styleUrls: ['./tearsheet-step.component.scss']
 })

@@ -33,8 +33,6 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
-
 %ifidn __OUTPUT_FORMAT__, elf64
  %define arg0   rdi
  %define arg1   rsi
@@ -118,8 +116,8 @@
 %else
 ;;; Use Non-temporal load/stor
  %ifdef NO_NT_LDST
-  %define XLDR vmovdqa
-  %define XSTR vmovdqa
+  %define XLDR vmovdqa64
+  %define XSTR vmovdqa64
  %else
   %define XLDR vmovntdqa
   %define XSTR vmovntdq
@@ -221,10 +219,3 @@ func(gf_2vect_mad_avx512)
 	ret
 
 endproc_frame
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_gf_2vect_mad_avx512
-no_gf_2vect_mad_avx512:
-%endif
-%endif  ; ifdef HAVE_AS_KNOWS_AVX512

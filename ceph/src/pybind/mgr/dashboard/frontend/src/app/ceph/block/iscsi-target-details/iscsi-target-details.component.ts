@@ -1,7 +1,8 @@
 import { Component, Input, OnChanges, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { Node } from 'carbon-components-angular/treeview/tree-node.types';
+import { Node } from '~/app/shared/models/carbon-tree-node';
 import _ from 'lodash';
+import { USER } from '~/app/shared/constants/app.constants';
 
 import { TableComponent } from '~/app/shared/datatable/table/table.component';
 import { Icons } from '~/app/shared/enum/icons.enum';
@@ -13,7 +14,8 @@ import { TreeViewService } from '~/app/shared/services/tree-view.service';
 @Component({
   selector: 'cd-iscsi-target-details',
   templateUrl: './iscsi-target-details.component.html',
-  styleUrls: ['./iscsi-target-details.component.scss']
+  styleUrls: ['./iscsi-target-details.component.scss'],
+  standalone: false
 })
 export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   @Input()
@@ -95,25 +97,25 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
       target: {
         expanded: _.join(
           this.selectedItem.cdExecuting
-            ? [Icons.large, Icons.spinner, Icons.spin]
-            : [Icons.large, Icons.bullseye],
+            ? [Icons.size24, Icons.spinner]
+            : [Icons.size24, Icons.bullseye],
           ' '
         )
       },
       initiators: {
-        expanded: _.join([Icons.large, Icons.user], ' '),
+        expanded: _.join([Icons.size24, Icons.user], ' '),
         leaf: _.join([Icons.user], ' ')
       },
       groups: {
-        expanded: _.join([Icons.large, Icons.users], ' '),
+        expanded: _.join([Icons.size24, Icons.users], ' '),
         leaf: _.join([Icons.users], ' ')
       },
       disks: {
-        expanded: _.join([Icons.large, Icons.disk], ' '),
+        expanded: _.join([Icons.size24, Icons.disk], ' '),
         leaf: _.join([Icons.disk], ' ')
       },
       portals: {
-        expanded: _.join([Icons.large, Icons.server], ' '),
+        expanded: _.join([Icons.size24, Icons.server], ' '),
         leaf: _.join([Icons.server], ' ')
       }
     };
@@ -322,7 +324,7 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
         });
         // Target level authentication was introduced in ceph-iscsi config v11
         if (this.cephIscsiConfigVersion > 10) {
-          ['user', 'password', 'mutual_user', 'mutual_password'].forEach((key) => {
+          [USER, 'password', 'mutual_user', 'mutual_password'].forEach((key) => {
             this.data.push({
               displayName: key,
               default: null,

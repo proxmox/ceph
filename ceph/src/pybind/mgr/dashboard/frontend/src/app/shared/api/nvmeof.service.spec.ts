@@ -165,7 +165,7 @@ describe('NvmeofService', () => {
       const request = {
         nqn: mockNQN,
         gw_group: mockGroupName,
-        dhchap_key: null as string | null
+        dhchap_key: null
       };
       service.createSubsystem(request).subscribe();
       const req = httpTesting.expectOne(`${API_PATH}/subsystem`);
@@ -174,9 +174,13 @@ describe('NvmeofService', () => {
 
     it('should call deleteSubsystem', () => {
       service.deleteSubsystem(mockNQN, mockGroupName).subscribe();
-      const req = httpTesting.expectOne(
-        `${API_PATH}/subsystem/${mockNQN}?gw_group=${mockGroupName}`
-      );
+      const req = httpTesting.expectOne((request) => {
+        return (
+          request.url === `${API_PATH}/subsystem/${mockNQN}` &&
+          request.params.get('gw_group') === mockGroupName &&
+          request.params.get('force') === 'true'
+        );
+      });
       expect(req.request.method).toBe('DELETE');
     });
     it('should call isSubsystemPresent', () => {
@@ -189,11 +193,7 @@ describe('NvmeofService', () => {
 
   describe('test initiators APIs', () => {
     let request = { host_nqn: '', gw_group: mockGroupName };
-    let addRequest = {
-      hosts: [] as { dhchap_key: string; host_nqn: string }[],
-      allow_all: true,
-      gw_group: mockGroupName
-    };
+    let addRequest = { hosts: [], allow_all: true, gw_group: mockGroupName };
     it('should call getInitiators', () => {
       service.getInitiators(mockNQN, mockGroupName).subscribe();
       const req = httpTesting.expectOne(
@@ -310,12 +310,7 @@ describe('NvmeofService', () => {
 
     it('should filter hosts by direct host placement', (done) => {
       const mockGroups = [
-        [
-          {
-            spec: { group: 'default' },
-            placement: { hosts: ['host1', 'host3'], label: [] as string[] }
-          }
-        ]
+        [{ spec: { group: 'default' }, placement: { hosts: ['host1', 'host3'], label: [] } }]
       ];
       mockHostService.getAllHosts.mockReturnValue(of(allHosts));
 
@@ -331,7 +326,7 @@ describe('NvmeofService', () => {
 
     it('should filter hosts by string label placement', (done) => {
       const mockGroups = [
-        [{ spec: { group: 'default' }, placement: { hosts: [] as string[], label: 'nvmeof' } }]
+        [{ spec: { group: 'default' }, placement: { hosts: [], label: 'nvmeof' } }]
       ];
       mockHostService.getAllHosts.mockReturnValue(of(allHosts));
 
@@ -347,7 +342,7 @@ describe('NvmeofService', () => {
 
     it('should return empty array when group not found', (done) => {
       const mockGroups = [
-        [{ spec: { group: 'other' }, placement: { hosts: ['host1'], label: [] as string[] } }]
+        [{ spec: { group: 'other' }, placement: { hosts: ['host1'], label: [] } }]
       ];
       mockHostService.getAllHosts.mockReturnValue(of(allHosts));
 
@@ -361,14 +356,7 @@ describe('NvmeofService', () => {
     });
 
     it('should return empty array when placement has no hosts or labels', (done) => {
-      const mockGroups = [
-        [
-          {
-            spec: { group: 'default' },
-            placement: { hosts: [] as string[], label: [] as string[] }
-          }
-        ]
-      ];
+      const mockGroups = [[{ spec: { group: 'default' }, placement: { hosts: [], label: [] } }]];
       mockHostService.getAllHosts.mockReturnValue(of(allHosts));
 
       service.getHostsForGroup('default').subscribe((hosts: any[]) => {

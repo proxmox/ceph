@@ -15,7 +15,7 @@ using namespace librados;
 
 using std::string;
 
-class LibRadosSnapshotStatsSelfManagedPP : public RadosTestPP {
+class LibRadosSnapshotStatsSelfManagedPP : public RadosTestPPNS {
 public:
   LibRadosSnapshotStatsSelfManagedPP() {};
   ~LibRadosSnapshotStatsSelfManagedPP() override {};
@@ -30,17 +30,16 @@ protected:
         "\"value\": \"off\""
       "}";
     std::cout << "Setting pg_autoscaler to 'off'" << std::endl;
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     // disable scrubs for the test
     cmd = "{\"prefix\": \"osd set\",\"key\":\"noscrub\"}";
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     cmd = "{\"prefix\": \"osd set\",\"key\":\"nodeep-scrub\"}";
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
-    RadosTestPP::SetUp();
+    RadosTestPPNS::SetUp();
   }
 
   void TearDown() override {
@@ -53,17 +52,16 @@ protected:
         "\"value\": \"on\""
       "}";
     std::cout << "Setting pg_autoscaler to 'on'" << std::endl;
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     // re-enable scrubs
     cmd = "{\"prefix\": \"osd unset\",\"key\":\"noscrub\"}";
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     cmd = string("{\"prefix\": \"osd unset\",\"key\":\"nodeep-scrub\"}");
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
-    RadosTestPP::TearDown();
+    RadosTestPPNS::TearDown();
   }
 };
 
@@ -82,15 +80,14 @@ protected:
         "\"value\": \"off\""
       "}";
     std::cout << "Setting pg_autoscaler to 'off'" << std::endl;
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     // disable scrubs for the test
     cmd = string("{\"prefix\": \"osd set\",\"key\":\"noscrub\"}");
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     cmd = string("{\"prefix\": \"osd set\",\"key\":\"nodeep-scrub\"}");
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     RadosTestECPP::SetUp();
   }
@@ -105,15 +102,14 @@ protected:
         "\"value\": \"on\""
       "}";
     std::cout << "Setting pg_autoscaler to 'on'" << std::endl;
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     // re-enable scrubs
     cmd = string("{\"prefix\": \"osd unset\",\"key\":\"noscrub\"}");
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     cmd = string("{\"prefix\": \"osd unset\",\"key\":\"nodeep-scrub\"}");
-    ASSERT_EQ(0, s_cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, s_cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
 
     RadosTestECPP::TearDown();
   }
@@ -207,9 +203,8 @@ TEST_F(LibRadosSnapshotStatsSelfManagedPP, SnaptrimStatsPP) {
   int tries = 0;
   do {
     string cmd = string("{\"prefix\": \"pg dump\",\"format\":\"json\"}");
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     string outstr(outbl.c_str(), outbl.length());
     json_spirit::Value v;
     ASSERT_NE(0, json_spirit::read(outstr, v)) << "unable to parse json." << '\n' << outstr;
@@ -238,8 +233,10 @@ TEST_F(LibRadosSnapshotStatsSelfManagedPP, SnaptrimStatsPP) {
   }
 }
 
+int total_num_objs = 0;
+
 // EC testing
-TEST_F(LibRadosSnapshotStatsSelfManagedECPP, SnaptrimStatsECPP) {
+TEST_P(LibRadosSnapshotStatsSelfManagedECPP, SnaptrimStatsECPP) {
   int num_objs = 10;
   int bsize = alignment;
 
@@ -289,9 +286,8 @@ TEST_F(LibRadosSnapshotStatsSelfManagedECPP, SnaptrimStatsECPP) {
   int tries = 0;
   do {
     string cmd = string("{\"prefix\": \"pg dump\",\"format\":\"json\"}");
-    bufferlist inbl;
     bufferlist outbl;
-    ASSERT_EQ(0, cluster.mon_command(cmd, inbl, &outbl, NULL));
+    ASSERT_EQ(0, cluster.mon_command(std::move(cmd), {},  &outbl, NULL));
     string outstr(outbl.c_str(), outbl.length());
     json_spirit::Value v;
     ASSERT_NE(0, json_spirit::read(outstr, v)) << "unable to parse json." << '\n' << outstr;
@@ -308,7 +304,8 @@ TEST_F(LibRadosSnapshotStatsSelfManagedECPP, SnaptrimStatsECPP) {
   } while(objects_trimmed < num_objs && tries < 5);
 
   // final check for objects trimmed
-  ASSERT_EQ(objects_trimmed, num_objs);
+  total_num_objs += num_objs;
+  ASSERT_EQ(objects_trimmed, total_num_objs);
   std::cout << "Snaptrim duration: " << snaptrim_duration << std::endl;
   ASSERT_GT(snaptrim_duration, 0.0);
 
@@ -322,3 +319,5 @@ TEST_F(LibRadosSnapshotStatsSelfManagedECPP, SnaptrimStatsECPP) {
   delete[] buf;
   delete[] buf2;
 }
+
+INSTANTIATE_TEST_SUITE_P_EC(LibRadosSnapshotStatsSelfManagedECPP);

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "PGMap.h"
 #include "mon/health_check.h"
@@ -20,11 +20,15 @@
 #include "osd/osd_types.h"
 #include "osd/OSDMap.h"
 
+#include "crush/CrushWrapper.h"
+
 #include <boost/algorithm/string.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 
 #include <iomanip> // for std::setw()
 #include <sstream>
+#include <algorithm>
+#include <vector>
 
 #define dout_context g_ceph_context
 
@@ -53,11 +57,14 @@ MEMPOOL_DEFINE_OBJECT_FACTORY(PGMap::Incremental, pgmap_inc, pgmap);
 // ---------------------
 // PGMapDigest
 
+PGMapDigest::PGMapDigest() noexcept = default;
+PGMapDigest::~PGMapDigest() noexcept = default;
+
 void PGMapDigest::encode(bufferlist& bl, uint64_t features) const
 {
   // NOTE: see PGMap::encode_digest
   uint8_t v = 5;
-  assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
+  ceph_assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
   ENCODE_START(v, 1, bl);
   encode(num_pg, bl);
   encode(num_pg_active, bl);
@@ -84,7 +91,7 @@ void PGMapDigest::encode(bufferlist& bl, uint64_t features) const
 void PGMapDigest::decode(bufferlist::const_iterator& p)
 {
   DECODE_START(5, p);
-  assert(struct_v >= 4);
+  ceph_assert(struct_v >= 4);
   decode(num_pg, p);
   decode(num_pg_active, p);
   decode(num_pg_unknown, p);
@@ -194,9 +201,11 @@ void PGMapDigest::dump(ceph::Formatter *f) const
   f->close_section();
 }
 
-void PGMapDigest::generate_test_instances(list<PGMapDigest*>& ls)
+list<PGMapDigest> PGMapDigest::generate_test_instances()
 {
-  ls.push_back(new PGMapDigest);
+  list<PGMapDigest> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 inline std::string percentify(const float& a) {
@@ -1007,6 +1016,13 @@ int64_t PGMapDigest::get_pool_free_space(const OSDMap &osd_map,
   return avail / osd_map.pool_raw_used_rate(poolid);
 }
 
+PGMap::PGMap() noexcept
+  : version(0),
+    last_osdmap_epoch(0), last_pg_scan(0)
+{}
+
+PGMap::~PGMap() noexcept = default;
+
 int64_t PGMap::get_rule_avail(const OSDMap& osdmap, int ruleno) const
 {
   map<int,float> wm;
@@ -1113,25 +1129,27 @@ void PGMap::Incremental::dump(ceph::Formatter *f) const
   f->close_section();
 }
 
-void PGMap::Incremental::generate_test_instances(list<PGMap::Incremental*>& o)
+list<PGMap::Incremental> PGMap::Incremental::generate_test_instances()
 {
-  o.push_back(new Incremental);
-  o.push_back(new Incremental);
-  o.back()->version = 1;
-  o.back()->stamp = utime_t(123,345);
-  o.push_back(new Incremental);
-  o.back()->version = 2;
-  o.back()->pg_stat_updates[pg_t(1,2)] = pg_stat_t();
-  o.back()->osd_stat_updates[5] = osd_stat_t();
-  o.push_back(new Incremental);
-  o.back()->version = 3;
-  o.back()->osdmap_epoch = 1;
-  o.back()->pg_scan = 2;
-  o.back()->pg_stat_updates[pg_t(4,5)] = pg_stat_t();
-  o.back()->osd_stat_updates[6] = osd_stat_t();
-  o.back()->pg_remove.insert(pg_t(1,2));
-  o.back()->osd_stat_rm.insert(5);
-  o.back()->pool_statfs_updates[std::make_pair(1234,4)] = store_statfs_t();
+  list<PGMap::Incremental> o;
+  o.emplace_back();
+  o.emplace_back();
+  o.back().version = 1;
+  o.back().stamp = utime_t(123,345);
+  o.emplace_back();
+  o.back().version = 2;
+  o.back().pg_stat_updates[pg_t(1,2)] = pg_stat_t();
+  o.back().osd_stat_updates[5] = osd_stat_t();
+  o.emplace_back();
+  o.back().version = 3;
+  o.back().osdmap_epoch = 1;
+  o.back().pg_scan = 2;
+  o.back().pg_stat_updates[pg_t(4,5)] = pg_stat_t();
+  o.back().osd_stat_updates[6] = osd_stat_t();
+  o.back().pg_remove.insert(pg_t(1,2));
+  o.back().osd_stat_rm.insert(5);
+  o.back().pool_statfs_updates[std::make_pair(1234,4)] = store_statfs_t();
+  return o;
 }
 
 // --
@@ -2009,8 +2027,9 @@ void PGMap::get_stuck_stats(
     }
 
     if ((types & STUCK_PEERING) && (i->second.state & PG_STATE_PEERING)) {
-      if (i->second.last_peered < val)
-	val = i->second.last_peered;
+      utime_t latest = std::max(i->second.last_active, i->second.last_peered);
+      if (latest < val)
+	val = latest;
     }
     // val is now the earliest any of the requested stuck states began
     if (val < cutoff) {
@@ -2083,17 +2102,27 @@ int PGMap::dump_stuck_pg_stats(
   return 0;
 }
 
+std::vector<std::pair<int32_t, osd_stat_t>> PGMap::get_sorted_osd_stats() const
+{
+  std::vector<std::pair<int32_t, osd_stat_t>> sorted_stats(osd_stat.begin(), osd_stat.end());
+
+  std::sort(sorted_stats.begin(), sorted_stats.end(), [](const auto& a, const auto& b) {
+    return a.first < b.first;
+  });
+
+  return sorted_stats;
+}
+
 void PGMap::dump_osd_perf_stats(ceph::Formatter *f) const
 {
   f->open_array_section("osd_perf_infos");
-  for (auto i = osd_stat.begin();
-       i != osd_stat.end();
-       ++i) {
+
+  for (const auto& [osd_id, stat] : get_sorted_osd_stats()) {
     f->open_object_section("osd");
-    f->dump_int("id", i->first);
+    f->dump_int("id", osd_id);
     {
       f->open_object_section("perf_stats");
-      i->second.os_perf_stat.dump(f);
+      stat.os_perf_stat.dump(f);
       f->close_section();
     }
     f->close_section();
@@ -2106,12 +2135,11 @@ void PGMap::print_osd_perf_stats(std::ostream *ss) const
   tab.define_column("osd", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("commit_latency(ms)", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("apply_latency(ms)", TextTable::LEFT, TextTable::RIGHT);
-  for (auto i = osd_stat.begin();
-       i != osd_stat.end();
-       ++i) {
-    tab << i->first;
-    tab << i->second.os_perf_stat.os_commit_latency_ns / 1000000ull;
-    tab << i->second.os_perf_stat.os_apply_latency_ns / 1000000ull;
+
+  for (const auto& [osd_id, stat] : get_sorted_osd_stats()) {
+    tab << osd_id;
+    tab << stat.os_perf_stat.os_commit_latency_ns / 1000000ull;
+    tab << stat.os_perf_stat.os_apply_latency_ns / 1000000ull;
     tab << TextTable::endrow;
   }
   (*ss) << tab;
@@ -2257,21 +2285,19 @@ void PGMap::clear_delta()
   stamp_delta = utime_t();
 }
 
-void PGMap::generate_test_instances(list<PGMap*>& o)
+list<PGMap> PGMap::generate_test_instances()
 {
-  o.push_back(new PGMap);
-  list<Incremental*> inc;
-  Incremental::generate_test_instances(inc);
-  delete inc.front();
+  list<PGMap> o;
+  o.emplace_back();
+  list<Incremental> inc = Incremental::generate_test_instances();
   inc.pop_front();
   while (!inc.empty()) {
-    PGMap *pmp = new PGMap();
-    *pmp = *o.back();
+    PGMap pmp = o.back();
     o.push_back(pmp);
-    o.back()->apply_incremental(NULL, *inc.front());
-    delete inc.front();
+    o.back().apply_incremental(nullptr, inc.front());
     inc.pop_front();
   }
+  return o;
 }
 
 void PGMap::get_filtered_pg_stats(uint64_t state, int64_t poolid, int64_t osdid,
@@ -2506,7 +2532,7 @@ void PGMap::get_health_checks(
     { PG_STATE_DEGRADED,         {DEGRADED,    {}} },
     { PG_STATE_DOWN,             {UNAVAILABLE, {}} },
     // Delayed (wait until stuck) reports
-    { PG_STATE_PEERING,          {UNAVAILABLE, [](const pg_stat_t &p){return p.last_peered;}    } },
+    { PG_STATE_PEERING,          {UNAVAILABLE, [](const pg_stat_t &p){return std::max(p.last_active, p.last_peered);}    } },
     { PG_STATE_UNDERSIZED,       {DEGRADED,    [](const pg_stat_t &p){return p.last_fullsized;} } },
     { PG_STATE_STALE,            {UNAVAILABLE, [](const pg_stat_t &p){return p.last_unstale;}   } },
     // Delayed and inverted reports
@@ -3311,8 +3337,14 @@ void PGMap::get_health_checks(
         summary += " experiencing stalled read in block device of BlueStore";
       } else if (asum.first == "WAL_DEVICE_STALLED_READ_ALERT") {
         summary += " experiencing stalled read in wal device of BlueFS";
+      } else if (asum.first == "BLUESTORE_BLUEFS_OVERSIZED") {
+        summary += " have BlueFS usage exceeding configured ratio of main device size";
       } else if (asum.first == "DB_DEVICE_STALLED_READ_ALERT") {
         summary += " experiencing stalled read in db device of BlueFS";
+      } else if (asum.first.find("_DISCARD_QUEUE") != std::string::npos) {
+        summary += " experiencing slow discard operations";
+      } else if (asum.first == "BLUESTORE_FREE_FRAGMENTATION") {
+        summary += " experiencing high free space fragmentation of BlueStore";
       } else if (asum.first == "EXTBLKDEV") {
         summary += " reporting problems with ExtBlkDev plugin";
       }

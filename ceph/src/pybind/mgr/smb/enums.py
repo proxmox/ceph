@@ -80,6 +80,7 @@ class ConfigNS(_StrEnum):
     USERS_AND_GROUPS = 'users_and_groups'
     JOIN_AUTHS = 'join_auths'
     TLS_CREDENTIALS = 'tls_creds'
+    EXTERNAL_CEPH_CLUSTERS = 'ext_ceph_clusters'
 
 
 class LoginCategory(_StrEnum):
@@ -103,6 +104,13 @@ class LoginAccess(_StrEnum):
         if self is self.READ_WRITE_SHORT:
             return LoginAccess(self.READ_WRITE)
         return self
+
+
+class HostAccess(_StrEnum):
+    """Determines if a host should be allowed or denied access to a share."""
+
+    ALLOW = 'allow'
+    DENY = 'deny'
 
 
 class SMBClustering(_StrEnum):
@@ -144,3 +152,28 @@ class TLSCredentialType(_StrEnum):
     CERT = 'cert'
     KEY = 'key'
     CA_CERT = 'ca-cert'
+
+
+class KeyBridgeScopeType(_StrEnum):
+    """Specify the type of a keybridge scope."""
+
+    MEM = 'mem'
+    KMIP = 'kmip'
+
+    def unique(self) -> bool:
+        """Return true if the scope is unique for a keybridge.
+        A unique scope can only appear once and has no additional qualifying
+        name(s).
+        """
+        return self in {self.MEM}
+
+
+class KeyBridgePeerPolicy(_StrEnum):
+    """Specify keybridge peer policy for validating access.
+    The policy bundles keybridge peer validation approaches into a single named
+    policy. Typically users *should not* be changing this. It's mainly for
+    debugging and hacking.
+    """
+
+    RESTRICTED = 'restricted'
+    UNRESTRICTED = 'unrestricted'

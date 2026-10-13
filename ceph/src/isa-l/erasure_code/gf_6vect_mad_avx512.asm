@@ -33,8 +33,6 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
-
 %ifidn __OUTPUT_FORMAT__, elf64
  %define arg0   rdi
  %define arg1   rsi
@@ -72,16 +70,16 @@
 
 %macro FUNC_SAVE 0
 	sub	rsp, stack_size
-	movdqa	[rsp+16*0],xmm6
-	movdqa	[rsp+16*1],xmm7
-	movdqa	[rsp+16*2],xmm8
-	movdqa	[rsp+16*3],xmm9
-	movdqa	[rsp+16*4],xmm10
-	movdqa	[rsp+16*5],xmm11
-	movdqa	[rsp+16*6],xmm12
-	movdqa	[rsp+16*7],xmm13
-	movdqa	[rsp+16*8],xmm14
-	movdqa	[rsp+16*9],xmm15
+	vmovdqa	[rsp+16*0],xmm6
+	vmovdqa	[rsp+16*1],xmm7
+	vmovdqa	[rsp+16*2],xmm8
+	vmovdqa	[rsp+16*3],xmm9
+	vmovdqa	[rsp+16*4],xmm10
+	vmovdqa	[rsp+16*5],xmm11
+	vmovdqa	[rsp+16*6],xmm12
+	vmovdqa	[rsp+16*7],xmm13
+	vmovdqa	[rsp+16*8],xmm14
+	vmovdqa	[rsp+16*9],xmm15
 	save_reg	r12,  10*16 + 0*8
 	save_reg	r15,  10*16 + 1*8
 	save_reg	r13,  10*16 + 2*8
@@ -91,16 +89,16 @@
 %endmacro
 
 %macro FUNC_RESTORE 0
-	movdqa	xmm6, [rsp+16*0]
-	movdqa	xmm7, [rsp+16*1]
-	movdqa	xmm8, [rsp+16*2]
-	movdqa	xmm9, [rsp+16*3]
-	movdqa	xmm10, [rsp+16*4]
-	movdqa	xmm11, [rsp+16*5]
-	movdqa	xmm12, [rsp+16*6]
-	movdqa	xmm13, [rsp+16*7]
-	movdqa	xmm14, [rsp+16*8]
-	movdqa	xmm15, [rsp+16*9]
+	vmovdqa	xmm6, [rsp+16*0]
+	vmovdqa	xmm7, [rsp+16*1]
+	vmovdqa	xmm8, [rsp+16*2]
+	vmovdqa	xmm9, [rsp+16*3]
+	vmovdqa	xmm10, [rsp+16*4]
+	vmovdqa	xmm11, [rsp+16*5]
+	vmovdqa	xmm12, [rsp+16*6]
+	vmovdqa	xmm13, [rsp+16*7]
+	vmovdqa	xmm14, [rsp+16*8]
+	vmovdqa	xmm15, [rsp+16*9]
 	mov	r12,  [rsp + 10*16 + 0*8]
 	mov	r15,  [rsp + 10*16 + 1*8]
 	mov	r13,  [rsp + 10*16 + 2*8]
@@ -129,8 +127,8 @@
 %else
 ;;; Use Non-temporal load/stor
  %ifdef NO_NT_LDST
-  %define XLDR vmovdqa
-  %define XSTR vmovdqa
+  %define XLDR vmovdqa64
+  %define XSTR vmovdqa64
  %else
   %define XLDR vmovntdqa
   %define XSTR vmovntdq
@@ -312,10 +310,3 @@ func(gf_6vect_mad_avx512)
 	ret
 
 endproc_frame
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_gf_6vect_mad_avx512
-no_gf_6vect_mad_avx512:
-%endif
-%endif  ; ifdef HAVE_AS_KNOWS_AVX512

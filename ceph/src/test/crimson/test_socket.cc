@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "common/ceph_argparse.h"
 #include <fmt/os.h>
@@ -11,6 +11,7 @@
 #include <seastar/core/when_all.hh>
 #include <seastar/util/later.hh>
 
+#include "crimson/common/config_proxy.h" // for local_conf()
 #include "crimson/common/log.h"
 #include "crimson/net/Errors.h"
 #include "crimson/net/Fwd.h"

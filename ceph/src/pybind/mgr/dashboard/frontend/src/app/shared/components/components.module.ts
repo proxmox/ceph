@@ -12,7 +12,6 @@ import {
   NgbTimepickerModule,
   NgbTooltipModule
 } from '@ng-bootstrap/ng-bootstrap';
-import { ClickOutsideModule } from 'ng-click-outside';
 import { provideCharts, withDefaultRegisterables, BaseChartDirective } from 'ng2-charts';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import {
@@ -36,16 +35,18 @@ import {
   SelectModule,
   ComboBoxModule,
   ProgressIndicatorModule,
-  InlineLoadingModule,
   PanelModule,
+  LayoutModule,
+  TilesModule,
+  PopoverModule,
+  InlineLoadingModule,
   TagModule,
   LinkModule,
   LayerModule,
-  LayoutModule,
-  TilesModule,
   ThemeModule
 } from 'carbon-components-angular';
-
+import EditIcon from '@carbon/icons/es/edit/16';
+import CodeIcon from '@carbon/icons/es/code/16';
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
 import { DirectivesModule } from '../directives/directives.module';
 import { PipesModule } from '../pipes/pipes.module';
@@ -68,10 +69,8 @@ import { HelperComponent } from './helper/helper.component';
 import { LanguageSelectorComponent } from './language-selector/language-selector.component';
 import { LoadingPanelComponent } from './loading-panel/loading-panel.component';
 import { ModalComponent } from './modal/modal.component';
-import { NotificationsSidebarComponent } from './notifications-sidebar/notifications-sidebar.component';
 import { OrchestratorDocPanelComponent } from './orchestrator-doc-panel/orchestrator-doc-panel.component';
 import { PwdExpirationNotificationComponent } from './pwd-expiration-notification/pwd-expiration-notification.component';
-import { RefreshSelectorComponent } from './refresh-selector/refresh-selector.component';
 import { SelectBadgesComponent } from './select-badges/select-badges.component';
 import { SelectComponent } from './select/select.component';
 import { SparklineComponent } from './sparkline/sparkline.component';
@@ -86,19 +85,19 @@ import { VerticalNavigationComponent } from './vertical-navigation/vertical-navi
 import { CardGroupComponent } from './card-group/card-group.component';
 import { HelpTextComponent } from './help-text/help-text.component';
 import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-advanced-fieldset.component';
-import { UpgradableComponent } from './upgradable/upgradable.component';
 import { ProgressComponent } from './progress/progress.component';
-import { TearsheetComponent } from './tearsheet/tearsheet.component';
-import { TearsheetStepComponent } from './tearsheet-step/tearsheet-step.component';
-import { DetailsCardComponent } from './details-card/details-card.component';
 import { SidePanelComponent } from './side-panel/side-panel.component';
+import { ChartsModule } from '@carbon/charts-angular';
+import { InlineMessageComponent } from './inline-message/inline-message.component';
+import { IconComponent } from './icon/icon.component';
+import { DetailsCardComponent } from './details-card/details-card.component';
+import { ToastComponent } from './notification-toast/notification-toast.component';
+import { TearsheetComponent } from './tearsheet/tearsheet.component';
 
 // Icons
 import InfoIcon from '@carbon/icons/es/information/16';
 import CopyIcon from '@carbon/icons/es/copy/32';
-import { IconComponent } from './icon/icon.component';
 import downloadIcon from '@carbon/icons/es/download/16';
-import { ChartsModule } from '@carbon/charts-angular';
 import CheckmarkFilledIcon from '@carbon/icons/es/checkmark--filled/16';
 import ErrorFilledIcon from '@carbon/icons/es/error--filled/16';
 import InformationFilledIcon from '@carbon/icons/es/information--filled/16';
@@ -109,6 +108,7 @@ import DataCenter16 from '@carbon/icons/es/data--center/16';
 import Upgrade16 from '@carbon/icons/es/upgrade/16';
 import Close16 from '@carbon/icons/es/close/16';
 import WarningAltFilled16 from '@carbon/icons/es/warning--alt--filled/16';
+import WarningAltFilled32 from '@carbon/icons/es/warning--alt--filled/32';
 import Help16 from '@carbon/icons/es/help/16';
 import IncidentReporter16 from '@carbon/icons/es/incident-reporter/16';
 import IbmStreamSets16 from '@carbon/icons/es/ibm--streamsets/16';
@@ -122,9 +122,21 @@ import CheckMarkOutline16 from '@carbon/icons/es/checkmark--outline/16';
 import ArrowUpRight16 from '@carbon/icons/es/arrow--up-right/16';
 import InProgress16 from '@carbon/icons/es/in-progress/16';
 import ArrowDown16 from '@carbon/icons/es/arrow--down/16';
-import Warning16 from '@carbon/icons/es/warning/16';
-import Deploy16 from '@carbon/icons/es/deploy/16';
+import Launch16 from '@carbon/icons/es/launch/16';
+import Cube16 from '@carbon/icons/es/cube/16';
+import ChevronLeft16 from '@carbon/icons/es/chevron--left/16';
+import ChevronRight16 from '@carbon/icons/es/chevron--right/16';
+import CaretLeft16 from '@carbon/icons/es/caret--left/16';
+import CaretRight16 from '@carbon/icons/es/caret--right/16';
+import Locked16 from '@carbon/icons/es/locked/16';
+import WebServicesCluster20 from '@carbon/icons/es/web-services--cluster/20';
+import WebServicesCluster32 from '@carbon/icons/es/web-services--cluster/32';
+import CloudMonitoring16 from '@carbon/icons/es/cloud--monitoring/16';
+
+import { TearsheetStepComponent } from './tearsheet-step/tearsheet-step.component';
+import { PageHeaderComponent } from './page-header/page-header.component';
 import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.component';
+import { NumberWithUnitComponent } from './number-with-unit/number-with-unit.component';
 
 @NgModule({
   imports: [
@@ -139,7 +151,6 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     PipesModule,
     DirectivesModule,
     NgbDropdownModule,
-    ClickOutsideModule,
     SimplebarAngularModule,
     RouterModule,
     NgbDatepickerModule,
@@ -164,14 +175,15 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     ComboBoxModule,
     ProgressIndicatorModule,
     BaseChartDirective,
-    InlineLoadingModule,
     PanelModule,
     ChartsModule,
+    LayoutModule,
+    TilesModule,
+    PopoverModule,
+    InlineLoadingModule,
     TagModule,
     LinkModule,
     LayerModule,
-    LayoutModule,
-    TilesModule,
     ThemeModule
   ],
   declarations: [
@@ -182,14 +194,12 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     UsageBarComponent,
     LoadingPanelComponent,
     ModalComponent,
-    NotificationsSidebarComponent,
     DeleteConfirmationModalComponent,
     ConfirmationModalComponent,
     LanguageSelectorComponent,
     GrafanaComponent,
     SelectComponent,
     BackButtonComponent,
-    RefreshSelectorComponent,
     ConfigOptionComponent,
     AlertPanelComponent,
     FormModalComponent,
@@ -213,14 +223,17 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     CardGroupComponent,
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
-    UpgradableComponent,
     ProgressComponent,
+    SidePanelComponent,
     IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent,
+    ToastComponent,
     TearsheetComponent,
     TearsheetStepComponent,
-    DetailsCardComponent,
-    SidePanelComponent,
-    SidebarLayoutComponent
+    PageHeaderComponent,
+    SidebarLayoutComponent,
+    NumberWithUnitComponent
   ],
   providers: [provideCharts(withDefaultRegisterables())],
   exports: [
@@ -232,11 +245,9 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     LoadingPanelComponent,
     UsageBarComponent,
     ModalComponent,
-    NotificationsSidebarComponent,
     LanguageSelectorComponent,
     GrafanaComponent,
     SelectComponent,
-    RefreshSelectorComponent,
     ConfigOptionComponent,
     AlertPanelComponent,
     PwdExpirationNotificationComponent,
@@ -258,14 +269,17 @@ import { SidebarLayoutComponent } from './sidebar-layout/sidebar-layout.componen
     CardGroupComponent,
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
-    UpgradableComponent,
     ProgressComponent,
+    SidePanelComponent,
     IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent,
+    ToastComponent,
     TearsheetComponent,
     TearsheetStepComponent,
-    DetailsCardComponent,
-    SidePanelComponent,
-    SidebarLayoutComponent
+    PageHeaderComponent,
+    SidebarLayoutComponent,
+    NumberWithUnitComponent
   ]
 })
 export class ComponentsModule {
@@ -273,6 +287,8 @@ export class ComponentsModule {
     this.iconService.registerAll([
       InfoIcon,
       CopyIcon,
+      EditIcon,
+      CodeIcon,
       downloadIcon,
       CheckmarkFilledIcon,
       ErrorFilledIcon,
@@ -284,6 +300,7 @@ export class ComponentsModule {
       DataCenter16,
       Upgrade16,
       WarningAltFilled16,
+      WarningAltFilled32,
       Help16,
       IncidentReporter16,
       IbmStreamSets16,
@@ -297,8 +314,16 @@ export class ComponentsModule {
       ArrowUpRight16,
       InProgress16,
       ArrowDown16,
-      Deploy16,
-      Warning16
+      Launch16,
+      Cube16,
+      ChevronLeft16,
+      ChevronRight16,
+      CaretLeft16,
+      CaretRight16,
+      Locked16,
+      WebServicesCluster20,
+      WebServicesCluster32,
+      CloudMonitoring16
     ]);
   }
 }

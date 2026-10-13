@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "CrushWrapper.h"
 #include "CrushTreeDumper.h"
@@ -1729,12 +1729,12 @@ int CrushWrapper::get_parent_of_type(int item, int type, int rule) const
   return 0; // not found
 }
 
-void CrushWrapper::get_subtree_of_type(int type, vector<int> *subtrees)
+void CrushWrapper::get_subtree_of_type(int type, vector<int> *subtrees) const
 {
   set<int> roots;
   find_roots(&roots);
   for (auto r: roots) {
-    crush_bucket *b = get_bucket(r);
+    const crush_bucket *b = get_bucket(r);
     if (IS_ERR(b))
       continue;
     get_children_of_type(b->id, type, subtrees);
@@ -3966,10 +3966,12 @@ void CrushWrapper::dump_tree(
   }
 }
 
-void CrushWrapper::generate_test_instances(list<CrushWrapper*>& o)
+list<CrushWrapper> CrushWrapper::generate_test_instances()
 {
-  o.push_back(new CrushWrapper);
+  list<CrushWrapper> o;
+  o.emplace_back();
   // fixme
+  return o;
 }
 
 /**

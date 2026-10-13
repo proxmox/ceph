@@ -24,13 +24,17 @@
 #include <seastar/core/do_with.hh>
 #include <seastar/testing/test_case.hh>
 #include <seastar/core/sstring.hh>
-#include <seastar/core/vector-data-sink.hh>
 #include <seastar/json/formatter.hh>
 #include <seastar/json/json_elements.hh>
 #include <seastar/testing/thread_test_case.hh>
+#include "memory-data-sink.hh"
 
 using namespace seastar;
 using namespace json;
+
+static_assert(internal::is_string_like<std::string_view>);
+static_assert(internal::is_string_like<std::string>);
+static_assert(internal::is_string_like<sstring>);
 
 SEASTAR_TEST_CASE(test_simple_values) {
     BOOST_CHECK_EQUAL("3", formatter::to_json(3));
@@ -70,6 +74,17 @@ SEASTAR_TEST_CASE(test_ranges) {
     return make_ready_future();
 }
 
+SEASTAR_TEST_CASE(test_strings) {
+    sstring s = "hello, world";
+    const char* expected = "\"hello, world\"";
+    BOOST_CHECK_EQUAL(expected, formatter::to_json(s));
+    BOOST_CHECK_EQUAL(expected, formatter::to_json(std::string(s)));
+    BOOST_CHECK_EQUAL(expected, formatter::to_json(std::string_view(s)));
+    BOOST_CHECK_EQUAL(expected, formatter::to_json(s.c_str()));
+
+    return make_ready_future();
+}
+
 struct object_json : public json_base {
     json_element<sstring> subject;
     json_list<long> values;
@@ -101,25 +116,27 @@ SEASTAR_TEST_CASE(test_jsonable) {
 
 template<typename F>
 void formatter_check_expected(sstring expected, F f, bool close = true) {
-    auto vec = std::vector<net::packet>{};
-    auto out = output_stream<char>(data_sink(std::make_unique<vector_data_sink>(vec)), 8);
+    std::stringstream ss;
+    auto out = output_stream<char>(testing::memory_data_sink(ss), 8);
 
     f(out);
     if (close) {
         out.close().get();
     }
 
-    auto packets = net::packet{};
-    for (auto &p : vec) {
-      packets.append(std::move(p));
-    }
-    packets.linearize();
-    auto buf = packets.release();
-
-    sstring result(buf.front().get(), buf.front().size());
-    BOOST_CHECK_EQUAL(expected, result);
+    BOOST_CHECK_EQUAL(expected, ss.str());
 }
 
+SEASTAR_THREAD_TEST_CASE(test_stream_range_as_array_simple) {
+    sstring expected = R"(["1", "2", "3"])";
+    formatter_check_expected(expected, [] (auto& out) {
+        auto mapper = stream_range_as_array(std::vector<int>{1,2,3}, [] (auto i) {
+            return std::to_string(i);
+        });
+
+        mapper(std::move(out)).get();
+    }, false);
+}
 
 SEASTAR_THREAD_TEST_CASE(test_stream_range_as_array) {
     sstring expected = R"([{"subject":"1","values":[1]}, {"subject":"2","values":[2]}, {"subject":"3","values":[3]}])";

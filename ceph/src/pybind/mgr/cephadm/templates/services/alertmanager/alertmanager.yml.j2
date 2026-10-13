@@ -6,13 +6,7 @@ global:
 {% if not secure %}
   http_config:
     tls_config:
-{% if security_enabled %}
-      ca_file: root_cert.pem
-      cert_file: alertmanager.crt
-      key_file: alertmanager.key
-{% else %}
       insecure_skip_verify: true
-{% endif %}
 {% endif %}
 
 route:
@@ -23,6 +17,14 @@ route:
       group_interval: 10s
       repeat_interval: 1h
       receiver: 'ceph-dashboard'
+{% if webhook_urls %}
+      continue: true
+    - group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'custom-receiver'
+{% endif %}
 {% if snmp_gateway_urls %}
       continue: true
     - receiver: 'snmp-gateway'
@@ -36,13 +38,23 @@ route:
 receivers:
 - name: 'default'
   webhook_configs:
-{% for url in default_webhook_urls %}
+- name: 'custom-receiver'
+  webhook_configs:
+{% for url in webhook_urls %}
   - url: '{{ url }}'
 {% endfor %}
 - name: 'ceph-dashboard'
   webhook_configs:
 {% for url in dashboard_urls %}
   - url: '{{ url }}/api/prometheus_receiver'
+  {% if enable_mtls %}
+    http_config:
+      tls_config:
+        insecure_skip_verify: false
+        ca_file: root_cert.pem
+        cert_file: alertmanager.crt
+        key_file: alertmanager.key
+  {% endif %}
 {% endfor %}
 {% if snmp_gateway_urls %}
 - name: 'snmp-gateway'

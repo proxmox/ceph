@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/rbd_mirror/test_mock_fixture.h"
 #include "librbd/deep_copy/ImageCopyRequest.h"
@@ -630,7 +630,7 @@ public:
     encode(last_copied_object, bl);
 
     EXPECT_CALL(get_mock_io_ctx(mock_test_image_ctx.md_ctx),
-                exec(mock_test_image_ctx.header_oid, _, StrEq("rbd"),
+                exec_internal(mock_test_image_ctx.header_oid, _, StrEq("rbd"),
                      StrEq("mirror_image_snapshot_set_copy_progress"),
                      ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -243,6 +244,8 @@ public:
     }
     void trim(
       const pg_log_entry_t &entry) override {}
+    void trim_after_remove(
+      const pg_log_entry_t &entry) override {}
     void partial_write(
         pg_info_t *info,
         eversion_t previous_version,
@@ -371,6 +374,8 @@ struct TestHandler : public PGLog::LogEntryHandler {
     // lost/unfound cases are not tested yet
   }
   void trim(
+    const pg_log_entry_t &entry) override {}
+  void trim_after_remove(
     const pg_log_entry_t &entry) override {}
   void partial_write(
       pg_info_t *info,

@@ -27,6 +27,8 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
+include igzip/riscv64/Makefile.am
+
 lsrc        += 	igzip/igzip.c \
 		igzip/hufftables_c.c \
 		igzip/igzip_base.c \
@@ -37,8 +39,8 @@ lsrc        += 	igzip/igzip.c \
 		igzip/igzip_icf_body.c
 
 lsrc_base_aliases += igzip/igzip_base_aliases.c igzip/proc_heap_base.c
-lsrc_x86_32       += igzip/igzip_base_aliases.c igzip/proc_heap_base.c
 lsrc_ppc64le      += igzip/igzip_base_aliases.c igzip/proc_heap_base.c
+lsrc_riscv64      +=                            igzip/proc_heap_base.c
 
 lsrc_aarch64 +=	igzip/aarch64/igzip_inflate_multibinary_arm64.S  \
 		igzip/aarch64/igzip_multibinary_arm64.S	\
@@ -120,7 +122,7 @@ other_src   += 	igzip/bitbuf2.asm  \
 
 perf_tests  +=  igzip/adler32_perf
 
-examples    += 	igzip/igzip_example igzip/igzip_sync_flush_example
+examples    += 	igzip/igzip_example igzip/igzip_inflate_example igzip/igzip_sync_flush_example
 
 igzip_igzip_rand_test_LDADD = libisal.la
 

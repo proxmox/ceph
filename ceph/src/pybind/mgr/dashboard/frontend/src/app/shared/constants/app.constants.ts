@@ -255,7 +255,7 @@ export class ActionLabelsI18n {
     this.RECONNECT = $localize`Reconnect`;
     this.ADD_STORAGE = $localize`Add Storage`;
 
-    this.NFS_EXPORT = $localize`Create NFS Export`;
+    this.NFS_EXPORT = $localize`Create NFS Share`;
     this.VIEW = $localize`View`;
   }
 }
@@ -386,3 +386,8 @@ export const SSL_CIPHERS = [
 
 export const USER = 'user';
 export const VERSION_PREFIX = 'ceph version';
+
+export const CEPHFS_MIRRORING_PAGE_HEADER = {
+  title: $localize`CephFS Mirroring`,
+  description: $localize`Centralised view of all CephFS Mirroring relationships.`
+};

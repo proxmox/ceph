@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab expandtab
+// vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include "messages/MOSDOp.h"
 #include "messages/MOSDOpReply.h"
@@ -150,14 +150,6 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
   // enter_stage.
   ihref.enter_stage_sync(client_pp(pg).wait_pg_ready, *this);
 
-  if (!m->get_hobj().get_key().empty()) {
-    // There are no users of locator. It was used to ensure that multipart-upload
-    // parts would end up in the same PG so that they could be clone_range'd into
-    // the same object via librados, but that's not how multipart upload works
-    // anymore and we no longer support clone_range via librados.
-    co_await reply_op_error(pgref, -ENOTSUP);
-    co_return;
-  }
   if (pg.can_discard_op(*m)) {
     co_await interruptor::make_interruptible(
       shard_services->send_incremental_map(
@@ -195,7 +187,7 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
 
   if (!pg.is_primary()) {
     // primary can handle both normal ops and balanced reads
-    if (is_misdirected(pg)) {
+    if (is_misdirected_replica_read(pg)) {
       DEBUGDPP("{}.{}: dropping misdirected op",
 	       pg, *this, this_instance_id);
       co_return;
@@ -209,8 +201,8 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
       pg.get_perf_logger().inc(l_osd_replica_read_redirect_missing);
       co_await reply_op_error(pgref, -EAGAIN);
       co_return;
-    } else if (!pg.get_peering_state().can_serve_replica_read(m->get_hobj())) {
-      // Note: can_serve_replica_read checks for writes on the head object
+    } else if (!pg.get_peering_state().can_serve_read(m->get_hobj())) {
+      // Note: can_serve_read checks for writes on the head object
       //       as writes can only occur to head.
       DEBUGDPP("{}.{}: unstable write on replica, bouncing to primary",
 	       pg, *this, this_instance_id);
@@ -321,7 +313,7 @@ ClientRequest::recover_missing_snaps(
     }
     return seastar::now();
   }).handle_error_interruptible(
-    crimson::ct_error::assert_all(fmt::format("{} {} error", *pg, FNAME).c_str())
+    crimson::ct_error::assert_all("{} {} error", std::cref(*pg), FNAME)
   );
   co_await std::move(resolve_oids);
 
@@ -361,8 +353,7 @@ ClientRequest::process_op(
     }
 
     std::set<snapid_t> snaps = snaps_need_to_recover();
-    if (!snaps.empty() &&
-        pg->is_missing_head_and_clones(m->get_hobj().get_head())) {
+    if (!snaps.empty()) {
       co_await recover_missing_snaps(pg, snaps);
     }
   }
@@ -625,24 +616,28 @@ ClientRequest::do_process(
   }
 }
 
-bool ClientRequest::is_misdirected(const PG& pg) const
+bool ClientRequest::is_misdirected_replica_read(const PG& pg) const
 {
+  LOG_PREFIX(ClientRequest::is_misdirected_replica_read);
   // otherwise take a closer look
   if (const int flags = m->get_flags();
       flags & CEPH_OSD_FLAG_BALANCE_READS ||
       flags & CEPH_OSD_FLAG_LOCALIZE_READS) {
+    if (op_info.rwordered()) {
+      DEBUGDPP("{}: dropping - rwoedered with balanced/localize read {}", pg, *this);
+      return true;
+    }
     if (!op_info.may_read()) {
-      // no read found, so it can't be balanced read
+      DEBUGDPP("{}: dropping - no read found with balanced/localize read", pg, *this);
       return true;
     }
     if (op_info.may_write() || op_info.may_cache()) {
-      // write op, but i am not primary
+      DEBUGDPP("{}: dropping - can't write to replica", pg, *this);
       return true;
     }
-    // balanced reads; any replica will do
     return false;
   }
-  // neither balanced nor localize reads
+  DEBUGDPP("{}: dropping - not a balanced/localize read ", pg, *this);
   return true;
 }
 

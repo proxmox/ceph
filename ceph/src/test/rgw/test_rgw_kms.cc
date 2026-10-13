@@ -1,6 +1,8 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
+#include "gtest/gtest.h"
+#include <common/random_string.h>
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "common/ceph_context.h"
@@ -262,6 +264,27 @@ TEST_F(TestSSEKMS, concat_url)
   }
 }
 
+class BarbicanKeyIdValidationTest
+    : public ::testing::TestWithParam<std::pair<std::string_view, bool>> {};
+
+TEST_P(BarbicanKeyIdValidationTest, ValidateKeyId) {
+  const auto &param = GetParam();
+  EXPECT_EQ(validate_barbican_key_id(param.first), param.second);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KeyIDTests, BarbicanKeyIdValidationTest,
+    ::testing::Values(
+        std::make_pair("asdf", false),
+        std::make_pair("cb6f82b2-aace-464f-bd50-c3103b97ad92", true),
+        std::make_pair("7cd71431-7f9b-5a2f-8215-126164bda0e4", true),
+        std::make_pair("{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}", false),
+        std::make_pair("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", false),
+        std::make_pair("", false),
+        std::make_pair("../cb6f82b2-aace-464f-bd50-c3103b97ad92", false),
+        std::make_pair("/cb6f82b2-aace-464f-bd50-c3103b97ad92", false),
+        std::make_pair("cb6f82b2/aace../464f-bd50-c3103b97ad92", false),
+        std::make_pair(" ", false)));
 
 TEST_F(TestSSEKMS, string_ends_maybe_slash)
 {
@@ -293,4 +316,15 @@ TEST_F(TestSSEKMS, test_transit_backend_empty_response)
 
   ASSERT_EQ(res, -EINVAL);
   ASSERT_EQ(actual_key, from_base64(""));
+}
+
+TEST_F(TestSSEKMS, TestingBackendDifferentKeyselSameKeyIdDoNotCollide) {
+  map<string, bufferlist> attrs;
+  const NoDoutPrefix no_dpp(cct, 1);
+  cct->_conf->rgw_crypt_s3_kms_encryption_keys =
+      "foo=IyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyM=";
+  std::string out_a, out_b;
+  ASSERT_EQ(0, get_actual_key_from_conf(&no_dpp, "foo", gen_rand_alphanumeric(cct, AES_256_KEYSIZE), out_a));
+  ASSERT_EQ(0, get_actual_key_from_conf(&no_dpp, "foo", gen_rand_alphanumeric(cct, AES_256_KEYSIZE), out_b));
+  ASSERT_NE(out_a, out_b);
 }

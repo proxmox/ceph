@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -284,7 +284,7 @@ class Node
           // good
         } else {
           assert(p_cursor->is_invalid());
-          ceph_abort("impossible");
+          ceph_abort_msg("impossible");
         }
       }
 #endif
@@ -383,7 +383,7 @@ class Node
 
  protected:
   virtual eagain_ifuture<> test_clone_non_root(context_t, Ref<InternalNode>) const {
-    ceph_abort("impossible path");
+    ceph_abort_msg("impossible path");
   }
   virtual eagain_ifuture<search_result_t> lower_bound_tracked(
       context_t, const key_hobj_t&, MatchHistory&) = 0;
@@ -417,7 +417,7 @@ class Node
     make_root(c, std::move(_super));
   }
   void as_root(Super::URef&& _super);
-  eagain_ifuture<> upgrade_root(context_t, laddr_t);
+  eagain_ifuture<> upgrade_root(context_t, laddr_hint_t);
 
   Super::URef deref_super();
 
@@ -551,7 +551,7 @@ class InternalNode final : public Node {
   void track_make_tail(const search_position_t&);
 
   static eagain_ifuture<Ref<InternalNode>> allocate_root(
-      context_t, laddr_t, level_t, laddr_t, Super::URef&&);
+      context_t, laddr_hint_t, level_t, laddr_t, Super::URef&&);
 
  protected:
   eagain_ifuture<Ref<tree_cursor_t>> lookup_smallest(context_t) override;
@@ -592,7 +592,7 @@ class InternalNode final : public Node {
       return std::make_pair(Ref<Node>(node), mut);
     }
   };
-  static eagain_ifuture<fresh_node_t> allocate(context_t, laddr_t, field_type_t, bool, level_t);
+  static eagain_ifuture<fresh_node_t> allocate(context_t, laddr_hint_t, field_type_t, bool, level_t);
 
  private:
   /**
@@ -724,7 +724,7 @@ class LeafNode final : public Node {
       return std::make_pair(Ref<Node>(node), mut);
     }
   };
-  static eagain_ifuture<fresh_node_t> allocate(context_t, laddr_t, field_type_t, bool);
+  static eagain_ifuture<fresh_node_t> allocate(context_t, laddr_hint_t, field_type_t, bool);
 
  private:
   /**

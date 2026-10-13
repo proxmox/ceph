@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/rbd_mirror/test_mock_fixture.h"
 #include "test/librados_test_stub/MockTestMemIoCtxImpl.h"
@@ -168,7 +168,7 @@ public:
     encode(images, out_bl);
 
     EXPECT_CALL(get_mock_io_ctx(io_ctx),
-                exec(RBD_TRASH, _, StrEq("rbd"), StrEq("trash_list"),
+                exec_internal(RBD_TRASH, _, StrEq("rbd"), StrEq("trash_list"),
                      ContentsEqual(bl), _, _, _))
       .WillOnce(DoAll(WithArg<5>(Invoke([out_bl](bufferlist *bl) {
                           *bl = out_bl;

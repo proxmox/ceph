@@ -1,7 +1,7 @@
 tasks:
 - nvmeof:
     installer: host.a
-    gw_image: quay.io/ceph/nvmeof:devel # "default" is the image cephadm defaults to; change to test specific nvmeof images, example "latest"
+    gw_image: default # "default" is the image cephadm defaults to; change to test specific nvmeof images, example "latest"
     rbd:
       pool_name: mypool
       image_name_prefix: myimage
@@ -14,7 +14,7 @@ tasks:
     service: nvmeof.mypool.mygroup0
     refresh: True
 
-- cephadm.exec:
+- exec:
     host.a:
       - ceph orch ls nvmeof --export > /tmp/nvmeof-orig.yaml
       - cp /tmp/nvmeof-orig.yaml /tmp/nvmeof-no-huge-page.yaml 
@@ -37,3 +37,4 @@ tasks:
     env:
       RBD_POOL: mypool
       RBD_IMAGE_PREFIX: myimage
+      NVMEOF_NATIVE_CLI: 'true'

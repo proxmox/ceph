@@ -1,0 +1,298 @@
+# cmake-format: off
+# Copyright (c) 2025, Intel Corporation
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#     * Redistributions of source code must retain the above copyright notice,
+#       this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * Neither the name of Intel Corporation nor the names of its contributors
+#       may be used to endorse or promote products derived from this software
+#       without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# cmake-format: on
+cmake_minimum_required(VERSION 3.12)
+cmake_policy(VERSION 3.12)
+
+project(ISA-L
+    VERSION 2.32.0
+    DESCRIPTION "Intel's ISA-L (Intelligent Storage Acceleration Library)"
+    LANGUAGES C
+)
+
+# Enable NASM for x86_64 builds
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+    enable_language(ASM_NASM)
+endif()
+
+# Enable testing
+option(ISAL_BUILD_TESTS "Build the testing tree" ON)
+if(ISAL_BUILD_TESTS)
+    enable_testing()
+    include(CTest)
+endif()
+
+# Enable performance tests
+option(ISAL_BUILD_PERF_TESTS "Build performance tests" ON)
+
+# Enable fuzz testing (requires Clang)
+option(ISAL_BUILD_FUZZ_TESTS "Build fuzz tests with LibFuzzer" OFF)
+if(ISAL_BUILD_FUZZ_TESTS)
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        add_subdirectory(tests/fuzz)
+    else()
+        message(WARNING "ISAL_BUILD_FUZZ_TESTS requires Clang compiler")
+    endif()
+endif()
+
+# Enable building ISAL shim library
+option(ISAL_BUILD_ISAL_SHIM "Build the ISAL shim library" ON)
+if(ISAL_BUILD_ISAL_SHIM)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# Set default build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Detect processor architecture
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+    set(CPU_X86_64 ON)
+    set(ARCH_DEF "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    set(CPU_AARCH64 ON)
+    set(ARCH_DEF "aarch64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "ppc64le")
+    set(CPU_PPC64LE ON)
+    set(ARCH_DEF "ppc64le")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "riscv64")
+    set(CPU_RISCV64 ON)
+    set(ARCH_DEF "riscv64")
+else()
+    set(CPU_UNDEFINED ON)
+endif()
+
+# Compiler and assembler setup
+if(CPU_X86_64)
+    # Configure NASM flags
+    if(WIN32)
+        set(CMAKE_ASM_NASM_FLAGS "-f win64")
+    else()
+        set(CMAKE_ASM_NASM_FLAGS "-f elf64 -D LINUX")
+    endif()
+    set(CMAKE_ASM_NASM_INCLUDES "-I ${CMAKE_CURRENT_SOURCE_DIR}/include/")
+    set(USE_NASM ON)
+elseif(CPU_AARCH64 OR CPU_RISCV64)
+    # Use C compiler for assembly on ARM and RISC-V
+    set(CMAKE_ASM_COMPILER ${CMAKE_C_COMPILER})
+    enable_language(ASM)
+    set(CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS} -D__ASSEMBLY__")
+endif()
+
+# Set include directories
+set(ISAL_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Initialize EXTERN_HEADERS list
+set(EXTERN_HEADERS)
+
+# Compiler flags
+if(ARCH_DEF)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D${ARCH_DEF}")
+endif()
+
+# Library version (semantic versioning)
+set(LIBISAL_VERSION_MAJOR 2)
+set(LIBISAL_VERSION_MINOR 32)
+set(LIBISAL_VERSION_PATCH 0)
+
+# Include CMake modules for each library component
+include(cmake/erasure_code.cmake)
+include(cmake/raid.cmake)
+include(cmake/crc.cmake)
+include(cmake/igzip.cmake)
+include(cmake/mem.cmake)
+include(cmake/misc.cmake)
+
+
+# Add test.h to extern headers (used by all modules)
+list(APPEND EXTERN_HEADERS include/test.h)
+
+# Create the main ISA-L library
+# Build type option
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+
+# Use module definition file to explicitly control exported symbols
+if(MSVC AND BUILD_SHARED_LIBS)
+    set(ISAL_DEF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/isa-l.def")
+endif()
+
+# Mirror install layout in build tree to support '#include <isa-l/header.h>' via FetchContent
+set(BUILD_INTERFACE_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/build_include")
+file(MAKE_DIRECTORY "${BUILD_INTERFACE_INCLUDE_DIR}/isa-l")
+file(GLOB_RECURSE ISAL_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
+file(COPY ${ISAL_HEADERS} DESTINATION "${BUILD_INTERFACE_INCLUDE_DIR}/isa-l")
+
+# Create the main ISA-L library
+add_library(isal
+    ${ISAL_DEF_FILE}
+    ${ERASURE_CODE_SOURCES}
+    ${RAID_SOURCES}
+    ${CRC_SOURCES}
+    ${IGZIP_SOURCES}
+    ${MEM_SOURCES}
+    ${MISC_SOURCES}
+)
+
+# Set library properties
+set_target_properties(isal PROPERTIES
+    VERSION ${LIBISAL_VERSION_MAJOR}.${LIBISAL_VERSION_MINOR}.${LIBISAL_VERSION_PATCH}
+    SOVERSION ${LIBISAL_VERSION_MAJOR}
+)
+
+# Match Makefile.nmake naming convention
+if(MSVC)
+    set_target_properties(isal PROPERTIES OUTPUT_NAME "isa-l")
+endif()
+
+# Configure include directories for NASM assembly files
+if(CPU_X86_64 AND USE_NASM)
+    # Filter assembly files by module and set appropriate include directories
+    foreach(source IN LISTS ERASURE_CODE_SOURCES RAID_SOURCES CRC_SOURCES IGZIP_SOURCES MEM_SOURCES)
+        if(source MATCHES "\\.asm$")
+            get_filename_component(source_dir ${source} DIRECTORY)
+            set_source_files_properties(${source} PROPERTIES
+                INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include;${CMAKE_CURRENT_SOURCE_DIR}/${source_dir}")
+        endif()
+    endforeach()
+endif()
+
+# Suppress deprecation warnings when building the library internally
+target_compile_definitions(isal PRIVATE ISAL_DEPRECATED_INTERNAL)
+
+# Include directories
+target_include_directories(isal
+    PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    INTERFACE
+        $<BUILD_INTERFACE:${BUILD_INTERFACE_INCLUDE_DIR}>
+        $<INSTALL_INTERFACE:include>
+)
+
+# Conditionally build ISAL shim library
+if(ISAL_BUILD_ISAL_SHIM)
+    add_subdirectory(igzip/shim)
+endif()
+
+# Generate isa-l.h header
+set(ISAL_HEADER "${CMAKE_CURRENT_BINARY_DIR}/isa-l.h")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/isa-l.h.in ${ISAL_HEADER} @ONLY)
+
+# Copy generated header to build interface dir for FetchContent support
+file(COPY ${ISAL_HEADER} DESTINATION "${BUILD_INTERFACE_INCLUDE_DIR}")
+
+# Install targets
+include(GNUInstallDirs)
+
+# add uninstall target
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/uninstall.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/uninstall.cmake"
+    IMMEDIATE @ONLY)
+
+add_custom_target(
+    uninstall COMMAND ${CMAKE_COMMAND} -P
+                      ${CMAKE_CURRENT_BINARY_DIR}/uninstall.cmake)
+
+# Install library
+install(TARGETS isal
+    EXPORT ISALTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# Install generated header
+install(FILES ${ISAL_HEADER}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# Install headers
+install(DIRECTORY include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isa-l
+    FILES_MATCHING PATTERN "*.h"
+)
+
+# Export targets
+install(EXPORT ISALTargets
+    FILE ISALTargets.cmake
+    NAMESPACE ISAL::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ISAL
+)
+
+# Generate and install package config files
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ISALConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ISALConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ISAL
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/ISALConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/ISALConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/ISALConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ISAL
+)
+
+# Optional: Create pkg-config file
+set(prefix ${CMAKE_INSTALL_PREFIX})
+set(exec_prefix \${prefix})
+set(libdir \${prefix}/${CMAKE_INSTALL_LIBDIR})
+set(includedir \${prefix}/${CMAKE_INSTALL_INCLUDEDIR})
+set(VERSION ${PROJECT_VERSION})
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/libisal.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/libisal.pc"
+    @ONLY
+)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libisal.pc"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+)
+
+# Print configuration summary
+message(STATUS "")
+message(STATUS "ISA-L ${PROJECT_VERSION} configuration summary:")
+message(STATUS "  Build type         : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Architecture       : ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "  Shared libs        : ${BUILD_SHARED_LIBS}")
+message(STATUS "  Install prefix     : ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "  Build tests        : ${ISAL_BUILD_TESTS}")
+message(STATUS "  Build perf tests   : ${ISAL_BUILD_PERF_TESTS}")
+message(STATUS "  Build fuzz tests   : ${ISAL_BUILD_FUZZ_TESTS}")
+message(STATUS "  Build ISAL shim    : ${ISAL_BUILD_ISAL_SHIM}")
+message(STATUS "")

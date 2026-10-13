@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -21,12 +21,11 @@
 #  define SLEEP(x) usleep(x * 1000)
 #endif
 
-#define XXH_NAMESPACE ZSTD_
 #include "xxhash.h"
 
 #include "pool.h"      // use zstd thread pool for demo
 
-#include "zstd_seekable.h"
+#include "../zstd_seekable.h"
 
 static void* malloc_orDie(size_t size)
 {

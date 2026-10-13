@@ -31,7 +31,13 @@
 
 %include "reg_sizes.asm"
 
+%ifndef PREFETCH
+%define PREFETCH        prefetcht1
+%endif
+
 default rel
+section .text
+
 %define CONCAT(a,b,c)   a %+ b %+ c
 
 ; Define threshold where buffers are considered "small" and routed to more
@@ -183,7 +189,7 @@ full_block:
 
 ;       ;; branch into array
 ;       jmp     CONCAT(crc_,128,)
-	; Fall thruogh into top of crc array (crc_128)
+	; Fall through into top of crc array (crc_128)
 
 	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -203,7 +209,7 @@ CONCAT(_crc_,i,:)
 	crc32	crc2,      qword [block_2 - i*8]
 
  %if i > 128*8 / 32	; prefetch next 3KB data
-	prefetchnta [block_2 + 128*32 - i*32]
+	PREFETCH [block_2 + 128*32 - i*32]
  %endif
 
 %assign i (i-1)
@@ -586,7 +592,3 @@ K_table:
 	dq 0x045cddf4e, 0x0e0ac139e
 	dq 0x1a91647f2, 0x169cf9eb0
 	dq 0x1a0f717c4, 0x0170076fa
-
-;;;       func            core, ver, snum
-slversion crc32_iscsi_01, 01,   04,  0015
-

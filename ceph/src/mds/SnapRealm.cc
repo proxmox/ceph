@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -15,10 +16,12 @@
 #include "SnapRealm.h"
 #include "CInode.h"
 #include "CDentry.h"
+#include "CDir.h"
 #include "MDCache.h"
 #include "MDSRank.h"
 #include "SnapClient.h"
 #include "common/debug.h"
+#include "include/ceph_assert.h"
 
 #include <string_view>
 
@@ -54,11 +57,16 @@ ostream& operator<<(ostream& out, const SnapRealm& realm)
     out << " past_parent_snaps=" << realm.srnode.past_parent_snaps;
   }
 
-  if (realm.srnode.is_parent_global())
-    out << " global ";
+  if (realm.srnode.is_parent_global()) {
+    out << " global";
+  }
+  if (realm.srnode.is_subvolume()) {
+    out << " subvol";
+  }
   out << " last_modified " << realm.srnode.last_modified
-      << " change_attr " << realm.srnode.change_attr;
-  out << " " << &realm << ")";
+      << " change_attr " << realm.srnode.change_attr
+      << " is_snapdir_visible " << realm.srnode.is_snapdir_visible()
+      << " " << &realm << ")";
   return out;
 }
 
@@ -115,6 +123,8 @@ void SnapRealm::check_cache() const
   snapid_t seq;
   snapid_t last_created;
   snapid_t last_destroyed = mdcache->mds->snapclient->get_last_destroyed();
+  utime_t last_modified = srnode.last_modified;
+  uint64_t change_attr = srnode.change_attr;
   if (global || srnode.is_parent_global()) {
     last_created = mdcache->mds->snapclient->get_last_created();
     seq = std::max(last_created, last_destroyed);
@@ -123,14 +133,19 @@ void SnapRealm::check_cache() const
     seq = srnode.seq;
   }
   if (cached_seq >= seq &&
-      cached_last_destroyed == last_destroyed)
+      cached_last_destroyed == last_destroyed &&
+      cached_last_modified == last_modified &&
+      cached_change_attr >= change_attr) {
     return;
+  }
 
   cached_snap_context.clear();
 
   cached_seq = seq;
   cached_last_created = last_created;
   cached_last_destroyed = last_destroyed;
+  cached_last_modified = last_modified;
+  cached_change_attr = change_attr;
 
   cached_subvolume_ino = 0;
   if (parent)
@@ -147,6 +162,8 @@ void SnapRealm::check_cache() const
 	   << " cached_seq " << cached_seq
 	   << " cached_last_created " << cached_last_created
 	   << " cached_last_destroyed " << cached_last_destroyed
+     	   << " cached_last_modified " << cached_last_modified
+           << " cached_change_attr " << cached_change_attr
 	   << ")" << dendl;
 }
 
@@ -286,6 +303,14 @@ snapid_t SnapRealm::resolve_snapname(std::string_view n, inodeno_t atino, snapid
   if (parent && srnode.current_parent_since <= last)
     return parent->resolve_snapname(n, atino, std::max(first, srnode.current_parent_since), last);
   return 0;
+}
+
+
+bool SnapRealm::will_md_op_succeed(const snapid_t snap_id, const string& md_key,
+                                   const string& md_val,
+                                   const unsigned int op_flag) const
+{
+  return srnode.snaps.at(snap_id).will_md_op_succeed(md_key, md_val, op_flag);
 }
 
 
@@ -435,7 +460,8 @@ void SnapRealm::build_snap_trace() const
 
     dout(10) << "build_snap_trace my_snaps " << info.my_snaps << dendl;
 
-    SnapRealmInfoNew ninfo(info, srnode.last_modified, srnode.change_attr);
+    SnapRealmInfoNew ninfo(info, srnode.last_modified,
+                           srnode.change_attr, srnode.flags);
     encode(info, cached_snap_trace);
     encode(ninfo, cached_snap_trace_new);
     return;
@@ -470,7 +496,8 @@ void SnapRealm::build_snap_trace() const
     info.my_snaps.push_back(p->first);
   dout(10) << "build_snap_trace my_snaps " << info.my_snaps << dendl;
 
-  SnapRealmInfoNew ninfo(info, srnode.last_modified, srnode.change_attr);
+  SnapRealmInfoNew ninfo(info, srnode.last_modified,
+                         srnode.change_attr, srnode.flags);
 
   encode(info, cached_snap_trace);
   encode(ninfo, cached_snap_trace_new);

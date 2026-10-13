@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -9,11 +9,11 @@
 #include <utility>
 
 #include "crimson/common/errorator.h"
+#include "crimson/os/seastore/seastore_types.h"
 #include "crimson/common/interruptible_future.h"
+#include "crimson/os/seastore/transaction.h"
 
 namespace crimson::os::seastore {
-
-class Transaction;
 
 struct TransactionConflictCondition {
   class transaction_conflict final : public std::exception {
@@ -24,7 +24,7 @@ struct TransactionConflictCondition {
   };
 
 public:
-  TransactionConflictCondition(Transaction &t) : t(t) {}
+  TransactionConflictCondition(Transaction &t) : t(t), tref(&t) {}
 
   template <typename Fut>
   std::optional<Fut> may_interrupt() {
@@ -49,6 +49,7 @@ private:
   bool is_conflicted() const;
 
   Transaction &t;
+  TransactionRef tref;
 };
 
 using trans_intr = crimson::interruptible::interruptor<
@@ -62,13 +63,40 @@ using trans_iertr =
     E
   >;
 
+using base_iertr = trans_iertr<base_ertr>;
+
 template <typename F, typename... Args>
 auto with_trans_intr(Transaction &t, F &&f, Args&&... args) {
   return trans_intr::with_interruption_to_error<crimson::ct_error::eagain>(
-    std::move(f),
+    std::forward<F>(f),
     TransactionConflictCondition(t),
     t,
     std::forward<Args>(args)...);
+}
+
+template <typename Prepare, typename F, typename... Args>
+auto with_repeat_trans_intr(Prepare &&prepare_attempt, Transaction &t, F &&f, Args&&... args) {
+  return repeat_eagain(
+    [&t,
+    prepare_attempt = std::forward<Prepare>(prepare_attempt),
+    f = std::forward<F>(f),
+    ... args = std::forward<Args>(args) ] {
+    prepare_attempt();
+    return trans_intr::with_interruption_to_error<crimson::ct_error::eagain>(
+      f,
+      TransactionConflictCondition(t),
+      t,
+      args...);
+  });
+}
+
+template <typename F, typename... Args>
+auto with_repeat_trans_intr(Transaction &t, F &&f, Args&&... args) {
+  return with_repeat_trans_intr(
+      [] {},
+      t,
+      std::forward<F>(f),
+      std::forward<Args>(args)...);
 }
 
 template <typename T>

@@ -18,7 +18,8 @@ import {
 @Component({
   selector: 'cd-smart-list',
   templateUrl: './smart-list.component.html',
-  styleUrls: ['./smart-list.component.scss']
+  styleUrls: ['./smart-list.component.scss'],
+  standalone: false
 })
 export class SmartListComponent implements OnInit, OnChanges {
   @ViewChild('innerNav')
@@ -40,7 +41,10 @@ export class SmartListComponent implements OnInit, OnChanges {
 
   isEmpty = _.isEmpty;
 
-  constructor(private osdService: OsdService, private hostService: HostService) {}
+  constructor(
+    private osdService: OsdService,
+    private hostService: HostService
+  ) {}
 
   isSmartError(data: any): data is SmartError {
     return _.get(data, 'error') !== undefined;

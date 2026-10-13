@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "librados/AioCompletionImpl.h"
 #include "librbd/ManagedLock.h"
@@ -165,14 +165,14 @@ public:
 
   void expect_register_instance(librados::MockTestMemIoCtxImpl &mock_io_ctx,
                                 int r) {
-    EXPECT_CALL(mock_io_ctx, exec(RBD_MIRROR_LEADER, _, StrEq("rbd"),
+    EXPECT_CALL(mock_io_ctx, exec_internal(RBD_MIRROR_LEADER, _, StrEq("rbd"),
                                   StrEq("mirror_instances_add"), _, _, _, _))
       .WillOnce(Return(r));
   }
 
   void expect_unregister_instance(librados::MockTestMemIoCtxImpl &mock_io_ctx,
                                   int r) {
-    EXPECT_CALL(mock_io_ctx, exec(RBD_MIRROR_LEADER, _, StrEq("rbd"),
+    EXPECT_CALL(mock_io_ctx, exec_internal(RBD_MIRROR_LEADER, _, StrEq("rbd"),
                                   StrEq("mirror_instances_remove"), _, _, _, _))
       .WillOnce(Return(r));
   }

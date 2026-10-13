@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -25,9 +26,14 @@ using MConstRef = boost::intrusive_ptr<T const>;
 template<typename T>
 using MURef = std::unique_ptr<T, TOPNSPC::common::UniquePtrDeleter>;
 
-using MessageRef = MRef<class Message>;
-using MessageConstRef = MConstRef<class Message>;
-using MessageURef = MURef<class Message>;
+class Message;
+
+void intrusive_ptr_add_ref(Message* m);
+void intrusive_ptr_release(Message* m);
+
+using MessageRef = MRef<Message>;
+using MessageConstRef = MConstRef<Message>;
+using MessageURef = MURef<Message>;
 
 /* cd src/messages/ && for f in *; do printf 'class '; basename "$f" .h | tr -d '\n'; printf ';\n'; done >> ../msg/MessageRef.h */
 

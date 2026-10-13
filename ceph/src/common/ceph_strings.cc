@@ -2,8 +2,9 @@
  * Ceph string constants
  */
 #include "ceph_strings.h"
-#include "include/types.h"
 #include "include/ceph_features.h"
+#include "include/ceph_fs.h" // for CEPH_CON_MODE_*
+#include "include/msgr.h" // for CEPH_ENTITY_TYPE_*
 
 const char *ceph_entity_type_name(int type)
 {
@@ -116,6 +117,8 @@ const char *ceph_release_name(int r)
 		return "squid";
 	case CEPH_RELEASE_TENTACLE:
 		return "tentacle";
+	case CEPH_RELEASE_UMBRELLA:
+		return "umbrella";
 	default:
 		if (r < 0)
 			return "unspecified";
@@ -315,6 +318,7 @@ const char *ceph_mds_op_name(int op)
 	case CEPH_MDS_OP_MKSNAP: return "mksnap";
 	case CEPH_MDS_OP_RMSNAP: return "rmsnap";
 	case CEPH_MDS_OP_RENAMESNAP: return "renamesnap";
+	case CEPH_MDS_OP_SNAP_METADATA: return "snap_md_op";
 	case CEPH_MDS_OP_READDIR_SNAPDIFF: return "readdir_snapdiff";
 	case CEPH_MDS_OP_SETFILELOCK: return "setfilelock";
 	case CEPH_MDS_OP_GETFILELOCK: return "getfilelock";

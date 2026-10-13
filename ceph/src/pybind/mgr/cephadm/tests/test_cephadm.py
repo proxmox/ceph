@@ -15,7 +15,7 @@ from cephadm.inventory import (
 )
 from cephadm.services.osd import OSD, OSDRemovalQueue, OsdIdClaims
 from cephadm.services.nvmeof import NvmeofService
-from cephadm.utils import SpecialHostLabels
+from cephadm.utils import SpecialHostLabels, cephadmNoImage
 
 try:
     from typing import List
@@ -38,6 +38,7 @@ from ceph.deployment.inventory import Devices, Device
 from ceph.utils import datetime_to_str, datetime_now, str_to_datetime
 from orchestrator import DaemonDescription, InventoryHost, \
     HostSpec, OrchestratorError, DaemonDescriptionStatus, OrchestratorEvent
+from mgr_module import MonCommandFailed
 from tests import mock
 from .fixtures import wait, _run_cephadm, match_glob, with_host, \
     with_cephadm_module, with_service, make_daemons_running, async_side_effect
@@ -122,7 +123,8 @@ def with_osd_daemon(cephadm_module: CephadmOrchestrator, _run_cephadm, host: str
                     str(osd_id): [{
                         'tags': {
                             'ceph.cluster_fsid': cephadm_module._cluster_fsid,
-                            'ceph.osd_fsid': 'uuid'
+                            'ceph.osd_fsid': 'uuid',
+                            'ceph.osdspec_affinity': '',
                         },
                         'type': 'data'
                     }]
@@ -283,6 +285,7 @@ class TestCephadm(object):
                         'is_active': False,
                         'ports': [],
                         'pending_daemon_config': False,
+                        'user_stopped': False
                     }
                 ]
 
@@ -546,6 +549,107 @@ class TestCephadm(object):
 
                 _save_host.assert_called_with('test')
                 assert cephadm_module.cache.get_scheduled_daemon_action('test', daemon_name) is None
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_osd_check_daemons_skip_when_not_ok_to_stop(
+        self, _run_cephadm, cephadm_module: CephadmOrchestrator
+    ):
+        """_check_daemons must NOT act on an OSD that needs an autonomous
+        reconfig/redeploy when the cluster reports it is not ok-to-stop.
+        The action must be deferred to the next serve-loop iteration."""
+        from mgr_module import HandleCommandResult
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+
+        with with_host(cephadm_module, 'test'):
+            with with_osd_daemon(cephadm_module, _run_cephadm, 'test', 1) as dd:
+                # No scheduled action — the action will be derived autonomously
+                # (extra ceph config changed → reconfig).
+                assert cephadm_module.cache.get_scheduled_daemon_action(
+                    'test', dd.name()) is None
+
+                cephadm_module._set_extra_ceph_conf('[osd]\ndebug_osd=5')
+
+                # Simulate ok-to-stop returning failure.
+                with mock.patch.object(
+                    cephadm_module.osd_service,
+                    'ok_to_stop',
+                    return_value=HandleCommandResult(
+                        retval=-1, stdout='', stderr='not safe to stop osd.1'
+                    ),
+                ) as mock_ok_to_stop:
+                    with mock.patch.object(
+                        cephadm_module, '_daemon_action'
+                    ) as mock_daemon_action:
+                        CephadmServe(cephadm_module)._check_daemons()
+
+                # ok-to-stop must have been checked
+                mock_ok_to_stop.assert_called_once_with(['1'])
+                # the daemon action must NOT have been called
+                mock_daemon_action.assert_not_called()
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_osd_check_daemons_proceeds_when_ok_to_stop(
+        self, _run_cephadm, cephadm_module: CephadmOrchestrator
+    ):
+        """_check_daemons MUST act on an OSD that needs an autonomous
+        reconfig/redeploy when the cluster confirms it is ok-to-stop."""
+        from mgr_module import HandleCommandResult
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+
+        with with_host(cephadm_module, 'test'):
+            with with_osd_daemon(cephadm_module, _run_cephadm, 'test', 1) as dd:
+                assert cephadm_module.cache.get_scheduled_daemon_action(
+                    'test', dd.name()) is None
+
+                cephadm_module._set_extra_ceph_conf('[osd]\ndebug_osd=5')
+
+                # Simulate ok-to-stop returning success.
+                with mock.patch.object(
+                    cephadm_module.osd_service,
+                    'ok_to_stop',
+                    return_value=HandleCommandResult(
+                        retval=0, stdout='osd.1 is safe to restart', stderr=''
+                    ),
+                ) as mock_ok_to_stop:
+                    with mock.patch.object(
+                        cephadm_module, '_daemon_action'
+                    ) as mock_daemon_action:
+                        CephadmServe(cephadm_module)._check_daemons()
+
+                # ok-to-stop must have been checked
+                mock_ok_to_stop.assert_called_once_with(['1'])
+                # the daemon action MUST have been called
+                mock_daemon_action.assert_called_once()
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_osd_check_daemons_scheduled_action_skips_ok_to_stop(
+        self, _run_cephadm, cephadm_module: CephadmOrchestrator
+    ):
+        """When a user explicitly schedules a redeploy/reconfig for an OSD via
+        'ceph orch daemon redeploy osd.X', the ok-to-stop guard must NOT block
+        it — the user made an explicit decision."""
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+
+        with with_host(cephadm_module, 'test'):
+            with with_osd_daemon(cephadm_module, _run_cephadm, 'test', 1) as dd:
+                # Explicitly schedule a redeploy (user-initiated).
+                cephadm_module._schedule_daemon_action(dd.name(), 'redeploy')
+                assert cephadm_module.cache.get_scheduled_daemon_action(
+                    'test', dd.name()) == 'redeploy'
+
+                with mock.patch.object(
+                    cephadm_module.osd_service,
+                    'ok_to_stop',
+                ) as mock_ok_to_stop:
+                    with mock.patch.object(
+                        cephadm_module, '_daemon_action'
+                    ) as mock_daemon_action:
+                        CephadmServe(cephadm_module)._check_daemons()
+
+                # ok-to-stop must NOT have been consulted for a user-scheduled action
+                mock_ok_to_stop.assert_not_called()
+                # the daemon action must still have run
+                mock_daemon_action.assert_called_once()
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_daemon_check_extra_config(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
@@ -1168,7 +1272,8 @@ class TestCephadm(object):
             _run_cephadm.assert_any_call(
                 'test', 'osd', 'ceph-volume',
                 ['--config-json', '-', '--', 'lvm', 'batch',
-                    '--no-auto', '/dev/sdb', '--objectstore', 'bluestore', '--yes', '--no-systemd'],
+                    '--no-auto', '/dev/sdb', '--objectstore', 'bluestore',
+                    '--yes', '--no-systemd'],
                 env_vars=['CEPH_VOLUME_OSDSPEC_AFFINITY=foo'], error_ok=True,
                 stdin='{"config": "", "keyring": ""}')
             _run_cephadm.assert_any_call(
@@ -1214,7 +1319,8 @@ class TestCephadm(object):
                 'test', 'osd', 'ceph-volume',
                 ['--config-json', '-', '--', 'lvm', 'batch',
                     '--no-auto', '/dev/sdb', '--db-devices', '/dev/sdc',
-                    '--wal-devices', '/dev/sdd', '--objectstore', 'bluestore', '--yes', '--no-systemd'],
+                    '--wal-devices', '/dev/sdd', '--objectstore', 'bluestore',
+                    '--yes', '--no-systemd'],
                 env_vars=['CEPH_VOLUME_OSDSPEC_AFFINITY=noncollocated'],
                 error_ok=True, stdin='{"config": "", "keyring": ""}',
             )
@@ -1431,6 +1537,48 @@ class TestCephadm(object):
                 host_pattern='test'), data_devices=DeviceSelection(paths=devices))
             ds = DriveSelection(dg, Devices([Device(path) for path in devices]))
             preview = preview
+            out = cephadm_module.osd_service.driveselection_to_ceph_volume(ds, [], preview)
+            assert all(any(cmd in exp_cmd for exp_cmd in exp_commands)
+                       for cmd in out), f'Expected cmds from f{out} in {exp_commands}'
+
+    @pytest.mark.parametrize(
+        "devices, preview, exp_commands",
+        [
+            # no preview and only one disk, crimson osd type
+            (['/dev/sda'], False, ["lvm batch --no-auto /dev/sda --objectstore bluestore --osd-type crimson --yes --no-systemd"]),
+            # no preview and multiple disks, crimson osd type
+            (['/dev/sda', '/dev/sdb'], False,
+             ["CEPH_VOLUME_OSDSPEC_AFFINITY=test.spec lvm batch --no-auto /dev/sda /dev/sdb --objectstore bluestore --osd-type crimson --yes --no-systemd"]),
+        ]
+    )
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
+    def test_driveselection_to_ceph_volume_crimson(self, cephadm_module, devices, preview, exp_commands):
+        with with_host(cephadm_module, 'test'):
+            dg = DriveGroupSpec(service_id='test.spec', placement=PlacementSpec(
+                host_pattern='test'), data_devices=DeviceSelection(paths=devices),
+                osd_type='crimson')
+            ds = DriveSelection(dg, Devices([Device(path) for path in devices]))
+            out = cephadm_module.osd_service.driveselection_to_ceph_volume(ds, [], preview)
+            assert all(any(cmd in exp_cmd for exp_cmd in exp_commands)
+                       for cmd in out), f'Expected cmds from f{out} in {exp_commands}'
+
+    @pytest.mark.parametrize(
+        "devices, preview, exp_commands",
+        [
+            # no preview and only one disk, seastore objectstore
+            (['/dev/sda'], False, ["lvm batch --no-auto /dev/sda --objectstore seastore --osd-type crimson --yes --no-systemd"]),
+            # no preview and multiple disks, seastore objectstore
+            (['/dev/sda', '/dev/sdb'], False,
+             ["CEPH_VOLUME_OSDSPEC_AFFINITY=test.spec lvm batch --no-auto /dev/sda /dev/sdb --objectstore seastore --osd-type crimson --yes --no-systemd"]),
+        ]
+    )
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
+    def test_driveselection_to_ceph_volume_seastore(self, cephadm_module, devices, preview, exp_commands):
+        with with_host(cephadm_module, 'test'):
+            dg = DriveGroupSpec(service_id='test.spec', placement=PlacementSpec(
+                host_pattern='test'), data_devices=DeviceSelection(paths=devices),
+                objectstore='seastore', osd_type='crimson')
+            ds = DriveSelection(dg, Devices([Device(path) for path in devices]))
             out = cephadm_module.osd_service.driveselection_to_ceph_volume(ds, [], preview)
             assert all(any(cmd in exp_cmd for exp_cmd in exp_commands)
                        for cmd in out), f'Expected cmds from f{out} in {exp_commands}'
@@ -2209,6 +2357,80 @@ class TestCephadm(object):
 
         assert cephadm_module.inventory._inventory[hostname]['status'] == 'maintenance'
 
+    @mock.patch("cephadm.module.CephadmOrchestrator.mon_command")
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    @mock.patch("cephadm.CephadmOrchestrator._host_ok_to_stop")
+    @mock.patch("cephadm.module.HostCache.get_daemons_by_type")
+    @mock.patch("cephadm.module.HostCache.get_daemon_types")
+    @mock.patch("cephadm.module.HostCache.get_hosts")
+    def test_maintenance_enter_disables_nvmeof_gateways(
+            self, _hosts, _get_daemon_types, _get_daemons_by_type, _host_ok,
+            _run_cephadm, _mon_command, cephadm_module: CephadmOrchestrator):
+        hostname = 'host1'
+        nvmeof_daemon = DaemonDescription(
+            daemon_type='nvmeof',
+            daemon_id='pool1.grp1.host1.abcd',
+            hostname=hostname,
+        )
+        _run_cephadm.side_effect = async_side_effect(
+            ([''], ['something\nsuccess - systemd target xxx disabled'], 0))
+        _host_ok.return_value = 0, 'it is okay'
+        _get_daemon_types.return_value = ['nvmeof']
+        _get_daemons_by_type.return_value = [nvmeof_daemon]
+        _hosts.return_value = [hostname, 'other_host']
+        _mon_command.return_value = (0, '', '')
+        cephadm_module.spec_store.all_specs['nvmeof.pool1.grp1'] = ServiceSpec(
+            service_type='nvmeof', service_id='pool1.grp1', pool='pool1', group='grp1')
+        cephadm_module.inventory.add_host(HostSpec(hostname))
+
+        retval = cephadm_module.enter_host_maintenance(hostname)
+        assert retval.result_str().startswith('Daemons for Ceph cluster')
+        _mon_command.assert_called_once_with({
+            'prefix': 'nvme-gw disable',
+            'id': 'client.nvmeof.pool1.grp1.host1.abcd',
+            'pool': 'pool1',
+            'group': 'grp1',
+        })
+        _run_cephadm.assert_called_once()
+
+    @mock.patch("cephadm.module.CephadmOrchestrator.mon_command")
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    @mock.patch("cephadm.module.HostCache.get_daemon_types")
+    @mock.patch("cephadm.module.HostCache.get_daemons_by_type")
+    @mock.patch("cephadm.module.HostCache.get_hosts")
+    def test_maintenance_exit_enables_nvmeof_gateways(
+            self, _hosts, _get_daemons_by_type, _get_daemon_types,
+            _run_cephadm, _mon_command, cephadm_module: CephadmOrchestrator):
+        hostname = 'host1'
+        nvmeof_daemon = DaemonDescription(
+            daemon_type='nvmeof',
+            daemon_id='pool1.grp1.host1.abcd',
+            hostname=hostname,
+        )
+        _run_cephadm.side_effect = async_side_effect(([''], [
+            'something\nsuccess - systemd target xxx enabled and started'], 0))
+        _get_daemon_types.return_value = ['nvmeof']
+        _get_daemons_by_type.return_value = [nvmeof_daemon]
+        _hosts.return_value = [hostname, 'other_host']
+        _mon_command.return_value = (0, '', '')
+        cephadm_module.spec_store.all_specs['nvmeof.pool1.grp1'] = ServiceSpec(
+            service_type='nvmeof', service_id='pool1.grp1', pool='pool1', group='grp1')
+        cephadm_module.inventory.add_host(HostSpec(hostname, status='maintenance'))
+
+        retval = cephadm_module.exit_host_maintenance(hostname)
+        assert retval.result_str().startswith('Ceph cluster')
+        assert _run_cephadm.call_count == 2
+        _run_cephadm.assert_any_call(
+            hostname, cephadmNoImage, 'check-host', [], error_ok=False)
+        _run_cephadm.assert_any_call(
+            hostname, cephadmNoImage, 'host-maintenance', ['exit'], error_ok=True)
+        _mon_command.assert_called_once_with({
+            'prefix': 'nvme-gw enable',
+            'id': 'client.nvmeof.pool1.grp1.host1.abcd',
+            'pool': 'pool1',
+            'group': 'grp1',
+        })
+
     @mock.patch("cephadm.ssh.SSHManager._remote_connection")
     @mock.patch("cephadm.ssh.SSHManager._execute_command")
     @mock.patch("cephadm.ssh.SSHManager._check_execute_command")
@@ -2394,8 +2616,7 @@ osd_k2 = osd_v2
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_registry_login(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
         def check_registry_credentials(url, username, password):
-            assert json.loads(cephadm_module.get_store('registry_credentials')) == {
-                'url': url, 'username': username, 'password': password}
+            assert json.loads(cephadm_module.get_store('registry_credentials')) == {'registry_credentials': [{'url': url, 'username': username, 'password': password}]}
 
         _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
         with with_host(cephadm_module, 'test'):
@@ -2434,7 +2655,7 @@ osd_k2 = osd_v2
             # test bad login where args are valid but login command fails
             _run_cephadm.side_effect = async_side_effect(('{}', 'error', 1))
             code, out, err = cephadm_module.registry_login('fail-url', 'fail-user', 'fail-password')
-            assert err == 'Host test failed to login to fail-url as fail-user with given password'
+            assert err == 'Host test failed to login to all registries'
             check_registry_credentials('json-url', 'json-user', 'json-pass')
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm(json.dumps({
@@ -2519,7 +2740,8 @@ Traceback (most recent call last):
                 '1': [{
                     'tags': {
                         'ceph.cluster_fsid': cephadm_module._cluster_fsid,
-                        'ceph.osd_fsid': 'uuid'
+                        'ceph.osd_fsid': 'uuid',
+                        'ceph.osdspec_affinity': '',
                     },
                     'type': 'data'
                 }]
@@ -2563,13 +2785,15 @@ Traceback (most recent call last):
                         '1': [{
                             'tags': {
                                 'ceph.cluster_fsid': cephadm_module._cluster_fsid,
-                                'ceph.osd_fsid': 'uuid'
+                                'ceph.osd_fsid': 'uuid',
+                                'ceph.osdspec_affinity': '',
                             },
                             'type': 'data'
                         }, {
                             'tags': {
                                 'ceph.cluster_fsid': cephadm_module._cluster_fsid,
-                                'ceph.osd_fsid': 'uuid'
+                                'ceph.osd_fsid': 'uuid',
+                                'ceph.osdspec_affinity': '',
                             },
                             'type': 'db'
                         }]
@@ -2598,6 +2822,18 @@ Traceback (most recent call last):
         with with_host(cephadm_module, 'test1', refresh_hosts=False, rm_with_force=True):
             with with_host(cephadm_module, 'test2', refresh_hosts=False, rm_with_force=False):
                 cephadm_module.inventory.add_label('test2', SpecialHostLabels.ADMIN)
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_remove_host_crush_leftover_osds(self, cephadm_module: CephadmOrchestrator):
+        with with_host(cephadm_module, 'test', refresh_hosts=False, rm_with_force=True):
+            with mock.patch.object(
+                    cephadm_module, 'check_mon_command',
+                    side_effect=MonCommandFailed(
+                        'osd crush remove failed: (39) Directory not empty retval: -39')):
+                out = wait(cephadm_module, cephadm_module.remove_host(
+                    'test', force=True, rm_crush_entry=True))
+            assert 'OSDs may still be present' in out
+            assert 'ceph orch host drain test' in out
 
     @pytest.mark.parametrize("facts, settings, expected_value",
                              [
@@ -2816,6 +3052,23 @@ Traceback (most recent call last):
         with pytest.raises(OrchestratorError, match=r"Cannot find host 'host1' in the inventory."):
             cephadm_module.drain_host('host1', force=True, zap_osd_devices=True)
             _rm_osds.assert_called_with([], zap=True)
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    @mock.patch("cephadm.CephadmOrchestrator.remove_osds")
+    @mock.patch("cephadm.CephadmOrchestrator.add_host_label", lambda *a, **kw: None)
+    def test_host_drain_error_osds(self, _rm_osds, cephadm_module):
+        error_dd = DaemonDescription(
+            daemon_type='osd', daemon_id='0', hostname='test',
+            status=DaemonDescriptionStatus.error)
+        running_dd = DaemonDescription(
+            daemon_type='osd', daemon_id='1', hostname='test',
+            status=DaemonDescriptionStatus.running)
+        with with_host(cephadm_module, 'test', refresh_hosts=False, rm_with_force=True):
+            with mock.patch.object(cephadm_module.cache, 'get_daemons_by_host',
+                                   return_value=[error_dd, running_dd]):
+                cephadm_module.drain_host('test', force=True, zap_osd_devices=True)
+            _rm_osds.assert_any_call(['0'], zap=True, force=True)
+            _rm_osds.assert_any_call(['1'], zap=True)
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
     @mock.patch("cephadm.CephadmOrchestrator.stop_remove_osds")
@@ -3070,3 +3323,112 @@ Traceback (most recent call last):
                 assert wait(cephadm_module, c) == ['Scheduled osd.foo update...']
 
                 cephadm_module.set_osd_spec('osd.foo', ['1'])
+
+
+class TestCephadmBinaryLoggingLevel:
+    """Test that host-status / cephadm binary logs are suppressed based on
+    mgr/cephadm/cephadm_binary_logging_level.
+    """
+    @pytest.mark.parametrize("logging_level", ['info', 'debug', 'error', 'warning'])
+    @mock.patch("cephadm.ssh.SSHManager._remote_connection")
+    @mock.patch("cephadm.ssh.SSHManager._execute_command")
+    @mock.patch("cephadm.ssh.SSHManager._check_execute_command")
+    def test_check_host_invokes_cephadm_with_logging_level(
+        self, check_execute_command, execute_command, remote_connection, cephadm_module, logging_level
+    ):
+        """Cephadm binary must be invoked with --logging-level matching
+        mgr/cephadm/cephadm_binary_logging_level (info, debug, error, warning).
+        Check that mgr builds the cephadm command with appropriate --logging-level flag
+        Use check-host as a sample command although all cephadm commands receive the flag.
+        """
+        remote_connection.side_effect = async_side_effect(mock.Mock())
+        check_execute_command.side_effect = async_side_effect('/usr/bin/python3')
+        captured_commands = []
+
+        async def capture_execute(host, cmd, *args, **kwargs):
+            if hasattr(cmd, 'args'):
+                if 'check-host' in cmd.args:
+                    captured_commands.append(cmd)
+                # Return valid JSON for commands that use _run_cephadm_json
+                if 'ls' in cmd.args:
+                    return ('[]', '', 0)
+                if 'gather-facts' in cmd.args:
+                    return ('{}', '', 0)
+                if 'list-networks' in cmd.args:
+                    return ('[]', '', 0)
+            return ('', '', 0)
+
+        execute_command.side_effect = capture_execute
+
+        cephadm_module.cephadm_binary_logging_level = logging_level
+        with with_host(cephadm_module, 'test'):
+            pass
+
+        check_host_cmds = [c for c in captured_commands if 'check-host' in c.args]
+        assert len(check_host_cmds) >= 1, (
+            f'expected at least one check-host invocation for level {logging_level!r}'
+        )
+        cmd = check_host_cmds[0]
+        assert '--logging-level' in cmd.args, (
+            f'cephadm should be called with --logging-level when level is {logging_level!r}'
+        )
+        idx = cmd.args.index('--logging-level')
+        assert cmd.args[idx + 1] == logging_level, (
+            f'cephadm should be called with --logging-level {logging_level!r}'
+        )
+
+
+class TestCephadmLogDestination:
+    """Test that cephadm is invoked with --log-dest matching
+    mgr/cephadm/cephadm_log_destination.
+    """
+    @pytest.mark.parametrize(
+        "log_destination,expected_log_dests",
+        [
+            ('file', ['file']),
+            ('syslog', ['syslog']),
+            ('file,syslog', ['file', 'syslog']),
+        ],
+    )
+    @mock.patch("cephadm.ssh.SSHManager._remote_connection")
+    @mock.patch("cephadm.ssh.SSHManager._execute_command")
+    @mock.patch("cephadm.ssh.SSHManager._check_execute_command")
+    def test_check_host_invokes_cephadm_with_log_dest(
+        self, check_execute_command, execute_command, remote_connection,
+        cephadm_module, log_destination, expected_log_dests,
+    ):
+        """check-host must be invoked with --log-dest matching
+        mgr/cephadm/cephadm_log_destination (file, syslog, or both).
+        """
+        remote_connection.side_effect = async_side_effect(mock.Mock())
+        check_execute_command.side_effect = async_side_effect('/usr/bin/python3')
+        captured_commands = []
+
+        async def capture_execute(host, cmd, *args, **kwargs):
+            if hasattr(cmd, 'args'):
+                if 'check-host' in cmd.args:
+                    captured_commands.append(cmd)
+                if 'ls' in cmd.args:
+                    return ('[]', '', 0)
+                if 'gather-facts' in cmd.args:
+                    return ('{}', '', 0)
+                if 'list-networks' in cmd.args:
+                    return ('[]', '', 0)
+            return ('', '', 0)
+
+        execute_command.side_effect = capture_execute
+
+        cephadm_module.cephadm_log_destination = log_destination
+        with with_host(cephadm_module, 'test'):
+            pass
+
+        check_host_cmds = [c for c in captured_commands if 'check-host' in c.args]
+        assert len(check_host_cmds) >= 1, (
+            f'expected at least one check-host invocation for dest {log_destination!r}'
+        )
+        cmd = check_host_cmds[0]
+        for dest in expected_log_dests:
+            assert f'--log-dest={dest}' in cmd.args, (
+                f'cephadm should be called with --log-dest={dest!r} '
+                f'when cephadm_log_destination is {log_destination!r}'
+            )

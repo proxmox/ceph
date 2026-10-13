@@ -40,6 +40,7 @@ import { XmlPipe } from './xml.pipe';
 import { MbpersecondPipe } from './mbpersecond.pipe';
 import { PipeFunctionPipe } from './pipe-function.pipe';
 import { DimlessBinaryPerMinutePipe } from './dimless-binary-per-minute.pipe';
+import { RedirectLinkResolverPipe } from './redirect-link-resolver.pipe';
 import { CephVersionPipe } from './ceph-version.pipe';
 
 @NgModule({
@@ -84,6 +85,7 @@ import { CephVersionPipe } from './ceph-version.pipe';
     MbpersecondPipe,
     PipeFunctionPipe,
     DimlessBinaryPerMinutePipe,
+    RedirectLinkResolverPipe,
     CephVersionPipe
   ],
   exports: [
@@ -126,6 +128,7 @@ import { CephVersionPipe } from './ceph-version.pipe';
     MbpersecondPipe,
     PipeFunctionPipe,
     DimlessBinaryPerMinutePipe,
+    RedirectLinkResolverPipe,
     CephVersionPipe
   ],
   providers: [
@@ -159,6 +162,7 @@ import { CephVersionPipe } from './ceph-version.pipe';
     OctalToHumanReadablePipe,
     MbpersecondPipe,
     DimlessBinaryPerMinutePipe,
+    RedirectLinkResolverPipe,
     CephVersionPipe
   ]
 })

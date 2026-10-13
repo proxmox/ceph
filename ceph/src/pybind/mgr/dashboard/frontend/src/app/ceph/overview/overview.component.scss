@@ -1,7 +1,7 @@
 .overview {
   &-check-header {
-    align-items: center;
     display: flex;
+    align-items: center;
     gap: var(--cds-spacing-02);
     margin-bottom: var(--cds-spacing-02);
   }
@@ -17,8 +17,8 @@
   }
 
   &-pg-side-panel-rw {
-    background-color: var(--cds-layer-01);
     padding: var(--cds-spacing-04);
+    background-color: var(--cds-layer-01);
     width: 100%;
   }
 

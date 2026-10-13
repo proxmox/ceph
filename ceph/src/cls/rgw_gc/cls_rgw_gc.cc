@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "include/types.h"
 
@@ -13,10 +13,6 @@
 #include "cls/queue/cls_queue_ops.h"
 #include "cls/rgw_gc/cls_rgw_gc_const.h"
 #include "cls/queue/cls_queue_src.h"
-
-#include "common/ceph_context.h"
-#include "global/global_context.h"
-
 
 #define GC_LIST_DEFAULT_MAX 128
 
@@ -51,7 +47,8 @@ static int cls_rgw_gc_queue_init(cls_method_context_t hctx, bufferlist *in, buff
   CLS_LOG(10, "INFO: cls_rgw_gc_queue_init: queue size is %lu\n", op.size);
 
   init_op.queue_size = op.size;
-  init_op.max_urgent_data_size = g_ceph_context->_conf->rgw_gc_max_deferred_entries_size;
+  const auto& conf = cls_get_config(hctx);
+  init_op.max_urgent_data_size = conf->rgw_gc_max_deferred_entries_size;
   encode(urgent_data, init_op.bl_urgent_data);
 
   return queue_init(hctx, init_op);
@@ -545,14 +542,15 @@ CLS_INIT(rgw_gc)
   cls_method_handle_t h_rgw_gc_queue_remove_entries;
   cls_method_handle_t h_rgw_gc_queue_update_entry;
 
-  cls_register(RGW_GC_CLASS, &h_class);
+  using namespace cls::rgw_gc;
+  cls_register(ClassId::name, &h_class);
+  ClassRegistrar<ClassId> cls(h_class);
 
-  /* gc */
-  cls_register_cxx_method(h_class, RGW_GC_QUEUE_INIT, CLS_METHOD_RD | CLS_METHOD_WR, cls_rgw_gc_queue_init, &h_rgw_gc_queue_init);
-  cls_register_cxx_method(h_class, RGW_GC_QUEUE_ENQUEUE, CLS_METHOD_RD | CLS_METHOD_WR, cls_rgw_gc_queue_enqueue, &h_rgw_gc_queue_enqueue);
-  cls_register_cxx_method(h_class, RGW_GC_QUEUE_LIST_ENTRIES, CLS_METHOD_RD, cls_rgw_gc_queue_list_entries, &h_rgw_gc_queue_list_entries);
-  cls_register_cxx_method(h_class, RGW_GC_QUEUE_REMOVE_ENTRIES, CLS_METHOD_RD | CLS_METHOD_WR, cls_rgw_gc_queue_remove_entries, &h_rgw_gc_queue_remove_entries);
-  cls_register_cxx_method(h_class, RGW_GC_QUEUE_UPDATE_ENTRY, CLS_METHOD_RD | CLS_METHOD_WR, cls_rgw_gc_queue_update_entry, &h_rgw_gc_queue_update_entry);
+  cls.register_cxx_method(method::init,           cls_rgw_gc_queue_init,           &h_rgw_gc_queue_init);
+  cls.register_cxx_method(method::enqueue,        cls_rgw_gc_queue_enqueue,        &h_rgw_gc_queue_enqueue);
+  cls.register_cxx_method(method::list_entries,   cls_rgw_gc_queue_list_entries,   &h_rgw_gc_queue_list_entries);
+  cls.register_cxx_method(method::remove_entries, cls_rgw_gc_queue_remove_entries, &h_rgw_gc_queue_remove_entries);
+  cls.register_cxx_method(method::update_entry,   cls_rgw_gc_queue_update_entry,   &h_rgw_gc_queue_update_entry);
 
   return;
 }

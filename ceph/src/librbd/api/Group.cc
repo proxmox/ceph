@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "common/Cond.h"
 #include "common/errno.h"
@@ -822,7 +822,10 @@ int Group<I>::image_list(librados::IoCtx& group_ioctx,
 
   std::vector<cls::rbd::GroupImageStatus> image_ids;
 
-  group_image_list(group_ioctx, group_name, &image_ids);
+  int r = group_image_list(group_ioctx, group_name, &image_ids);
+  if (r < 0) {
+    return r;
+  }
 
   for (auto image_id : image_ids) {
     IoCtx ioctx;

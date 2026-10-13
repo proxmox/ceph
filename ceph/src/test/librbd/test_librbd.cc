@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -19,6 +20,8 @@
 #include "include/rbd/librbd.hpp"
 #include "include/event_type.h"
 #include "include/err.h"
+#include "include/intarith.h" // for round_up_to()
+#include "include/rados.h" // for EBLOCKLISTED
 #include "common/ceph_mutex.h"
 #include "json_spirit/json_spirit.h"
 #include "test/librados/crimson_utils.h"
@@ -11642,7 +11645,6 @@ TEST_F(TestLibRBD, ExclusiveLockTransient)
 
 TEST_F(TestLibRBD, BreakLock)
 {
-  SKIP_IF_CRIMSON();
   REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
   REQUIRE(!is_rbd_pwl_enabled((CephContext *)_rados.cct()));
 
@@ -13204,7 +13206,6 @@ TEST_F(TestLibRBD, QuiesceWatchPP)
 
 TEST_F(TestLibRBD, QuiesceWatchError)
 {
-  SKIP_IF_CRIMSON();
   librbd::RBD rbd;
   librados::IoCtx ioctx;
   ASSERT_EQ(0, _rados.ioctx_create(m_pool_name.c_str(), ioctx));
@@ -13563,7 +13564,6 @@ TEST_F(TestLibRBD, WriteZeroesThickProvision) {
 
 TEST_F(TestLibRBD, ConcurrentOperations)
 {
-  SKIP_IF_CRIMSON();
   REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
 
   librbd::RBD rbd;

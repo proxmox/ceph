@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
+
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
@@ -109,7 +110,7 @@ int WebTokenEngine::load_provider(const DoutPrefixProvider* dpp, optional_yield 
     idp_url.erase(pos, 7);
   }
 
-  return driver->load_oidc_provider(dpp, y, tenant, idp_url, info);
+  return driver->load_oidc_provider(dpp, y, tenant, idp_url, info, nullptr);
 }
 
 bool
@@ -311,9 +312,6 @@ WebTokenEngine::get_cert_url(const string& iss, const DoutPrefixProvider *dpp, o
   openidc_wellknown_url.append("/.well-known/openid-configuration");
 
   RGWHTTPTransceiver openidc_req(cct, "GET", openidc_wellknown_url, &openidc_resp);
-
-  //Headers
-  openidc_req.append_header("Content-Type", "application/x-www-form-urlencoded");
 
   int res = openidc_req.process(dpp, y);
   if (res < 0) {
@@ -585,6 +583,12 @@ bool WebTokenEngine::verify_oidc_thumbprint(const DoutPrefixProvider* dpp, const
     return true;
   }
 
+  if (thumbprints.empty()) {
+    ldpp_dout(dpp, 5) << "No thumbprints registered with oidc provider,"
+                         " skipping JWKS url verification" << dendl;
+    return true;
+  }
+
   // Fetch and verify cert according to https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc_verify-thumbprint.html
   const auto hostname = get_top_level_domain_from_host(dpp, cert_url);
   ldpp_dout(dpp, 20) << "Validating hostname: " << hostname << dendl;
@@ -619,8 +623,6 @@ WebTokenEngine::validate_signature(const DoutPrefixProvider* dpp, const jwt::dec
     // Get certificate
     bufferlist cert_resp;
     RGWHTTPTransceiver cert_req(cct, "GET", cert_url, &cert_resp);
-    //Headers
-    cert_req.append_header("Content-Type", "application/x-www-form-urlencoded");
 
     int res = cert_req.process(dpp, y);
     if (res < 0) {
@@ -651,7 +653,14 @@ WebTokenEngine::validate_signature(const DoutPrefixProvider* dpp, const jwt::dec
             if (JSONDecoder::decode_json("x5c", x5c, &k_parser)) {
               string cert;
               bool found_valid_cert = false;
-              bool skip_thumbprint_verification = cct->_conf.get_val<bool>("rgw_enable_jwks_url_verification");
+              bool skip_thumbprint_verification = cct->_conf.get_val<bool>(
+                  "rgw_enable_jwks_url_verification");
+              if (!skip_thumbprint_verification && thumbprints.empty()) {
+                ldpp_dout(dpp, 0) << "x5c cert validation requires registered "
+                                     "thumbprints, but thumbprint list is empty"
+                                  << dendl;
+                throw std::system_error(EINVAL, std::system_category());
+              }
               for (auto& it : x5c) {
                 cert = "-----BEGIN CERTIFICATE-----\n" + it + "\n-----END CERTIFICATE-----";
                 ldpp_dout(dpp, 20) << "Certificate is: " << cert.c_str() << dendl;
@@ -848,7 +857,7 @@ int RGWREST_STS::verify_permission(optional_yield y)
 
     const rgw::IAM::Policy p(s->cct, policy_tenant, policy, false);
     if (!s->principal_tags.empty()) {
-      auto res = p.eval(s->env, *s->auth.identity, rgw::IAM::stsTagSession, boost::none);
+      auto res = p.eval(this, s->env, *s->auth.identity, rgw::IAM::stsTagSession, boost::none);
       if (res != rgw::IAM::Effect::Allow) {
         ldout(s->cct, 0) << "evaluating policy for stsTagSession returned deny/pass" << dendl;
         return -EPERM;
@@ -861,7 +870,7 @@ int RGWREST_STS::verify_permission(optional_yield y)
       op = rgw::IAM::stsAssumeRole;
     }
 
-    auto res = p.eval(s->env, *s->auth.identity, op, boost::none);
+    auto res = p.eval(this, s->env, *s->auth.identity, op, boost::none);
     if (res != rgw::IAM::Effect::Allow) {
       ldout(s->cct, 0) << "evaluating policy for op: " << op << " returned deny/pass" << dendl;
       return -EPERM;
@@ -1064,6 +1073,45 @@ void RGWSTSAssumeRole::execute(optional_yield y)
   }
 }
 
+int RGWSTSGetCallerIdentity::verify_permission(optional_yield y)
+{
+  // https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html
+  // Permissions are not required because the same information is returned when access is denied.
+
+  return 0;
+}
+
+void RGWSTSGetCallerIdentity::execute(optional_yield y)
+{
+  std::string account;
+  std::string userid;
+  std::string arn;
+
+  if (const auto& acc = s->auth.identity->get_account(); acc) {
+    account = acc->id;
+  }
+
+  if(account.empty()) {
+    account = s->user->get_tenant();
+  }
+  if (auto it = s->env.find("aws:userid"); it != s->env.end()) {
+    userid = it->second;
+  }
+
+  auto a = s->auth.identity->get_caller_identity();
+  if(a) {
+    arn = a->to_string();
+  }
+
+  s->formatter->open_object_section_in_ns("GetCallerIdentityResponse", RGW_REST_STS_XMLNS);
+  s->formatter->open_object_section("GetCallerIdentityResult");
+  encode_json("Arn",  arn, s->formatter);
+  encode_json("UserId", userid, s->formatter);
+  encode_json("Account", account, s->formatter);
+  s->formatter->close_section();
+  s->formatter->close_section();
+}
+
 int RGW_Auth_STS::authorize(const DoutPrefixProvider *dpp,
                             rgw::sal::Driver* driver,
                             const rgw::auth::StrategyRegistry& auth_registry,
@@ -1076,7 +1124,8 @@ using op_generator = RGWOp*(*)();
 static const std::unordered_map<std::string_view, op_generator> op_generators = {
   {"AssumeRole", []() -> RGWOp* {return new RGWSTSAssumeRole;}},
   {"GetSessionToken", []() -> RGWOp* {return new RGWSTSGetSessionToken;}},
-  {"AssumeRoleWithWebIdentity", []() -> RGWOp* {return new RGWSTSAssumeRoleWithWebIdentity;}}
+  {"AssumeRoleWithWebIdentity", []() -> RGWOp* {return new RGWSTSAssumeRoleWithWebIdentity;}},
+  {"GetCallerIdentity", []() -> RGWOp* {return new RGWSTSGetCallerIdentity;}}
 };
 
 bool RGWHandler_REST_STS::action_exists(const req_state* s)

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "alien_collection.h"
 #include "alien_store.h"
@@ -84,7 +84,7 @@ AlienStore::~AlienStore()
 {
 }
 
-seastar::future<> AlienStore::start()
+seastar::future<uint32_t> AlienStore::start()
 {
   cct = std::make_unique<CephContext>(
     CEPH_ENTITY_TYPE_OSD,
@@ -103,23 +103,25 @@ seastar::future<> AlienStore::start()
     ceph_abort_msgf("unsupported objectstore type: %s", type.c_str());
   }
   /*
-   * crimson_alien_thread_cpu_cores must be set for optimal performance.
+   * crimson_bluestore_cpu_set must be set for optimal performance.
    * Otherwise, no CPU pinning will take place.
   */
   std::optional<seastar::resource::cpuset> alien_thread_cpu_cores;
 
   if (std::string conf_cpu_cores =
-        get_conf<std::string>("crimson_alien_thread_cpu_cores");
+        get_conf<std::string>("crimson_bluestore_cpu_set");
       !conf_cpu_cores.empty()) {
-    logger().debug("{} using crimson_alien_thread_cpu_cores", __func__);
+    logger().debug("{} using crimson_bluestore_cpu_set", __func__);
     alien_thread_cpu_cores =
       seastar::resource::parse_cpuset(conf_cpu_cores);
   }
 
   const auto num_threads =
-    get_conf<uint64_t>("crimson_alien_op_num_threads");
+    get_conf<uint64_t>("crimson_bluestore_num_threads");
   tp = std::make_unique<crimson::os::ThreadPool>(num_threads, 128, alien_thread_cpu_cores);
-  return tp->start();
+  return tp->start().then([]() {
+    return seastar::make_ready_future<uint32_t>(seastar::smp::count);
+  });
 }
 
 seastar::future<> AlienStore::stop()
@@ -273,7 +275,7 @@ seastar::future<std::vector<coll_core_t>> AlienStore::list_collections()
       ret.resize(ls.size());
       std::transform(
         ls.begin(), ls.end(), ret.begin(),
-        [](auto p) { return std::make_pair(p, NULL_CORE); });
+        [](auto p) { return std::make_pair(p, std::make_pair(NULL_CORE, NULL_STORE_INDEX)); });
       return seastar::make_ready_future<std::vector<coll_core_t>>(std::move(ret));
     });
   });
@@ -424,42 +426,31 @@ auto AlienStore::omap_get_values(CollectionRef ch,
   });
 }
 
-auto AlienStore::omap_get_values(CollectionRef ch,
-                                 const ghobject_t &oid,
-                                 const std::optional<string> &start,
-				 uint32_t op_flags)
-  -> read_errorator::future<std::tuple<bool, omap_values_t>>
+AlienStore::read_errorator::future<ObjectStore::omap_iter_ret_t>
+AlienStore::omap_iterate(CollectionRef ch,
+                         const ghobject_t &oid,
+                         ObjectStore::omap_iter_seek_t start_from,
+                         omap_iterate_cb_t callback,
+                         uint32_t op_flags,
+			 omap_iterate_conf_t on_conflict)
 {
   logger().debug("{} with_start", __func__);
   assert(tp);
-  return do_with_op_gate(omap_values_t{}, [=, this] (auto &values) {
-    return tp->submit(ch->get_cid().hash_to_shard(tp->size()), [=, this, &values] {
+  return do_with_op_gate(oid, [ch, start_from, callback, this] (auto& oid) {
+    return tp->submit(ch->get_cid().hash_to_shard(tp->size()), [ch, oid, start_from, callback, this] {
       auto c = static_cast<AlienCollection*>(ch.get());
       return store->omap_iterate(
-        c->collection, oid,
-        ObjectStore::omap_iter_seek_t{
-          .seek_position = start.value_or(std::string{}),
-          // FIXME: classical OSDs begins iteration from LOWER_BOUND
-          // (or UPPER_BOUND if filter_prefix > start). However, these
-          // bits are not implemented yet
-          .seek_type = ObjectStore::omap_iter_seek_t::UPPER_BOUND
-        },
-        [&values]
-        (std::string_view key, std::string_view value) mutable {
-          values[std::string{key}].append(value);
-          // FIXME: there is limit on number of entries yet
-          return ObjectStore::omap_iter_ret_t::NEXT;
-        });
-    }).then([&values] (int r)
-      -> read_errorator::future<std::tuple<bool, omap_values_t>> {
+        c->collection, oid, start_from, callback);
+    }).then([] (int r)
+      -> read_errorator::future<ObjectStore::omap_iter_ret_t> {
       if (r == -ENOENT) {
         return crimson::ct_error::enoent::make();
-      } else if (r < 0){
-        logger().error("omap_get_values(start): {}", r);
-        return crimson::ct_error::input_output_error::make();
       } else {
-        return read_errorator::make_ready_future<std::tuple<bool, omap_values_t>>(
-          true, std::move(values));
+        if (r == 1) {
+          return read_errorator::make_ready_future<ObjectStore::omap_iter_ret_t>(ObjectStore::omap_iter_ret_t::STOP);
+        } else {
+          return read_errorator::make_ready_future<ObjectStore::omap_iter_ret_t>(ObjectStore::omap_iter_ret_t::NEXT);
+        }
       }
     });
   });
@@ -539,11 +530,7 @@ AlienStore::read_meta(const std::string& key)
     return tp->submit([key, this] {
       std::string value;
       int r = store->read_meta(key, &value);
-      if (r > 0) {
-        value.resize(r);
-        boost::algorithm::trim_right_if(value,
-          [] (unsigned char c) {return isspace(c);});
-      } else {
+      if (r < 0) {
         value.clear();
       }
       return std::make_pair(r, value);

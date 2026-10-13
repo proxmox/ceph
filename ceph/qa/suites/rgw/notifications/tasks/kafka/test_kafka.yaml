@@ -4,5 +4,5 @@ tasks:
       kafka_version: 3.9.2
 - notification-tests:
     client.0:
-      extra_attr: ["kafka_test", "data_path_v2_kafka_test"]
+      extra_attr: ["kafka_test", "kafka_security_test"]
       rgw_server: client.0

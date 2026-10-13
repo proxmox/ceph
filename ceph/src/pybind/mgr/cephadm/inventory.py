@@ -24,6 +24,7 @@ from ceph.deployment.service_spec import (
 from ceph.utils import str_to_datetime, datetime_to_str, datetime_now
 from orchestrator import OrchestratorError, HostSpec, OrchestratorEvent, service_to_daemon_types
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
+from ceph.deployment.tls_utils import SSLConfigException, parse_tls_pem_bundle
 
 from .utils import get_node_proxy_status_value, resolve_ip, SpecialHostLabels
 from .migrations import queue_migrate_nfs_spec, queue_migrate_rgw_spec
@@ -50,18 +51,18 @@ class OrchSecretNotFound(OrchestratorError):
     def __init__(
         self,
         message: Optional[str] = '',
-        entity: Optional[str] = '',
+        consumer: Optional[str] = '',
         service_name: Optional[str] = '',
         hostname: Optional[str] = ''
     ):
         if not message:
-            message = f'No secret found for entity {entity}'
+            message = f'No secret found for consumer {consumer}'
             if service_name:
                 message += f' with service name {service_name}'
             if hostname:
                 message += f' with hostname {hostname}'
         super().__init__(message)
-        self.entity = entity
+        self.consumer = consumer
         self.service_name = service_name
         self.hostname = hostname
 
@@ -361,7 +362,6 @@ class SpecStore():
         if update_create:
             self.spec_created[name] = datetime_now()
         self._save(name)
-        self._save_certs_and_keys(spec)
 
     def save_rank_map(self,
                       name: str,
@@ -400,11 +400,35 @@ class SpecStore():
                 else:
                     cert_str = rgw_cert
                 assert isinstance(cert_str, str)
-                self.mgr.cert_mgr.save_cert(
-                    'rgw_frontend_ssl_cert',
-                    cert_str,
-                    service_name=rgw_spec.service_name(),
-                    user_made=True)
+                # parse_tls_pem_bundle is the canonical parser for any TLS PEM
+                # bundle (plain cert, cert+key, or fullchain with intermediates)
+                # — it preserves the full chain and validates key/cert match.
+                # Explicitly typed Optional[str]: this name is reused further
+                # down in this function (nvmeof branch) with Optional values,
+                # and Python/mypy give a single type to a name across the
+                # whole function body, not per if/elif block.
+                cert: Optional[str]
+                key: Optional[str]
+                try:
+                    cert, key = parse_tls_pem_bundle(cert_str)
+                except SSLConfigException as exc:
+                    cert, key = '', ''
+                    # Never log cert_str — it may contain private key material.
+                    logger.error(f'Cannot parse RGW certificate PEM: {exc}')
+                if cert and key:
+                    self.mgr.cert_mgr.save_cert(
+                        'rgw_ssl_cert',
+                        cert,
+                        service_name=rgw_spec.service_name(),
+                        user_made=True)
+                    self.mgr.cert_mgr.save_key(
+                        'rgw_ssl_key',
+                        key,
+                        service_name=rgw_spec.service_name(),
+                        user_made=True)
+                else:
+                    # Never log cert_str — it may contain private key material.
+                    logger.error('Cannot parse the rgw certificate: missing certificate or key.')
         elif spec.service_type == 'iscsi':
             iscsi_spec = cast(IscsiServiceSpec, spec)
             if iscsi_spec.ssl_cert:
@@ -476,7 +500,6 @@ class SpecStore():
         # type: (str) -> bool
         found = service_name in self._specs
         if found:
-            self._rm_certs_and_keys(self._specs[service_name])
             del self._specs[service_name]
             if service_name in self._rank_maps:
                 del self._rank_maps[service_name]
@@ -834,11 +857,17 @@ class HostCache():
                 self.devices[host] += self.load_host_devices(host)
                 self.networks[host] = j.get('networks_and_interfaces', {})
                 self.osdspec_previews[host] = j.get('osdspec_previews', {})
-                self.last_client_files[host] = j.get('last_client_files', {})
+                self.last_client_files[host] = {
+                    path: tuple(v) for path, v in j.get('last_client_files', {}).items()
+                }
                 for name, ts in j.get('osdspec_last_applied', {}).items():
                     self.osdspec_last_applied[host][name] = str_to_datetime(ts)
 
                 for name, d in j.get('daemon_config_deps', {}).items():
+                    # drop potential leftover daemon_config_deps entries
+                    # assume if we didn't find a daemon entry, it's a leftover
+                    if name not in self.daemons.get(host, {}):
+                        continue
                     self.daemon_config_deps[host][name] = {
                         'deps': d.get('deps', []),
                         'last_config': str_to_datetime(d['last_config']),
@@ -941,6 +970,14 @@ class HostCache():
     ) -> None:
         self.networks[host] = nets
         self.last_network_update[host] = datetime_now()
+
+    def get_interface_for_ip(self, host: str, ip: str) -> Optional[str]:
+        """Return the network interface name that has the given IP on host, or None."""
+        for _subnet, ifaces in self.networks.get(host, {}).items():
+            for iface, ips in ifaces.items():
+                if ip in ips:
+                    return iface
+        return None
 
     def update_daemon_config_deps(self, host: str, name: str, deps: List[str], stamp: datetime.datetime) -> None:
         self.daemon_config_deps[host][name] = {
@@ -1323,7 +1360,7 @@ class HostCache():
             if host in self.mgr.offline_hosts:
                 dd.status = orchestrator.DaemonDescriptionStatus.error
                 dd.status_desc = 'host is offline'
-            elif self.mgr.inventory._inventory[host].get("status", "").lower() == "maintenance":
+            elif self.mgr.inventory._inventory.get(host, {}).get("status", "").lower() == "maintenance":
                 # We do not refresh daemons on hosts in maintenance mode, so stored daemon statuses
                 # could be wrong. We must assume maintenance is working and daemons are stopped
                 dd.status = orchestrator.DaemonDescriptionStatus.stopped
@@ -1512,7 +1549,7 @@ class HostCache():
         ):
             return True
         created = self.mgr.spec_store.get_created(spec)
-        if not created or created > self.last_device_change[host]:
+        if not created or created > self.osdspec_last_applied[host][spec.service_name()]:
             return True
         return self.osdspec_last_applied[host][spec.service_name()] < self.last_device_change[host]
 
@@ -1549,6 +1586,9 @@ class HostCache():
         if host in self.daemons:
             if name in self.daemons[host]:
                 del self.daemons[host][name]
+        if host in self.daemon_config_deps:
+            if name in self.daemon_config_deps[host]:
+                del self.daemon_config_deps[host][name]
 
     def daemon_cache_filled(self) -> bool:
         """
@@ -1596,6 +1636,14 @@ class HostCache():
         assert not daemon.startswith('ha-rgw.')
 
         return self.scheduled_daemon_actions.get(host, {}).get(daemon)
+
+    def get_host_network_ips(self, host: str) -> List[str]:
+        return [
+            ip
+            for net_details in self.networks.get(host, {}).values()
+            for ips in net_details.values()
+            for ip in ips
+        ]
 
 
 class NodeProxyCache:
@@ -1752,10 +1800,8 @@ class NodeProxyCache:
         _result = {}
 
         for host in hosts:
-            try:
-                _result[host] = self.data[host]['status'][endpoint]
-            except KeyError:
-                raise KeyError(f'Invalid host {host} or component {endpoint}.')
+            status = self.data[host].get('status', {})
+            _result[host] = status.get(endpoint, {})
         return _result
 
     def firmware(self, **kw: Any) -> Dict[str, Any]:

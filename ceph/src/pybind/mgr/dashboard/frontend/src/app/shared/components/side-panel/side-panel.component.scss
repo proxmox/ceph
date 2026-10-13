@@ -24,10 +24,10 @@
   }
 
   .cds--header-panel--expanded {
-    display: grid;
-    grid-template-rows: auto 1fr auto;
     max-inline-size: 100%;
     overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
   }
 
   .panel-header {
@@ -40,9 +40,9 @@
   }
 
   .panel-footer {
-    border-top: 1px solid theme.$border-subtle-02;
     display: flex;
     justify-content: flex-end;
+    border-top: 1px solid theme.$border-subtle-02;
   }
 }
 

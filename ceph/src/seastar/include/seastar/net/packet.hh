@@ -26,8 +26,7 @@
 #include <seastar/net/const.hh>
 #include <seastar/util/assert.hh>
 #include <seastar/util/std-compat.hh>
-#include <seastar/util/modules.hh>
-#ifndef SEASTAR_MODULE
+#include <span>
 #include <algorithm>
 #include <cstdint>
 #include <functional>
@@ -35,13 +34,11 @@
 #include <memory>
 #include <optional>
 #include <vector>
-#endif
 
 namespace seastar {
 
 namespace net {
 
-SEASTAR_MODULE_EXPORT_BEGIN
 
 struct fragment {
     char* base;
@@ -228,6 +225,8 @@ public:
     packet(temporary_buffer<char> buf);
     // append deleter
     packet(packet&& x, deleter d);
+    // create from span of buffers (zero-copy, ownership is transfered)
+    explicit packet(std::span<temporary_buffer<char>>);
 
     packet& operator=(packet&& x) noexcept {
         if (this != &x) {
@@ -310,7 +309,7 @@ public:
         });
         return ret;
     }
-    explicit operator bool() noexcept {
+    explicit operator bool() const noexcept {
         return bool(_impl);
     }
     static packet make_null_packet() noexcept {
@@ -327,7 +326,6 @@ public:
 
 std::ostream& operator<<(std::ostream& os, const packet& p);
 
-SEASTAR_MODULE_EXPORT_END
 
 inline
 packet::packet(packet&& x) noexcept
@@ -367,6 +365,19 @@ packet::packet()
 inline
 packet::packet(size_t nr_frags)
     : _impl(impl::allocate(nr_frags)) {
+}
+
+inline packet::packet(std::span<temporary_buffer<char>> bufs)
+    : _impl(impl::allocate(bufs.size()))
+{
+    for (auto& b : bufs) {
+        temporary_buffer<char> buf = std::move(b);
+        _impl->_len += buf.size();
+        _impl->_frags[_impl->_nr_frags++] = fragment{buf.get_write(), buf.size()};
+        deleter d = buf.release();
+        d.append(std::move(_impl->_deleter));
+        _impl->_deleter = std::move(d);
+    }
 }
 
 inline

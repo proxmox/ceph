@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -8,6 +8,7 @@
 #include "test/librbd/mock/MockImageState.h"
 #include "test/librados_test_stub/MockTestMemIoCtxImpl.h"
 #include "test/librados_test_stub/MockTestMemRadosClient.h"
+#include "common/Clock.h" // for ceph_clock_now()
 #include "include/rbd/librbd.hpp"
 #include "librbd/Utils.h"
 #include "librbd/trash/MoveRequest.h"
@@ -61,7 +62,7 @@ struct TestMockTrashMoveRequest : public TestMockFixture {
                         const utime_t& end_time,
                         int r) {
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(StrEq("rbd_trash"), _, StrEq("rbd"), StrEq("trash_add"),
+                exec_internal(StrEq("rbd_trash"), _, StrEq("rbd"), StrEq("trash_add"),
                      _, _, _, _))
       .WillOnce(WithArg<4>(Invoke([=](bufferlist& in_bl) {
                              std::string id;
@@ -95,7 +96,7 @@ struct TestMockTrashMoveRequest : public TestMockFixture {
     encode(id, in_bl);
 
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(StrEq("rbd_directory"), _, StrEq("rbd"), StrEq("dir_remove_image"),
+                exec_internal(StrEq("rbd_directory"), _, StrEq("rbd"), StrEq("dir_remove_image"),
                      ContentsEqual(in_bl), _, _, _))
       .WillOnce(Return(r));
   }

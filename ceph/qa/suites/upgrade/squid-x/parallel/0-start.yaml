@@ -43,7 +43,6 @@ overrides:
       - MON_DOWN
       - out of quorum
       - PG_AVAILABILITY
-      - PG_DEGRADED
       - Reduced data availability
       - Degraded data redundancy
       - pg .* is stuck inactive
@@ -52,8 +51,10 @@ overrides:
       - OSDMAP_FLAGS
       - OSD_UPGRADE_FINISHED
       - PG_DEGRADED
-      - CEPHADM_FAILED_DAEMON
-      - pg .* is stuck undersized
-      - HEALTH_WARN .* osds down
-      - MDS_INSUFFICIENT_STANDBY
-      - POOL_FULL
+      - filesystem is degraded
+      - filesystem is offline
+      - osds down
+      - osd down
+      - OBJECT_UNFOUND
+      - pg .* is stuck peering
+      - OSD_HOST_DOWN

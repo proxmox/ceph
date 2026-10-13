@@ -6,7 +6,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { PipesModule } from '~/app/shared/pipes/pipes.module';
-import { ToastrModule } from 'ngx-toastr';
+
 import { of as observableOf, throwError } from 'rxjs';
 
 import { RgwUserService } from '~/app/shared/api/rgw-user.service';
@@ -24,6 +24,7 @@ import { RgwRateLimitComponent } from '../rgw-rate-limit/rgw-rate-limit.componen
 import { By } from '@angular/platform-browser';
 import { CheckboxModule, NumberModule, SelectModule } from 'carbon-components-angular';
 import { LoadingStatus } from '~/app/shared/forms/cd-form';
+import { USER } from '~/app/shared/constants/app.constants';
 
 describe('RgwUserFormComponent', () => {
   let component: RgwUserFormComponent;
@@ -39,7 +40,6 @@ describe('RgwUserFormComponent', () => {
       ReactiveFormsModule,
       RouterTestingModule,
       SharedModule,
-      ToastrModule.forRoot(),
       NgbTooltipModule,
       PipesModule,
       CheckboxModule,
@@ -213,8 +213,9 @@ describe('RgwUserFormComponent', () => {
     beforeEach(() => {
       component.loading = LoadingStatus.Ready;
       fixture.detectChanges();
-      childComponent = fixture.debugElement.query(By.directive(RgwRateLimitComponent))
-        .componentInstance;
+      childComponent = fixture.debugElement.query(
+        By.directive(RgwRateLimitComponent)
+      ).componentInstance;
     });
     it('disable creation (create)', () => {
       spyOn(rgwUserService, 'create');
@@ -334,8 +335,9 @@ describe('RgwUserFormComponent', () => {
       notificationService = TestBed.inject(NotificationService);
       spyOn(notificationService, 'show');
       fixture.detectChanges();
-      let childComponent = fixture.debugElement.query(By.directive(RgwRateLimitComponent))
-        .componentInstance;
+      let childComponent = fixture.debugElement.query(
+        By.directive(RgwRateLimitComponent)
+      ).componentInstance;
       jest.spyOn(childComponent, 'getRateLimitFormValue');
     });
 
@@ -580,7 +582,7 @@ describe('RgwUserFormComponent', () => {
 
       // Assertions
       expect(result).toEqual({
-        quota_type: 'user',
+        quota_type: USER,
         enabled: true,
         max_size_kb: -1,
         max_objects: -1
@@ -604,7 +606,7 @@ describe('RgwUserFormComponent', () => {
       const result = component._getUserQuotaArgs();
       expect(toBytesSpy).toHaveBeenCalledWith(2048);
       expect(result).toEqual({
-        quota_type: 'user',
+        quota_type: USER,
         enabled: true,
         max_size_kb: '2048', // Expect the converted KB value
         max_objects: -1
@@ -624,7 +626,7 @@ describe('RgwUserFormComponent', () => {
       const result = component._getUserQuotaArgs();
 
       expect(result).toEqual({
-        quota_type: 'user',
+        quota_type: USER,
         enabled: true,
         max_size_kb: -1,
         max_objects: 1000
@@ -706,8 +708,9 @@ describe('RgwUserFormComponent', () => {
     beforeEach(() => {
       component.loading = LoadingStatus.Ready;
       fixture.detectChanges();
-      childComponent = fixture.debugElement.query(By.directive(RgwRateLimitComponent))
-        .componentInstance;
+      childComponent = fixture.debugElement.query(
+        By.directive(RgwRateLimitComponent)
+      ).componentInstance;
     });
     it('create with account id & account root user', () => {
       spyOn(rgwUserService, 'create');

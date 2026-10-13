@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/rbd_mirror/test_mock_fixture.h"
 #include "librbd/internal.h"
@@ -127,7 +127,7 @@ public:
       bufferlist bl;
       ceph::encode(key, bl);
       EXPECT_CALL(get_mock_io_ctx(m_mock_local_image_ctx->md_ctx),
-                  exec(m_mock_local_image_ctx->header_oid, _, StrEq("rbd"),
+                  exec_internal(m_mock_local_image_ctx->header_oid, _, StrEq("rbd"),
                   StrEq("metadata_remove"), ContentsEqual(bl), _, _, _))
         .WillOnce(Return(r));
       if (r < 0) {
@@ -139,7 +139,7 @@ public:
       bufferlist bl;
       ceph::encode(pairs, bl);
       EXPECT_CALL(get_mock_io_ctx(m_mock_local_image_ctx->md_ctx),
-                  exec(m_mock_local_image_ctx->header_oid, _, StrEq("rbd"),
+                  exec_internal(m_mock_local_image_ctx->header_oid, _, StrEq("rbd"),
                   StrEq("metadata_set"), ContentsEqual(bl), _, _, _))
         .WillOnce(Return(r));
     }

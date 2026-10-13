@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -52,17 +52,17 @@ class DummyNodeExtent final: public NodeExtent {
 
  protected:
   NodeExtentRef mutate(context_t, DeltaRecorderURef&&) override {
-    ceph_abort("impossible path"); }
+    ceph_abort_msg("impossible path"); }
   DeltaRecorder* get_recorder() const override {
     return nullptr; }
   CachedExtentRef duplicate_for_write(Transaction&) override {
-    ceph_abort("impossible path"); }
+    ceph_abort_msg("impossible path"); }
   extent_types_t get_type() const override {
     return extent_types_t::TEST_BLOCK; }
   ceph::bufferlist get_delta() override {
-    ceph_abort("impossible path"); }
+    ceph_abort_msg("impossible path"); }
   void apply_delta(const ceph::bufferlist&) override {
-    ceph_abort("impossible path"); }
+    ceph_abort_msg("impossible path"); }
 };
 
 template <bool SYNC>
@@ -89,7 +89,7 @@ class DummyNodeExtentManager final: public NodeExtentManager {
   }
 
   alloc_iertr::future<NodeExtentRef> alloc_extent(
-      Transaction& t, laddr_t hint, extent_len_t len) override {
+      Transaction& t, laddr_hint_t hint, extent_len_t len) override {
     SUBTRACET(seastore_onode, "allocating {}B with hint {} ...", t, len, hint);
     if constexpr (SYNC) {
       return alloc_extent_sync(t, len);
@@ -151,7 +151,7 @@ class DummyNodeExtentManager final: public NodeExtentManager {
     assert(len % ALIGNMENT == 0);
     auto r = ceph::buffer::create_aligned(len, ALIGNMENT);
     auto addr = laddr_t::from_byte_offset(
-      reinterpret_cast<laddr_t::Unsigned>(r->get_data()));
+      reinterpret_cast<loffset_t>(r->get_data()));
     auto bp = ceph::bufferptr(std::move(r));
     auto extent = Ref<DummyNodeExtent>(new DummyNodeExtent(std::move(bp)));
     extent->set_laddr(addr);

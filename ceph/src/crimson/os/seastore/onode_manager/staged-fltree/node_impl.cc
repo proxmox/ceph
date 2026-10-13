@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "node_impl.h"
 #include "node_layout.h"
@@ -13,7 +13,7 @@ last_split_info_t last_split = {};
 // XXX: branchless allocation
 eagain_ifuture<InternalNodeImpl::fresh_impl_t>
 InternalNodeImpl::allocate(
-    context_t c, laddr_t hint, field_type_t type, bool is_level_tail, level_t level)
+    context_t c, laddr_hint_t hint, field_type_t type, bool is_level_tail, level_t level)
 {
   if (type == field_type_t::N0) {
     return InternalNode0::allocate(c, hint, is_level_tail, level);
@@ -24,13 +24,13 @@ InternalNodeImpl::allocate(
   } else if (type == field_type_t::N3) {
     return InternalNode3::allocate(c, hint, is_level_tail, level);
   } else {
-    ceph_abort("impossible path");
+    ceph_abort_msg("impossible path");
   }
 }
 
 eagain_ifuture<LeafNodeImpl::fresh_impl_t>
 LeafNodeImpl::allocate(
-    context_t c, laddr_t hint, field_type_t type, bool is_level_tail)
+    context_t c, laddr_hint_t hint, field_type_t type, bool is_level_tail)
 {
   if (type == field_type_t::N0) {
     return LeafNode0::allocate(c, hint, is_level_tail, 0);
@@ -41,7 +41,7 @@ LeafNodeImpl::allocate(
   } else if (type == field_type_t::N3) {
     return LeafNode3::allocate(c, hint, is_level_tail, 0);
   } else {
-    ceph_abort("impossible path");
+    ceph_abort_msg("impossible path");
   }
 }
 
@@ -57,7 +57,7 @@ InternalNodeImplURef InternalNodeImpl::load(
   } else if (type == field_type_t::N3) {
     return InternalNode3::load(extent);
   } else {
-    ceph_abort("impossible path");
+    ceph_abort_msg("impossible path");
   }
 }
 
@@ -73,7 +73,7 @@ LeafNodeImplURef LeafNodeImpl::load(
   } else if (type == field_type_t::N3) {
     return LeafNode3::load(extent);
   } else {
-    ceph_abort("impossible path");
+    ceph_abort_msg("impossible path");
   }
 }
 

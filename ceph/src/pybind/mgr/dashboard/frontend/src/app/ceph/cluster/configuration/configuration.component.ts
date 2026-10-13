@@ -17,7 +17,8 @@ const RGW = 'rgw';
 @Component({
   selector: 'cd-configuration',
   templateUrl: './configuration.component.html',
-  styleUrls: ['./configuration.component.scss']
+  styleUrls: ['./configuration.component.scss'],
+  standalone: false
 })
 export class ConfigurationComponent extends ListWithDetails implements OnInit {
   permission: Permission;
@@ -71,12 +72,39 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
     {
       name: $localize`Source`,
       prop: 'source',
-      filterOptions: ['mon'],
+      filterOptions: ['mon', 'mgr_module'],
       filterPredicate: (row, value) => {
         if (!row.hasOwnProperty('source')) {
           return false;
         }
         return row.source.includes(value);
+      }
+    },
+    {
+      name: $localize`Module`,
+      prop: 'module',
+      filterOptions: ['cephadm'],
+      filterPredicate: (row, value) => {
+        if (value === 'cephadm') {
+          return row.name?.startsWith('mgr/cephadm/');
+        }
+        return false;
+      }
+    },
+    {
+      name: $localize`Category`,
+      prop: 'category',
+      filterOptions: [$localize`certificate`],
+      filterPredicate: (row, value) => {
+        if (value === 'certificate') {
+          return (
+            row.name?.toLowerCase().includes('certificate') ||
+            row.name?.toLowerCase().includes('cert') ||
+            row.name?.toLowerCase().includes('ssl') ||
+            row.name?.toLowerCase().includes('tls')
+          );
+        }
+        return false;
       }
     }
   ];

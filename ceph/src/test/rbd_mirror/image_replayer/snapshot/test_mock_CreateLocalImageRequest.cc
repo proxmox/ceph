@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/rbd_mirror/test_mock_fixture.h"
 #include "librbd/internal.h"
@@ -169,7 +169,7 @@ public:
     encode(mirror_image, bl);
 
     EXPECT_CALL(get_mock_io_ctx(m_local_io_ctx),
-                exec(RBD_MIRRORING, _, StrEq("rbd"),
+                exec_internal(RBD_MIRRORING, _, StrEq("rbd"),
                      StrEq("mirror_image_set"), ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));
   }
@@ -179,7 +179,7 @@ public:
     encode(image_id, bl);
 
     EXPECT_CALL(get_mock_io_ctx(m_local_io_ctx),
-                exec(StrEq("rbd_mirroring"), _, StrEq("rbd"),
+                exec_internal(StrEq("rbd_mirroring"), _, StrEq("rbd"),
                      StrEq("mirror_image_remove"),
                      ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));

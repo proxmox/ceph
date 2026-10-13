@@ -1,8 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "mds/flock.h"
 #include "common/debug.h"
+#include "common/Formatter.h"
 #include "mdstypes.h"
 
 #include <iostream>
@@ -59,20 +60,12 @@ void ceph_lock_state_t::decode(ceph::bufferlist::const_iterator& bl) {
 }
 
 void ceph_lock_state_t::dump(ceph::Formatter *f) const {
-  f->dump_int("type", type);
+  // do not dump fields which are not persisted:
+  // - type: set in constructor
+  // - waiting_locks: runtime-only field
+  // - client_waiting_lock_counts: runtime-only field
   f->dump_int("held_locks", held_locks.size());
   for (auto &p : held_locks) {
-    f->open_object_section("lock");
-    f->dump_int("start", p.second.start);
-    f->dump_int("length", p.second.length);
-    f->dump_int("client", p.second.client);
-    f->dump_int("owner", p.second.owner);
-    f->dump_int("pid", p.second.pid);
-    f->dump_int("type", p.second.type);
-    f->close_section();
-  }
-  f->dump_int("waiting_locks", waiting_locks.size());
-  for (auto &p : waiting_locks) {
     f->open_object_section("lock");
     f->dump_int("start", p.second.start);
     f->dump_int("length", p.second.length);
@@ -89,17 +82,18 @@ void ceph_lock_state_t::dump(ceph::Formatter *f) const {
     f->dump_int("count", p.second);
     f->close_section();
   }
-  f->dump_int("client_waiting_lock_counts", client_waiting_lock_counts.size());
 }
 
 
-void ceph_lock_state_t::generate_test_instances(std::list<ceph_lock_state_t*>& ls) {
-  ls.push_back(new ceph_lock_state_t(NULL, 0));
-  ls.push_back(new ceph_lock_state_t(NULL, 1));
-  ls.back()->held_locks.insert(std::make_pair(1, ceph_filelock()));
-  ls.back()->waiting_locks.insert(std::make_pair(1, ceph_filelock()));
-  ls.back()->client_held_lock_counts.insert(std::make_pair(1, 1));
-  ls.back()->client_waiting_lock_counts.insert(std::make_pair(1, 1));
+std::list<ceph_lock_state_t> ceph_lock_state_t::generate_test_instances() {
+  std::list<ceph_lock_state_t> ls;
+  ls.push_back(ceph_lock_state_t(NULL, 0));
+  ls.push_back(ceph_lock_state_t(NULL, 1));
+  ls.back().held_locks.insert(std::make_pair(1, ceph_filelock()));
+  ls.back().waiting_locks.insert(std::make_pair(1, ceph_filelock()));
+  ls.back().client_held_lock_counts.insert(std::make_pair(1, 1));
+  ls.back().client_waiting_lock_counts.insert(std::make_pair(1, 1));
+  return ls;
 }
 
 bool ceph_lock_state_t::is_waiting(const ceph_filelock &fl) const

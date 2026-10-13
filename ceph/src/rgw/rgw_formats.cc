@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -16,7 +16,7 @@
 #include <boost/format.hpp>
 
 #include "common/escape.h"
-#include "common/Formatter.h"
+#include "common/XMLFormatter.h"
 #include "rgw/rgw_common.h"
 #include "rgw/rgw_formats.h"
 #include "rgw/rgw_rest.h"
@@ -192,9 +192,9 @@ void RGWFormatter_Plain::write_raw_data(const char *data)
 
 void RGWFormatter_Plain::write_data(const char *fmt, ...)
 {
-#define LARGE_ENOUGH_LEN 128
+  static constexpr auto LARGE_ENOUGH_LEN = 128;
   int n, size = LARGE_ENOUGH_LEN;
-  char s[size + 8];
+  char s[LARGE_ENOUGH_LEN + 8];
   char *p, *np;
   bool p_on_stack;
   va_list ap;

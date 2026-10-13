@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -60,9 +60,13 @@ class D4NFilterDriver : public FilterDriver {
     std::unique_ptr<rgw::d4n::BucketDirectory> bucketDir;
     std::unique_ptr<rgw::d4n::PolicyDriver> policyDriver;
     boost::asio::io_context& io_context;
+    optional_yield y;
+
+    // Redis connection pool
+    std::shared_ptr<rgw::d4n::RedisPool> redis_pool;
 
   public:
-    D4NFilterDriver(Driver* _next, boost::asio::io_context& io_context);
+    D4NFilterDriver(Driver* _next, boost::asio::io_context& io_context, bool admin);
     virtual ~D4NFilterDriver();
 
     virtual int initialize(CephContext *cct, const DoutPrefixProvider *dpp) override;
@@ -84,6 +88,9 @@ class D4NFilterDriver : public FilterDriver {
     rgw::d4n::BlockDirectory* get_block_dir() { return blockDir.get(); }
     rgw::d4n::BucketDirectory* get_bucket_dir() { return bucketDir.get(); }
     rgw::d4n::PolicyDriver* get_policy_driver() { return policyDriver.get(); }
+    void save_y(optional_yield y) { this->y = y; }
+    std::shared_ptr<connection> get_conn() { return conn; }
+    std::shared_ptr<rgw::d4n::RedisPool> get_redis_pool() { return redis_pool; }
     void shutdown() override;
 };
 
@@ -105,6 +112,9 @@ class D4NFilterBucket : public FilterBucket {
       uint16_t flags;
     };
     D4NFilterDriver* filter;
+    bool cache_request{false};
+    bool return_blocks{false}; // indicates whether dir_blocks should be populated
+    std::unordered_map<std::string, rgw::d4n::CacheBlock> dir_blocks; // for use in bucket removal
 
   public:
     D4NFilterBucket(std::unique_ptr<Bucket> _next, D4NFilterDriver* _filter) :
@@ -115,13 +125,17 @@ class D4NFilterBucket : public FilterBucket {
     virtual std::unique_ptr<Object> get_object(const rgw_obj_key& key) override;
     virtual int list(const DoutPrefixProvider* dpp, ListParams& params, int max,
 		   ListResults& results, optional_yield y) override;
+    virtual int remove(const DoutPrefixProvider* dpp, bool delete_children,
+		       optional_yield y) override;
     virtual int create(const DoutPrefixProvider* dpp,
                        const CreateParams& params,
                        optional_yield y) override;
+    virtual int check_empty(const DoutPrefixProvider* dpp, optional_yield y) override;
     virtual std::unique_ptr<MultipartUpload> get_multipart_upload(
 				const std::string& oid,
 				std::optional<std::string> upload_id=std::nullopt,
 				ACLOwner owner={}, ceph::real_time mtime=real_clock::now()) override;
+    void set_cache_request() { cache_request = true; }
 };
 
 class D4NFilterObject : public FilterObject {
@@ -136,6 +150,8 @@ class D4NFilterObject : public FilterObject {
     bool delete_marker{false};
     bool exists_in_cache{false};
     bool load_from_store{false};
+    bool attrs_read_from_cache{false};
+    bool cache_request{false};
 
   public:
     struct D4NFilterReadOp : FilterReadOp {
@@ -145,14 +161,17 @@ class D4NFilterObject : public FilterObject {
 	    D4NFilterDriver* filter;
 	    D4NFilterObject* source;
 	    RGWGetDataCB* client_cb;
-	    int64_t ofs = 0, len = 0;
+	    int64_t start_ofs = 0, len = 0, end_ofs = 0;
       int64_t adjusted_start_ofs{0};
+      int64_t adjusted_end_ofs{0};
 	    bufferlist bl_rem;
 	    bool last_part{false};
 	    bool write_to_cache{true};
 	    const DoutPrefixProvider* dpp;
 	    optional_yield* y;
-      int part_count{0};
+      int part_num{0}, num_parts{0};
+      int len_sent = 0;
+      std::vector<rgw::d4n::CacheBlock> blocks, dest_blocks;
 
 	  public:
 	    D4NFilterGetCB(D4NFilterDriver* _filter, D4NFilterObject* _source) : filter(_filter),
@@ -164,9 +183,11 @@ class D4NFilterObject : public FilterObject {
               this->dpp = dpp;
               this->y = y;
             }
-	    void set_ofs(uint64_t ofs) { this->ofs = ofs; }
+	    void set_start_ofs(uint64_t ofs) { this->start_ofs = ofs; }
+      void set_len(uint64_t len) { this->len = len; }
       void set_adjusted_start_ofs(uint64_t adjusted_start_ofs) { this->adjusted_start_ofs = adjusted_start_ofs; }
-      void set_part_num(uint64_t part_num) { this->part_count = part_num; }
+      void set_part_num(uint64_t part_num) { this->part_num = part_num; }
+      void set_num_parts(uint64_t num_parts) { this->num_parts = num_parts; }
 	    int flush_last_part();
 	    void bypass_cache_write() { this->write_to_cache = false; }
 	};
@@ -252,8 +273,7 @@ class D4NFilterObject : public FilterObject {
                              bool follow_olh = true) override;
     virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
                             Attrs* delattrs, optional_yield y, uint32_t flags) override;
-    virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
-                            rgw_obj* target_obj = NULL) override;
+    virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp) override;
     virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
                                optional_yield y, const DoutPrefixProvider* dpp,
 			       uint32_t flags = rgw::sal::FLAG_LOG_OP) override;
@@ -285,6 +305,9 @@ class D4NFilterObject : public FilterObject {
     bool exists(void) override { if (exists_in_cache) { return true;} return next->exists(); };
     bool load_obj_from_store() { return load_from_store; }
     void set_load_obj_from_store(bool load_from_store) { this->load_from_store = load_from_store; }
+    int delete_cache_entry(const DoutPrefixProvider* dpp, const std::string key, optional_yield y);
+    void set_cache_request() { cache_request = true; }
+    bool is_cache_request() { return cache_request; }
 };
 
 class D4NFilterWriter : public FilterWriter {
@@ -323,6 +346,7 @@ class D4NFilterWriter : public FilterWriter {
 			 uint32_t flags) override;
    bool is_atomic() { return atomic; };
    const DoutPrefixProvider* get_dpp() { return this->dpp; } 
+   void set_cache_request() { object->set_cache_request(); }
 };
 
 class D4NFilterMultipartUpload : public FilterMultipartUpload {

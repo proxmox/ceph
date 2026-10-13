@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -14,7 +15,10 @@
  *
  */
 
+#include "AsyncConnection.h"
+
 #include <fmt/core.h>
+
 #include <unistd.h>
 
 #include "common/ceph_strings.h"
@@ -26,7 +30,6 @@
 #include "include/random.h"
 #include "common/errno.h"
 #include "AsyncMessenger.h"
-#include "AsyncConnection.h"
 
 #include "ProtocolV1.h"
 #include "ProtocolV2.h"

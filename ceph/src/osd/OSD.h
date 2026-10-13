@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -151,6 +152,18 @@ public:
   }
 
   int get_nodeid() const final { return whoami; }
+
+  /// iterate over all PGs, summing their snap trim queue lengths
+  uint64_t calc_snap_trim_queue_total();
+  uint64_t get_snap_trim_queue_total() const {
+    // the cached value, calculated by calc_snap_trim_queue_total()
+    return snap_trim_queue_total;
+  }
+
+  // not atomic: both write (tick_without_osd_lock) and read (initiate_scrub,
+  // called from the same timer callback) are on the same thread
+  uint64_t snap_trim_queue_total{0};
+
 private:
   OSDMapRef osdmap;
 
@@ -1054,7 +1067,6 @@ struct OSDShard {
 		    std::set<std::pair<spg_t,epoch_t>> *merge_pgs);
   void register_and_wake_split_child(PG *pg);
   void unprime_split_children(spg_t parent, unsigned old_pg_num);
-  void update_scheduler_config();
   op_queue_type_t get_op_queue_type() const;
 
   OSDShard(
@@ -1240,6 +1252,7 @@ class OSD : public Dispatcher,
   // Tick timer for those stuff that do not need osd_lock
   ceph::mutex tick_timer_lock = ceph::make_mutex("OSD::tick_timer_lock");
   SafeTimer tick_timer_without_osd_lock;
+  uint_fast16_t trim_queue_length_countdown = 0;
   std::string gss_ktfile_client{};
 
 public:
@@ -1745,7 +1758,9 @@ protected:
       OpSchedulerItem&& qi);
 
     /// try to do some work
-    void _process(uint32_t thread_index, ceph::heartbeat_handle_d *hb) override;
+    void _process(uint32_t thread_index,
+                  uint32_t shard_index,
+                  ceph::heartbeat_handle_d *hb) override;
 
     void stop_for_fast_shutdown();
 
@@ -1789,8 +1804,7 @@ protected:
       }
     }
 
-    bool is_shard_empty(uint32_t thread_index) override {
-      uint32_t shard_index = thread_index % osd->num_shards;
+    bool is_shard_empty(uint32_t thread_index, uint32_t shard_index) override {
       auto &&sdata = osd->shards[shard_index];
       ceph_assert(sdata);
       std::lock_guard l(sdata->shard_lock);
@@ -2189,7 +2203,7 @@ private:
   }
 
 private:
-  int mon_cmd_maybe_osd_create(std::string &cmd);
+  int mon_cmd_maybe_osd_create(std::string &&cmd);
   int update_crush_device_class();
   int update_crush_location();
 

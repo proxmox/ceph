@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -207,13 +207,13 @@ class DeltaRecorderT final: public DeltaRecorder {
         SUBERROR(seastore_onode,
             "got unknown op {} when replay {}",
             op, node);
-        ceph_abort("fatal error");
+        ceph_abort_msg("fatal error");
       }
     } catch (buffer::error& e) {
       SUBERROR(seastore_onode,
           "got decode error {} when replay {}",
           e.what(), node);
-      ceph_abort("fatal error");
+      ceph_abort_msg("fatal error");
     }
   }
 
@@ -245,7 +245,7 @@ class DeltaRecorderT final: public DeltaRecorder {
       // NODE_TYPE == node_type_t::LEAF
       value.encode(encoded);
     } else {
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
   }
 
@@ -259,7 +259,7 @@ class DeltaRecorderT final: public DeltaRecorder {
       // NODE_TYPE == node_type_t::LEAF
       return value_config_t::decode(delta);
     } else {
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
   }
 
@@ -305,7 +305,8 @@ class NodeExtentAccessorT {
       assert(p_recorder->node_type() == NODE_TYPE);
       assert(p_recorder->field_type() == FIELD_TYPE);
       recorder = static_cast<recorder_t*>(p_recorder);
-    } else if (!extent->is_mutable() && extent->is_valid()) {
+    } else if (extent->is_stable()) {
+      assert(extent->is_stable_ready());
       state = nextent_state_t::READ_ONLY;
       // mut is empty
       assert(extent->get_recorder() == nullptr ||
@@ -313,7 +314,7 @@ class NodeExtentAccessorT {
       recorder = nullptr;
     } else {
       // extent is invalid or retired
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
 #ifndef NDEBUG
     auto ref_recorder = recorder_t::create_for_replay();
@@ -355,7 +356,8 @@ class NodeExtentAccessorT {
   void prepare_mutate(context_t c) {
     assert(!is_retired());
     if (state == nextent_state_t::READ_ONLY) {
-      assert(!extent->is_mutable());
+      assert(extent->is_stable());
+      assert(extent->is_stable_ready());
       auto ref_recorder = recorder_t::create_for_encode(c.vb);
       recorder = static_cast<recorder_t*>(ref_recorder.get());
       extent = extent->mutate(c, std::move(ref_recorder));
@@ -510,7 +512,7 @@ class NodeExtentAccessorT {
     std::memcpy(to.get_write(), extent->get_read(), get_length());
   }
 
-  eagain_ifuture<NodeExtentMutable> rebuild(context_t c, laddr_t hint) {
+  eagain_ifuture<NodeExtentMutable> rebuild(context_t c, laddr_hint_t hint) {
     LOG_PREFIX(OTree::Extent::rebuild);
     assert(!is_retired());
     if (state == nextent_state_t::FRESH) {
@@ -548,9 +550,9 @@ class NodeExtentAccessorT {
       return c.nm.retire_extent(c.t, to_discard
       ).handle_error_interruptible(
         eagain_iertr::pass_further{},
-        crimson::ct_error::assert_all(fmt::format(
+        crimson::ct_error::assert_all(
           "{} during retire -- to_disgard={}, fresh={}",
-          FNAME, to_discard->get_laddr(), fresh_extent->get_laddr()).c_str())
+          FNAME, to_discard->get_laddr(), fresh_extent->get_laddr())
       );
     }).si_then([this, c] {
       boost::ignore_unused(c);  // avoid clang warning;
@@ -566,8 +568,7 @@ class NodeExtentAccessorT {
     return c.nm.retire_extent(c.t, std::move(extent)
     ).handle_error_interruptible(
       eagain_iertr::pass_further{},
-      crimson::ct_error::assert_all(fmt::format(
-        "{} addr={}", FNAME, addr).c_str())
+      crimson::ct_error::assert_all("{} addr={}", FNAME, addr)
 #ifndef NDEBUG
     ).si_then([c] {
       assert(!c.t.is_conflicted());

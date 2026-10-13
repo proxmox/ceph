@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab expandtab
+// vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include "record_submitter.h"
 
@@ -195,10 +195,20 @@ RecordSubmitter::wa_ertr::future<>
 RecordSubmitter::wait_available()
 {
   LOG_PREFIX(RecordSubmitter::wait_available);
-  assert(!is_available());
   if (has_io_error) {
     ERROR("{} I/O is failed before wait", get_name());
     return crimson::ct_error::input_output_error::make();
+  }
+  if (is_available()) {
+    // The continuation that resolves wait_available_promise can
+    // run before this function is entered -- e.g. from
+    // roll_segment() after the chained
+    // journal_allocator.roll().safe_then(...) completes inline.
+    // In that case there is nothing left to wait for; honour the
+    // documented "check is_available() again when the future is
+    // resolved" contract by returning a successful no-op.
+    DEBUG("{} already available", get_name());
+    return wa_ertr::now();
   }
   return wait_available_promise->get_shared_future(
   ).then([FNAME, this]() -> wa_ertr::future<> {
@@ -298,7 +308,9 @@ RecordSubmitter::submit(
   auto eval = p_current_batch->evaluate_submit(
       record.size, journal_allocator.get_block_size());
   bool needs_flush = (
-      state == state_t::IDLE ||
+      // dispatch greedily while the device has free io slots; batching
+      // kicks in only once io_depth_limit is reached
+      state != state_t::FULL ||
       eval.submit_size.get_fullness() > preferred_fullness ||
       // RecordBatch::needs_flush()
       eval.is_full ||
@@ -389,10 +401,10 @@ RecordSubmitter::submit(
 }
 
 RecordSubmitter::open_ret
-RecordSubmitter::open(bool is_mkfs)
+RecordSubmitter::open(store_index_t store_index, bool is_mkfs)
 {
   return journal_allocator.open(is_mkfs
-  ).safe_then([this](journal_seq_t ret) {
+  ).safe_then([this, store_index](journal_seq_t ret) {
     LOG_PREFIX(RecordSubmitter::open);
     DEBUG("{} register metrics", get_name());
     stats = {};
@@ -400,6 +412,8 @@ RecordSubmitter::open(bool is_mkfs)
     namespace sm = seastar::metrics;
     std::vector<sm::label_instance> label_instances;
     label_instances.push_back(sm::label_instance("submitter", get_name()));
+    label_instances.push_back(sm::label_instance("shard_store_index", std::to_string(store_index)));
+
     metrics.add_group(
       "journal",
       {
@@ -469,7 +483,7 @@ void RecordSubmitter::update_state()
   } else if (num_outstanding_io == io_depth_limit) {
     state = state_t::FULL;
   } else {
-    ceph_abort("fatal error: io-depth overflow");
+    ceph_abort_msg("fatal error: io-depth overflow");
   }
 }
 
@@ -495,12 +509,11 @@ void RecordSubmitter::decrement_io_with_flush()
     ceph_assert(!wait_unfull_flush_promise.has_value());
   }
 
+  // dispatch the pending batch into the freed io slot instead of
+  // waiting for the journal to fully drain (state == IDLE)
   auto needs_flush = (
-      !p_current_batch->is_empty() && (
-        state == state_t::IDLE ||
-        p_current_batch->get_submit_size().get_fullness() > preferred_fullness ||
-        p_current_batch->needs_flush()
-      ));
+      !p_current_batch->is_empty() &&
+      state != state_t::FULL);
   if (needs_flush) {
     DEBUG("{} flush", get_name());
     flush_current_batch();

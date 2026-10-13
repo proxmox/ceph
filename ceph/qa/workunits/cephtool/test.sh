@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# -*- mode:shell-script; tab-width:8; sh-basic-offset:2; indent-tabs-mode:t -*-
-# vim: ts=8 sw=8 ft=bash smarttab
+# -*- mode:shell-script; tab-width:8; sh-basic-offset:2; indent-tabs-mode:nil -*-
+# vim: ts=8 sw=8 ft=bash expandtab
+
 set -x
 
 source $(dirname $0)/../../standalone/ceph-helpers.sh
@@ -1588,10 +1589,10 @@ function test_mon_osd()
 	expect_false ceph osd set $f
 	expect_false ceph osd unset $f
   done
-  ceph osd require-osd-release tentacle
+  ceph osd require-osd-release umbrella
   # can't lower
+  expect_false ceph osd require-osd-release tentacle
   expect_false ceph osd require-osd-release squid
-  expect_false ceph osd require-osd-release reef
   # these are no-ops but should succeed.
 
   ceph osd set noup

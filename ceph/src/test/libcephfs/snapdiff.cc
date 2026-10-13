@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -20,6 +21,7 @@
 #include "include/stringify.h"
 #include "common/ceph_context.h"
 #include "common/config_proxy.h"
+#include "common/JSONFormatter.h"
 #include "json_spirit/json_spirit.h"
 #include "boost/format/alt_sstream.hpp"
 #include <errno.h>
@@ -34,6 +36,7 @@
 #include <dirent.h>
 #include <optional>
 #include <random>
+#include <string.h>
 
 using namespace std;
 class TestMount {
@@ -2139,7 +2142,12 @@ TEST(LibCephFS, SnapDiffChangedBlockWithCustomObjectSize)
 }
 
 TEST(LibCephFS, SnapDiffDeletionRecreation) {
+#ifdef _WIN32
+  // Windows client is ~8x slower per file op; 1<<15 exceeds the test timeout
+  int bulk_count = 1 << 12;
+#else
   int bulk_count = 1 << 15;
+#endif
   TestMount test_mount("/SnapdiffDeletionRecreation");
 
   ASSERT_EQ(0, test_mount.mkdir("bulk"));

@@ -115,3 +115,14 @@ isal_gzip_header_init           @110
 isal_adler32                    @111
 isal_deflate_process_dict       @112
 isal_deflate_reset_dict         @113
+gf_inv                          @114
+crc64_rocksoft_norm_base        @115
+crc64_rocksoft_refl_base        @116
+crc64_rocksoft_norm             @117
+crc64_rocksoft_refl             @118
+ec_init_tables_base             @119
+isal_zlib_header_init           @120
+crc16_t10dif_copy_base          @121
+isal_get_version                @122
+isal_get_version_str            @123
+gf_vect_mul_init_base           @124

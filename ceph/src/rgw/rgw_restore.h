@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -19,6 +19,8 @@
 #include "rgw_common.h"
 #include "cls/rgw/cls_rgw_types.h"
 #include "rgw_sal.h"
+#include "rgw_notify.h"
+#include "rgw_restore_waiter.h"
 
 #include <atomic>
 #include <tuple>
@@ -72,6 +74,7 @@ class Restore : public DoutPrefixProvider {
   int max_objs{0};
   std::vector<std::string> obj_names;
   std::atomic<bool> down_flag = { false };
+  std::shared_ptr<RestoreWaiterRegistry> waiter_registry;
 
   class RestoreWorker : public Thread
   {
@@ -94,6 +97,7 @@ class Restore : public DoutPrefixProvider {
     void *entry() override;
     void stop();
 
+    friend class Restore;
     friend class RGWRados;
   }; // RestoreWorker
 
@@ -115,6 +119,8 @@ public:
   bool going_down();
   void start_processor();
   void stop_processor();
+  void wake_worker();
+  std::shared_ptr<RestoreWaiterRegistry> get_waiter_registry() const { return waiter_registry; }
 
   CephContext *get_cct() const override { return cct; }
   rgw::sal::Restore* get_restore() const { return sal_restore.get(); }
@@ -150,6 +156,29 @@ public:
 			     std::optional<uint64_t> days,
 			     const DoutPrefixProvider* dpp,
 			     optional_yield y);
+
+  /**
+   * Send notification incase of restore events
+   */
+
+  void send_notification(const DoutPrefixProvider* dpp,
+                              rgw::sal::Driver* driver,
+                              rgw::sal::Object* obj,
+                              rgw::sal::Bucket* bucket,
+                              const std::string& etag,
+                              uint64_t size,
+                              const std::string& version_id,
+                              const rgw::notify::EventTypeList& event_types,
+                              optional_yield y);
+  // list restore status of objects in the bucket
+  int list(const DoutPrefixProvider* dpp, RestoreEntry& entry,
+           std::optional<std::string> restore_status_filter, std::string& err_msg,
+           RGWFormatterFlusher& flusher, optional_yield y);
+
+  // restore status of an object in a bucket
+  int status(const DoutPrefixProvider* dpp, RestoreEntry& entry,
+             std::string& err_msg, RGWFormatterFlusher& flusher,
+             optional_yield y);
 };
 
 } // namespace rgw::restore

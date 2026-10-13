@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -17,12 +18,14 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <variant>
 
 #include "common/hobject.h"
 #ifndef WITH_CRIMSON
 #include "osd/osd_internal_types.h"
 #else
 #include "crimson/osd/object_context.h"
+typedef crimson::osd::ObjectContextRef ObjectContextRef;
 #endif
 #include "common/interval_map.h"
 #include "common/inline_variant.h"
@@ -55,7 +58,7 @@ public:
 	hobject_t source; // must be temp object
       };
     };
-    using InitType = boost::variant<
+    using InitType = std::variant<
       Init::None,
       Init::Create,
       Init::Clone,
@@ -91,16 +94,16 @@ public:
       return delete_first;
     }
     bool is_delete() const {
-      return boost::get<Init::None>(&init_type) != nullptr && delete_first;
+      return std::holds_alternative<Init::None>(init_type) && delete_first;
     }
     bool is_none() const {
-      return boost::get<Init::None>(&init_type) != nullptr && !delete_first;
+      return std::holds_alternative<Init::None>(init_type) && !delete_first;
     }
     bool is_fresh_object() const {
-      return boost::get<Init::None>(&init_type) == nullptr;
+      return !std::holds_alternative<Init::None>(init_type);
     }
     bool is_rename() const {
-      return boost::get<Init::Rename>(&init_type) != nullptr;
+      return std::holds_alternative<Init::Rename>(init_type);
     }
     bool has_source(hobject_t *source = nullptr) const {
       return match(
@@ -134,7 +137,6 @@ public:
 
     std::map<std::string, std::optional<ceph::buffer::list> > attr_updates;
 
-    enum class OmapUpdateType {Remove, Insert, RemoveRange};
     std::vector<std::pair<OmapUpdateType, ceph::buffer::list> > omap_updates;
 
     std::optional<ceph::buffer::list> omap_header;
@@ -163,7 +165,7 @@ public:
 	uint64_t len;
       };
     };
-    using BufferUpdateType = boost::variant<
+    using BufferUpdateType = std::variant<
       BufferUpdate::Write,
       BufferUpdate::Zero,
       BufferUpdate::CloneRange>;
@@ -208,12 +210,11 @@ public:
 	return match(
 	  left,
 	  [&](const BufferUpdate::Write &w) -> bool {
-	    auto r = boost::get<BufferUpdate::Write>(&right);
+	    auto r = std::get_if<BufferUpdate::Write>(&right);
 	    return r != nullptr && (w.fadvise_flags == r->fadvise_flags);
 	  },
 	  [&](const BufferUpdate::Zero &) -> bool {
-	    auto r = boost::get<BufferUpdate::Zero>(&right);
-	    return r != nullptr;
+	    return std::holds_alternative<BufferUpdate::Zero>(right);
 	  },
 	  [&](const BufferUpdate::CloneRange &c) -> bool {
 	    return false;
@@ -225,15 +226,15 @@ public:
 	return match(
 	  left,
 	  [&](const BufferUpdate::Write &w) -> BufferUpdateType {
-	    auto r = boost::get<BufferUpdate::Write>(&right);
+	    auto r = std::get_if<BufferUpdate::Write>(&right);
 	    ceph_assert(r && w.fadvise_flags == r->fadvise_flags);
 	    ceph::buffer::list bl = w.buffer;
 	    bl.append(r->buffer);
 	    return BufferUpdate::Write{bl, w.fadvise_flags};
 	  },
 	  [&](const BufferUpdate::Zero &z) -> BufferUpdateType {
-	    auto r = boost::get<BufferUpdate::Zero>(&right);
-	    ceph_assert(r);
+	    auto r = std::get_if<BufferUpdate::Zero>(&right);
+	    ceph_assert(r != nullptr);
 	    return BufferUpdate::Zero{z.len + r->len};
 	  },
 	  [&](const BufferUpdate::CloneRange &c) -> BufferUpdateType {
@@ -322,16 +323,16 @@ public:
 
   void update_snaps(
     const hobject_t &hoid,         ///< [in] object for snaps
-    const std::set<snapid_t> &old_snaps,///< [in] old snaps value
-    const std::set<snapid_t> &new_snaps ///< [in] new snaps value
+    std::set<snapid_t> &&old_snaps,///< [in] old snaps value
+    std::set<snapid_t> &&new_snaps ///< [in] new snaps value
     ) {
     auto &op = get_object_op(hoid);
     ceph_assert(!op.updated_snaps);
     ceph_assert(op.buffer_updates.empty());
     ceph_assert(!op.truncate);
     op.updated_snaps = make_pair(
-      old_snaps,
-      new_snaps);
+      std::move(old_snaps),
+      std::move(new_snaps));
   }
 
   /// Clears, truncates
@@ -453,7 +454,7 @@ public:
     auto &op = get_object_op_for_modify(hoid);
     op.omap_updates.emplace_back(
       std::make_pair(
-	ObjectOperation::OmapUpdateType::Insert,
+	OmapUpdateType::Insert,
 	keys_bl));
   }
   void omap_setkeys(
@@ -472,7 +473,7 @@ public:
     auto &op = get_object_op_for_modify(hoid);
     op.omap_updates.emplace_back(
       std::make_pair(
-	ObjectOperation::OmapUpdateType::Remove,
+	OmapUpdateType::Remove,
 	keys_bl));
   }
   void omap_rmkeys(
@@ -491,7 +492,7 @@ public:
     auto &op = get_object_op_for_modify(hoid);
     op.omap_updates.emplace_back(
       std::make_pair(
-	ObjectOperation::OmapUpdateType::RemoveRange,
+	OmapUpdateType::RemoveRange,
 	range_bl));
   }
   void omap_rmkeyrange(

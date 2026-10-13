@@ -79,39 +79,6 @@
 	add	rsp, stack_size
  %endmacro
 
-
-%elifidn __OUTPUT_FORMAT__, elf32
- %define arg0   arg(0)
- %define arg1   ecx
- %define tmp2   eax
- %define tmp2.b  al
- %define tmp3   edx
- %define return eax
- %define PS 4
- %define func(x) x: endbranch
- %define arg(x) [ebp+8+PS*x]
- %define arg2  edi	; must sav/restore
- %define arg3  esi
- %define tmp   ebx
-
- %macro FUNC_SAVE 0
-	push	ebp
-	mov	ebp, esp
-	push	esi
-	push	edi
-	push	ebx
-	mov	arg1, arg(1)
-	mov	arg2, arg(2)
- %endmacro
-
- %macro FUNC_RESTORE 0
-	pop	ebx
-	pop	edi
-	pop	esi
-	mov	esp, ebp	;if has frame pointer
-	pop	ebp
- %endmacro
-
 %endif	; output formats
 
 
@@ -120,10 +87,8 @@
 %define ptr arg3
 %define pos tmp3
 
-%ifidn PS,8			; 64-bit code
- default rel
- [bits 64]
-%endif
+default rel
+[bits 64]
 
 ;;; Use Non-temporal load/stor
 %ifdef NO_NT_LDST
@@ -140,13 +105,7 @@ align 16
 mk_global  xor_gen_sse, function
 func(xor_gen_sse)
 	FUNC_SAVE
-%ifidn PS,8				;64-bit code
 	sub	vec, 2			; Keep as offset to last source
-%else					;32-bit code
-	mov	tmp, arg(0)		; Update vec length arg to last source
-	sub	tmp, 2
-	mov	arg(0), tmp
-%endif
 
 	jng	return_fail		;Must have at least 2 sources
 	cmp	len, 0
@@ -157,12 +116,11 @@ func(xor_gen_sse)
 
 len_aligned_128bytes:
 	sub	len, 128
-	mov	pos, 0
-	mov	tmp, vec		;Preset to last vector
+	xor	DWORD(pos), DWORD(pos)
 
 loop128:
-	mov	tmp2, [arg2+tmp*PS]	;Fetch last pointer in array
-	sub	tmp, 1			;Next vect
+	mov	tmp2, [arg2+vec*PS]	;Fetch last pointer in array
+	lea	tmp, [vec-1]		;Next vect
 	XLDR	xmm0, [tmp2+pos]	;Start with end of array in last vector
 	XLDR	xmm1, [tmp2+pos+16]	;Keep xor parity in xmm0-7
 	XLDR	xmm2, [tmp2+pos+(2*16)]
@@ -174,7 +132,6 @@ loop128:
 
 next_vect:
 	mov 	ptr, [arg2+tmp*PS]
-	sub	tmp, 1
 	xorpd	xmm0, [ptr+pos]		;Get next vector (source)
 	xorpd	xmm1, [ptr+pos+16]
 	xorpd	xmm2, [ptr+pos+(2*16)]
@@ -184,11 +141,11 @@ next_vect:
 	xorpd	xmm6, [ptr+pos+(6*16)]
 	xorpd	xmm7, [ptr+pos+(7*16)]
 ;;;  	prefetch [ptr+pos+(8*16)]
-	jge	next_vect		;Loop for each vect
+	sub	tmp, 1
+	jae	next_vect		;Loop for each vect
 
 
-	mov	tmp, vec		;Back to last vector
-	mov	ptr, [arg2+PS+tmp*PS]	;Address of parity vector
+	mov	ptr, [arg2+PS+vec*PS]	;Address of parity vector
 	XSTR	[ptr+pos], xmm0		;Write parity xor vector
 	XSTR	[ptr+pos+(1*16)], xmm1
 	XSTR	[ptr+pos+(2*16)], xmm2
@@ -202,7 +159,7 @@ next_vect:
 	jle	loop128
 
 return_pass:
-	mov	return, 0
+	xor	DWORD(return), DWORD(return)
 	FUNC_RESTORE
 	ret
 
@@ -276,9 +233,3 @@ return_fail:
 	ret
 
 endproc_frame
-
-section .data
-
-;;;       func         core, ver, snum
-slversion xor_gen_sse, 00,   0c,  0030
-

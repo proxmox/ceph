@@ -1,6 +1,8 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
+#include "common/Clock.h" // for ceph_clock_now()
+#include "common/JSONFormatter.h"
 #include "include/function2.hpp"
 #include "rgw_acl_s3.h"
 #include "rgw_tag_s3.h"
@@ -15,7 +17,9 @@
 
 #include "account.h"
 #include "buckets.h"
+#ifdef WITH_RADOSGW_RADOS
 #include "rgw_metadata_lister.h"
+#endif
 #include "rgw_reshard.h"
 #include "rgw_pubsub.h"
 
@@ -48,6 +52,7 @@ static constexpr size_t listing_max_entries = 1000;
 /*
  * The tenant_name is always returned on purpose. May be empty, of course.
  */
+#ifdef WITH_RADOSGW_RADOS
 static void parse_bucket(const string& bucket,
                          string *tenant_name,
                          string *bucket_name,
@@ -93,6 +98,7 @@ static void dump_multipart_index_results(std::list<rgw_obj_index_key>& objs,
     f->dump_string("object",  o.name);
   }
 }
+#endif
 
 void check_bad_owner_bucket_mapping(rgw::sal::Driver* driver,
                                     const rgw_owner& owner,
@@ -310,6 +316,7 @@ static void dump_bucket_usage(map<RGWObjCategory, RGWStorageStats>& stats, Forma
   formatter->close_section();
 }
 
+#ifdef WITH_RADOSGW_RADOS
 static void dump_index_check(map<RGWObjCategory, RGWStorageStats> existing_stats,
         map<RGWObjCategory, RGWStorageStats> calculated_stats,
         Formatter *formatter)
@@ -480,6 +487,7 @@ static int check_bad_index_multipart(rgw::sal::RadosStore* const rados_store,
 
   return 0;
 } // static ::check_bad_index_multipart
+#endif
 
 
 /**
@@ -494,6 +502,7 @@ static int check_bad_index_multipart(rgw::sal::RadosStore* const rados_store,
  * 'bucket check' operation over the /admin/bucket api, so we'll want
  * to address this in the future.
  */
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucket::check_bad_index_multipart(rgw::sal::RadosStore* const rados_store,
 					 RGWBucketAdminOpState& op_state,
 					 RGWFormatterFlusher& flusher,
@@ -555,6 +564,7 @@ int RGWBucket::check_bad_index_multipart(rgw::sal::RadosStore* const rados_store
 
   return any_error;
 }
+#endif
 
 int RGWBucket::check_object_index(const DoutPrefixProvider *dpp, 
                                   RGWBucketAdminOpState& op_state,
@@ -614,6 +624,7 @@ int RGWBucket::check_object_index(const DoutPrefixProvider *dpp,
  * request left off by calling RGWRados::clear_olh. If the pending log is not
  * empty, we attempt to apply it.
  */
+#ifdef WITH_RADOSGW_RADOS
 static int check_index_olh(rgw::sal::RadosStore* const rados_store,
                            rgw::sal::Bucket* const bucket,
                            const DoutPrefixProvider *dpp,
@@ -699,6 +710,7 @@ static int check_index_olh(rgw::sal::RadosStore* const rados_store,
   flusher.flush();
   return 0;
 }
+#endif
 
 
 /**
@@ -712,6 +724,7 @@ static int check_index_olh(rgw::sal::RadosStore* const rados_store,
  * operation over the /admin/bucket api, so we'll want to address
  * this.
  */
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucket::check_index_olh(rgw::sal::RadosStore* const rados_store,
                                const DoutPrefixProvider *dpp,
                                RGWBucketAdminOpState& op_state,
@@ -825,6 +838,7 @@ static int is_versioned_instance_listable(const DoutPrefixProvider *dpp,
   } while (result.is_truncated);
   return 0;
 }
+#endif
 
 /**
  * Loops over all instance entries in a bucket shard and finds ones with
@@ -838,6 +852,7 @@ static int is_versioned_instance_listable(const DoutPrefixProvider *dpp,
  * op_state.fix_index is true, we remove the object that is associated with the
  * instance entry.
  */
+#ifdef WITH_RADOSGW_RADOS
 static int check_index_unlinked(rgw::sal::RadosStore* const rados_store,
                                 rgw::sal::Bucket* const bucket,
                                 const DoutPrefixProvider *dpp,
@@ -995,6 +1010,7 @@ int RGWBucket::check_index_unlinked(rgw::sal::RadosStore* const rados_store,
   }
   return 0;
 }
+#endif
 
 int RGWBucket::check_index(const DoutPrefixProvider *dpp, optional_yield y,
         RGWBucketAdminOpState& op_state,
@@ -1147,6 +1163,7 @@ int RGWBucketAdminOp::dump_s3_policy(rgw::sal::Driver* driver, RGWBucketAdminOpS
   return 0;
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketAdminOp::unlink(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, const DoutPrefixProvider *dpp, optional_yield y, string *err)
 {
   rgw_owner owner;
@@ -1336,6 +1353,7 @@ int RGWBucketAdminOp::link(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_s
 
   return 0;
 }
+#endif
 
 int RGWBucketAdminOp::chown(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, const string& marker, const DoutPrefixProvider *dpp, optional_yield y, string *err)
 {
@@ -1349,6 +1367,7 @@ int RGWBucketAdminOp::chown(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_
 
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketAdminOp::check_index_olh(rgw::sal::RadosStore* store, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher, const DoutPrefixProvider *dpp)
 {
@@ -1440,6 +1459,7 @@ int RGWBucketAdminOp::check_index(rgw::sal::Driver* driver,
 
   return 0;
 }
+#endif
 
 int RGWBucketAdminOp::remove_bucket(rgw::sal::Driver* driver, const rgw::SiteConfig& site,
                                     RGWBucketAdminOpState& op_state,
@@ -1511,9 +1531,70 @@ int RGWBucketAdminOp::sync_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpStat
   return bucket.sync(op_state, dpp, y, err_msg);
 }
 
-static int bucket_stats(rgw::sal::Driver* driver, const rgw::SiteConfig& site,
+static int bucket_restore_stats(rgw::sal::Driver* driver,
                         const std::string& tenant_name,
                         const std::string& bucket_name, Formatter* formatter,
+                        const DoutPrefixProvider* dpp, optional_yield y) {
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+  int restore_completed_count = 0;
+  int restore_in_progress_count = 0;
+  int restore_failed_count = 0;
+  int ret = driver->load_bucket(dpp, rgw_bucket(tenant_name, bucket_name),
+                                &bucket, y);
+  if (ret < 0) {
+    return ret;
+  }
+  rgw::sal::Bucket::ListParams params;
+  rgw::sal::Bucket::ListResults results;
+  params.list_versions = bucket->versioned();
+  params.allow_unordered = true;
+  do {
+    ret = bucket->list(dpp, params, listing_max_entries, results, null_yield);
+    if (ret < 0) {
+      cerr << "ERROR: driver->list_objects(): " << cpp_strerror(-ret) << std::endl;
+      return ret;
+    }
+    for (vector<rgw_bucket_dir_entry>::iterator iter = results.objs.begin(); iter != results.objs.end(); ++iter) {
+      std::unique_ptr<rgw::sal::Object> obj = bucket->get_object(iter->key.name);
+      if (obj) {
+        ret = obj->get_obj_attrs(null_yield, dpp);
+        if (ret < 0) {
+          cerr << "ERROR: failed to stat object, returned error: " << cpp_strerror(-ret) << std::endl;
+          return ret;
+        }
+        for (map<string, bufferlist>::iterator getattriter = obj->get_attrs().begin(); getattriter != obj->get_attrs().end(); ++getattriter) {
+          bufferlist& bl = getattriter->second;
+          if (getattriter->first == RGW_ATTR_RESTORE_STATUS) {
+            rgw::sal::RGWRestoreStatus rs;
+            try {
+              decode(rs, bl);
+            } catch (const JSONDecoder::err& e) {
+              cerr << "failed to decode JSON input: " << e.what() << std::endl;
+              return -EINVAL;
+            }
+            if (rs == rgw::sal::RGWRestoreStatus::RestoreAlreadyInProgress) {
+              restore_in_progress_count ++;
+            } else  if (rs == rgw::sal::RGWRestoreStatus::CloudRestored) {
+              restore_completed_count ++;
+            } else if (rs == rgw::sal::RGWRestoreStatus::RestoreFailed) {
+              restore_failed_count ++;
+            }
+          }
+        }
+      }
+    }
+  } while (results.is_truncated);
+  formatter->open_object_section("restore_stats");
+  formatter->dump_int("restore_completed_count", restore_completed_count);
+  formatter->dump_int("restore_in_progress_count", restore_in_progress_count);
+  formatter->dump_int("restore_failed_count", restore_failed_count);
+  formatter->close_section();
+  return 0;
+}
+
+static int bucket_stats(rgw::sal::Driver* driver, const rgw::SiteConfig& site,
+                        const std::string& tenant_name, const std::string& bucket_name,
+                        bool dump_restore_stats, Formatter* formatter,
                         const DoutPrefixProvider* dpp, optional_yield y) {
   std::unique_ptr<rgw::sal::Bucket> bucket;
   map<RGWObjCategory, RGWStorageStats> stats;
@@ -1596,6 +1677,12 @@ static int bucket_stats(rgw::sal::Driver* driver, const rgw::SiteConfig& site,
   formatter->dump_int("read_tracker", bucket_info.objv_tracker.read_version.ver);
   // TODO: bucket CORS
   // TODO: bucket LC
+  if (dump_restore_stats) {
+      ret = bucket_restore_stats(driver, tenant_name, bucket_name, formatter, dpp, y);
+      if (ret < 0) {
+        return ret;
+      }
+  }
   formatter->close_section();
 
   return 0;
@@ -1765,7 +1852,7 @@ static int list_owner_bucket_info(const DoutPrefixProvider* dpp,
 
     for (const auto& ent : listing.buckets) {
       if (show_stats) {
-        bucket_stats(driver, site, tenant, ent.bucket.name, formatter, dpp, y);
+        bucket_stats(driver, site, tenant, ent.bucket.name, false, formatter, dpp, y);
       } else {
         formatter->dump_string("bucket", ent.bucket.name);
       }
@@ -1818,7 +1905,7 @@ int RGWBucketAdminOp::info(rgw::sal::Driver* driver,
   const bool show_stats = op_state.will_fetch_stats();
   const rgw_user& user_id = op_state.get_user_id();
   if (!bucket_name.empty()) {
-    ret = bucket_stats(driver, site, user_id.tenant, bucket_name, formatter, dpp, y);
+    ret = bucket_stats(driver, site, user_id.tenant, bucket_name, op_state.restore_stats, formatter, dpp, y);
     if (ret < 0) {
       return ret;
     }
@@ -1873,14 +1960,13 @@ int RGWBucketAdminOp::info(rgw::sal::Driver* driver,
 						   &truncated);
       for (auto& bucket_name : buckets) {
         if (show_stats) {
-          bucket_stats(driver, site, user_id.tenant, bucket_name, formatter, dpp, y);
+          bucket_stats(driver, site, user_id.tenant, bucket_name, op_state.restore_stats, formatter, dpp, y);
 	} else {
           formatter->dump_string("bucket", bucket_name);
 	}
       }
     }
     driver->meta_list_keys_complete(handle);
-
     formatter->close_section();
   }
 
@@ -1908,6 +1994,7 @@ inline auto split_tenant(const std::string& bucket_name){
 }
 
 using bucket_instance_ls = std::vector<RGWBucketInfo>;
+#ifdef WITH_RADOSGW_RADOS
 void get_stale_instances(rgw::sal::Driver* driver, const std::string& bucket_name,
                          const vector<std::string>& lst,
                          bucket_instance_ls& stale_instances,
@@ -2092,6 +2179,7 @@ int RGWBucketAdminOp::clear_stale_instances(rgw::sal::Driver* driver,
 
   return process_stale_instances(driver, op_state, flusher, dpp, process_f, y);
 }
+#endif
 
 static int fix_single_bucket_lc(rgw::sal::Driver* driver,
                                 const std::string& tenant_name,
@@ -2285,6 +2373,7 @@ void RGWBucketCompleteInfo::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("attrs", attrs, obj);
 }
 
+#ifdef WITH_RADOSGW_RADOS
 class RGWBucketMetadataHandler : public RGWMetadataHandler {
  protected:
   librados::Rados& rados;
@@ -2399,6 +2488,7 @@ int RGWBucketMetadataHandler::put(std::string& entry, RGWMetadataObject* obj,
 
   return 0;
 }
+#endif
 
 int update_bucket_topic_mappings(const DoutPrefixProvider* dpp,
                                  const RGWBucketCompleteInfo* orig_bci,
@@ -2486,6 +2576,7 @@ int update_bucket_topic_mappings(const DoutPrefixProvider* dpp,
   return ret;
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketMetadataHandler::remove(std::string& entry, RGWObjVersionTracker& objv_tracker,
                                      optional_yield y, const DoutPrefixProvider *dpp)
 {
@@ -2553,7 +2644,6 @@ std::string RGWBucketMetadataHandler::get_marker(void *handle)
 
 static void get_md5_digest(const RGWBucketEntryPoint *be, string& md5_digest) {
 
-   char md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
    unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
    bufferlist bl;
 
@@ -2567,12 +2657,13 @@ static void get_md5_digest(const RGWBucketEntryPoint *be, string& md5_digest) {
    hash.Update((const unsigned char *)bl.c_str(), bl.length());
    hash.Final(m);
 
-   buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, md5);
+   md5_digest.clear();
+   md5_digest.reserve(CEPH_CRYPTO_MD5_DIGESTSIZE * 2);
+   buf_to_hex(m, std::back_inserter(md5_digest));
 
    delete f;
-
-   md5_digest = md5;
 }
+#endif
 
 #define ARCHIVE_META_ATTR RGW_ATTR_PREFIX "zone.archive.info" 
 
@@ -2614,6 +2705,7 @@ struct archive_meta_info {
 };
 WRITE_CLASS_ENCODER(archive_meta_info)
 
+#ifdef WITH_RADOSGW_RADOS
 class RGWArchiveBucketMetadataHandler : public RGWBucketMetadataHandler {
  public:
   RGWArchiveBucketMetadataHandler(librados::Rados& rados,
@@ -2891,6 +2983,7 @@ int RGWBucketInstanceMetadataHandler::put(std::string& entry, RGWMetadataObject*
   // update related state on success
   return put_post(dpp, y, bci, old, objv_tracker);
 }
+#endif
 
 void init_default_bucket_layout(CephContext *cct, rgw::BucketLayout& layout,
 				const RGWZone& zone,
@@ -2918,6 +3011,7 @@ void init_default_bucket_layout(CephContext *cct, rgw::BucketLayout& layout,
   }
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketInstanceMetadataHandler::put_prepare(
     const DoutPrefixProvider* dpp, optional_yield y,
     const std::string& entry, RGWBucketCompleteInfo& bci,
@@ -3120,7 +3214,6 @@ std::string RGWBucketInstanceMetadataHandler::get_marker(void *handle)
   return lister->get_marker();
 }
 
-
 class RGWArchiveBucketInstanceMetadataHandler : public RGWBucketInstanceMetadataHandler {
  public:
   using RGWBucketInstanceMetadataHandler::RGWBucketInstanceMetadataHandler;
@@ -3134,6 +3227,7 @@ class RGWArchiveBucketInstanceMetadataHandler : public RGWBucketInstanceMetadata
     return 0;
   }
 };
+#endif
 
 RGWBucketCtl::RGWBucketCtl(RGWSI_Zone *zone_svc,
                            RGWSI_Bucket *bucket_svc,
@@ -3163,6 +3257,7 @@ void RGWBucketCtl::init(RGWUserCtl *user_ctl,
     });
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketCtl::read_bucket_entrypoint_info(const rgw_bucket& bucket,
                                               RGWBucketEntryPoint *info,
                                               optional_yield y, const DoutPrefixProvider *dpp,
@@ -3433,7 +3528,9 @@ static rgw_raw_obj get_owner_buckets_obj(RGWSI_User* svc_user,
         return rgwrados::account::get_buckets_obj(zone, account_id);
       }), owner);
 }
+#endif
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketCtl::link_bucket(librados::Rados& rados,
                               const rgw_owner& owner,
                               const rgw_bucket& bucket,
@@ -3502,7 +3599,9 @@ done_err:
   }
   return ret;
 }
+#endif
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketCtl::unlink_bucket(librados::Rados& rados, const rgw_owner& owner,
                                 const rgw_bucket& bucket, optional_yield y,
                                 const DoutPrefixProvider *dpp, bool update_entrypoint)
@@ -3538,6 +3637,7 @@ int RGWBucketCtl::unlink_bucket(librados::Rados& rados, const rgw_owner& owner,
   ep.linked = false;
   return svc.bucket->store_bucket_entrypoint_info(meta_key, ep, false, real_time(), &attrs, &ot, y, dpp);
 }
+#endif
 
 int RGWBucketCtl::read_bucket_stats(const rgw_bucket& bucket,
                                     RGWBucketEnt *result,
@@ -3553,6 +3653,7 @@ int RGWBucketCtl::read_buckets_stats(std::vector<RGWBucketEnt>& buckets,
   return svc.bucket->read_buckets_stats(buckets, y, dpp);
 }
 
+#ifdef WITH_RADOSGW_RADOS
 int RGWBucketCtl::sync_owner_stats(const DoutPrefixProvider *dpp,
                                    librados::Rados& rados,
                                    const rgw_owner& owner,
@@ -3581,6 +3682,7 @@ int RGWBucketCtl::sync_owner_stats(const DoutPrefixProvider *dpp,
       }), owner);
   return rgwrados::buckets::write_stats(dpp, y, rados, obj, *pent);
 }
+#endif
 
 int RGWBucketCtl::get_sync_policy_handler(std::optional<rgw_zone_id> zone,
                                           std::optional<rgw_bucket> bucket,
@@ -3625,6 +3727,7 @@ int RGWBucketCtl::bucket_imports_data(const rgw_bucket& bucket,
   return handler->bucket_imports_data();
 }
 
+#ifdef WITH_RADOSGW_RADOS
 auto create_bucket_metadata_handler(librados::Rados& rados,
                                     RGWSI_Bucket* svc_bucket,
                                     RGWBucketCtl* ctl_bucket)
@@ -3666,16 +3769,20 @@ auto create_archive_bucket_instance_metadata_handler(rgw::sal::Driver* driver,
                                                                    svc_bucket, svc_bi,
                                                                    svc_datalog);
 }
+#endif
 
-void RGWBucketEntryPoint::generate_test_instances(list<RGWBucketEntryPoint*>& o)
+list<RGWBucketEntryPoint> RGWBucketEntryPoint::generate_test_instances()
 {
-  RGWBucketEntryPoint *bp = new RGWBucketEntryPoint();
-  init_bucket(&bp->bucket, "tenant", "bucket", "pool", ".index.pool", "marker", "10");
-  bp->owner = "owner";
-  bp->creation_time = ceph::real_clock::from_ceph_timespec({ceph_le32(2), ceph_le32(3)});
+  list<RGWBucketEntryPoint> o;
+  RGWBucketEntryPoint bp;
+  init_bucket(&bp.bucket, "tenant", "bucket", "pool", ".index.pool", "marker", "10");
+  bp.owner = "owner";
+  bp.creation_time = ceph::real_clock::from_ceph_timespec({ceph_le32(2), ceph_le32(3)});
 
-  o.push_back(bp);
-  o.push_back(new RGWBucketEntryPoint);
+  o.push_back(std::move(bp));
+  o.emplace_back();
+
+  return o;
 }
 
 void RGWBucketEntryPoint::dump(Formatter *f) const

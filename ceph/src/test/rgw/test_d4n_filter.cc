@@ -12,6 +12,7 @@
 #include "rgw_aio_throttle.h"
 #include "rgw_sal.h"
 #include "rgw_sal_store.h"
+#include "rgw_sal_config.h"
 #include "driver/dbstore/common/dbstore.h"
 #include "rgw_sal_d4n.h"
 #include "rgw_sal_filter.h"
@@ -96,6 +97,7 @@ class D4NFilterFixture: public ::testing::Test {
       fs::remove_all(TEST_DIR);
       fs::create_directory(TEST_DIR);
 
+      env->cct->_conf->rgw_redis_connection_pool_size = 1;
       env->cct->_conf->rgw_d4n_cache_cleaning_interval = 1;
       rgw_user uid{"test_tenant", "test_filter"};
       owner = uid;
@@ -115,9 +117,11 @@ class D4NFilterFixture: public ::testing::Test {
       DriverManager::Config cfg = DriverManager::get_config(true, g_ceph_context);
       cfg.store_name = "dbstore";
       cfg.filter_name = "d4n";
+      auto config_store_type = "dbstore";
+      auto cfgstore = DriverManager::create_config_store(env->dpp, config_store_type);
 
       auto filterDriver = DriverManager::get_raw_storage(env->dpp, g_ceph_context,
-							  cfg, io, site_config);
+							  cfg, io, site_config, cfgstore.get());
 
       rgw::sal::Driver* next = filterDriver;
       driver = newD4NFilter(next, io);
@@ -138,7 +142,7 @@ class D4NFilterFixture: public ::testing::Test {
     }
 
     void init_driver(net::yield_context yield) {
-      dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
+      d4nFilter->save_y(optional_yield{yield});
       driver->initialize(env->cct.get(), env->dpp);
 
       ASSERT_NE(driver, nullptr);
@@ -185,7 +189,7 @@ class D4NFilterFixture: public ::testing::Test {
       /* DBStore does not provide the RGW_ATTR_ID_TAG attr, so it is being manually written
          here since D4N cache backend versioning relies on it. */
       rgw::sal::Attrs attrs{{RGW_ATTR_ID_TAG, std::move(bl)}};
-      bl.append("test_etag");
+      bl.append("test_etag\0", 10);
       attrs.insert({RGW_ATTR_ETAG, std::move(bl)});
 
       bl.append("test data", 9);
@@ -222,7 +226,7 @@ class D4NFilterFixture: public ::testing::Test {
       buffer::list bl;
       bl.append("test_version\0", 13);
       rgw::sal::Attrs attrs{{RGW_ATTR_ID_TAG, std::move(bl)}};
-      bl.append("test_etag");
+      bl.append("test_etag\0", 10);
       attrs.insert({RGW_ATTR_ETAG, std::move(bl)});
 
       bl.append("test data", 9);
@@ -257,7 +261,7 @@ class D4NFilterFixture: public ::testing::Test {
       buffer::list bl;
       bl.append("test_version\0", 13);
       rgw::sal::Attrs attrs{{RGW_ATTR_ID_TAG, std::move(bl)}};
-      bl.append("test_etag");
+      bl.append("test_etag\0", 10);
       attrs.insert({RGW_ATTR_ETAG, std::move(bl)});
 
       bl.append("test data", 9);
@@ -339,6 +343,7 @@ TEST_F(D4NFilterFixture, PutObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -407,6 +412,7 @@ TEST_F(D4NFilterFixture, GetObjectRead)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver)); 
   }, rethrow);
 
@@ -518,6 +524,7 @@ TEST_F(D4NFilterFixture, CopyNoneObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -605,6 +612,7 @@ TEST_F(D4NFilterFixture, CopyMergeObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -692,6 +700,7 @@ TEST_F(D4NFilterFixture, CopyReplaceObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -762,6 +771,7 @@ TEST_F(D4NFilterFixture, DeleteObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -801,6 +811,7 @@ TEST_F(D4NFilterFixture, PutVersionedObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -886,6 +897,7 @@ TEST_F(D4NFilterFixture, GetVersionedObjectRead)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1026,6 +1038,7 @@ TEST_F(D4NFilterFixture, CopyNoneVersionedObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1166,6 +1179,7 @@ TEST_F(D4NFilterFixture, CopyMergeVersionedObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1306,6 +1320,7 @@ TEST_F(D4NFilterFixture, CopyReplaceVersionedObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1396,6 +1411,7 @@ TEST_F(D4NFilterFixture, DeleteVersionedObjectRead)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1510,9 +1526,10 @@ TEST_F(D4NFilterFixture, PutObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
- 
+
   io.run();
 }
 
@@ -1530,7 +1547,7 @@ TEST_F(D4NFilterFixture, GetObjectWrite)
     Read_CB cb(&bl);
     std::unique_ptr<rgw::sal::Object::ReadOp> read_op(obj->get_read_op());
     EXPECT_EQ(read_op->prepare(optional_yield{yield}, env->dpp), 0);
-    EXPECT_EQ(read_op->iterate(env->dpp, 0, ofs, &cb, optional_yield{yield}), 0);
+    EXPECT_EQ(read_op->iterate(env->dpp, 0, (ofs-1), &cb, optional_yield{yield}), 0);
     
     boost::system::error_code ec;
     request req;
@@ -1582,6 +1599,7 @@ TEST_F(D4NFilterFixture, GetObjectWrite)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1695,8 +1713,7 @@ TEST_F(D4NFilterFixture, CopyNoneObjectWrite)
     EXPECT_EQ(testData, "test data");
 
     // Ensure attr is not modified
-    rgw_obj copyObj = destObj->get_obj();
-    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
     rgw::sal::Attrs copyAttrs = destObj->get_attrs();
     buffer::list val = copyAttrs["user.rgw.test_attr"];
     EXPECT_EQ(val.to_str(), "test_value");  
@@ -1704,6 +1721,7 @@ TEST_F(D4NFilterFixture, CopyNoneObjectWrite)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1817,8 +1835,7 @@ TEST_F(D4NFilterFixture, CopyMergeObjectWrite)
     EXPECT_EQ(testData, "test data");
 
     // Ensure attr is merged 
-    rgw_obj copyObj = destObj->get_obj();
-    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
     rgw::sal::Attrs copyAttrs = destObj->get_attrs();
     buffer::list val = copyAttrs["user.rgw.test_attr"];
     EXPECT_EQ(val.to_str(), "copy_value");  
@@ -1826,6 +1843,7 @@ TEST_F(D4NFilterFixture, CopyMergeObjectWrite)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1939,8 +1957,7 @@ TEST_F(D4NFilterFixture, CopyReplaceObjectWrite)
     EXPECT_EQ(testData, "test data");
     
     // Ensure attr is replaced
-    rgw_obj copyObj = destObj->get_obj();
-    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+    ASSERT_EQ(destObj->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
     rgw::sal::Attrs copyAttrs = destObj->get_attrs();
     buffer::list val = copyAttrs["user.rgw.test_attr"];
     EXPECT_EQ(val.to_str(), "copy_value");  
@@ -1948,6 +1965,7 @@ TEST_F(D4NFilterFixture, CopyReplaceObjectWrite)
     testFile.close();
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -1957,7 +1975,7 @@ TEST_F(D4NFilterFixture, CopyReplaceObjectWrite)
 TEST_F(D4NFilterFixture, DeleteObjectWrite)
 {
   env->cct->_conf->d4n_writecache_enabled = true;
-  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 0;
+  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 1;
   const std::string testName = "DeleteObjectWrite";
   std::string version;
  
@@ -1995,10 +2013,12 @@ TEST_F(D4NFilterFixture, DeleteObjectWrite)
     std::unique_ptr<rgw::sal::Object::DeleteOp> del_op = obj->get_delete_op();
     EXPECT_EQ(del_op->delete_obj(env->dpp, optional_yield{yield}, rgw::sal::FLAG_LOG_OP), 0);
 
+    std::string key = TEST_BUCKET + testName + "#" + version + "#" + TEST_OBJ + testName; 
+    d4nFilter->get_policy_driver()->get_cache_policy()->update_refcount_if_key_exists(env->dpp, key, rgw::d4n::RefCount::DECR, optional_yield{yield});
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(null_yield);
   }, rethrow);
 
-  io.run_for(std::chrono::seconds(2)); // Allow cleaning cycle to complete
+  io.run_for(std::chrono::seconds(3)); // Allow cleaning cycle to complete
 
   net::spawn(io, [this, &testName, &version] (net::yield_context yield) {
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
@@ -2028,6 +2048,7 @@ TEST_F(D4NFilterFixture, DeleteObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -2184,6 +2205,7 @@ TEST_F(D4NFilterFixture, PutVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
  
@@ -2206,7 +2228,7 @@ TEST_F(D4NFilterFixture, GetVersionedObjectWrite)
       Read_CB cb(&bl);
       std::unique_ptr<rgw::sal::Object::ReadOp> read_op_enabled(objEnabled->get_read_op());
       EXPECT_EQ(read_op_enabled->prepare(optional_yield{yield}, env->dpp), 0);
-      EXPECT_EQ(read_op_enabled->iterate(env->dpp, 0, ofs, &cb, optional_yield{yield}), 0);
+      EXPECT_EQ(read_op_enabled->iterate(env->dpp, 0, (ofs - 1), &cb, optional_yield{yield}), 0);
 
       boost::system::error_code ec;
       request req;
@@ -2275,7 +2297,7 @@ TEST_F(D4NFilterFixture, GetVersionedObjectWrite)
       Read_CB cb(&bl);
       std::unique_ptr<rgw::sal::Object::ReadOp> read_op_suspended(objSuspended->get_read_op());
       EXPECT_EQ(read_op_suspended->prepare(optional_yield{yield}, env->dpp), 0);
-      EXPECT_EQ(read_op_suspended->iterate(env->dpp, 0, ofs, &cb, optional_yield{yield}), 0);
+      EXPECT_EQ(read_op_suspended->iterate(env->dpp, 0, (ofs - 1), &cb, optional_yield{yield}), 0);
 
       boost::system::error_code ec;
       request req;
@@ -2334,6 +2356,7 @@ TEST_F(D4NFilterFixture, GetVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -2444,8 +2467,7 @@ TEST_F(D4NFilterFixture, CopyNoneVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameEnabled + "/" + oid, err), true);  
 
       // Ensure attr is not modified
-      rgw_obj copyObj = destObjEnabled->get_obj();
-      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjEnabled->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "test_value");  
@@ -2540,8 +2562,7 @@ TEST_F(D4NFilterFixture, CopyNoneVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameSuspended + "/" + oid, err), true);  
 
       // Ensure attr is not modified
-      rgw_obj copyObj = destObjSuspended->get_obj();
-      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjSuspended->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "test_value");  
@@ -2556,6 +2577,7 @@ TEST_F(D4NFilterFixture, CopyNoneVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -2666,8 +2688,7 @@ TEST_F(D4NFilterFixture, CopyMergeVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameEnabled + "/" + oid, err), true);  
 
       // Ensure attr is merged
-      rgw_obj copyObj = destObjEnabled->get_obj();
-      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjEnabled->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "copy_value");  
@@ -2762,8 +2783,7 @@ TEST_F(D4NFilterFixture, CopyMergeVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameSuspended + "/" + oid, err), true);  
 
       // Ensure attr is merged  
-      rgw_obj copyObj = destObjSuspended->get_obj();
-      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjSuspended->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "copy_value");  
@@ -2778,6 +2798,7 @@ TEST_F(D4NFilterFixture, CopyMergeVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -2888,8 +2909,7 @@ TEST_F(D4NFilterFixture, CopyReplaceVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameEnabled + "/" + oid, err), true);  
 
       // Ensure attr is replaced
-      rgw_obj copyObj = destObjEnabled->get_obj();
-      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjEnabled->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjEnabled->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "copy_value");  
@@ -2984,8 +3004,7 @@ TEST_F(D4NFilterFixture, CopyReplaceVersionedObjectWrite)
       EXPECT_EQ(fs::exists(CACHE_DIR + "/" + TEST_BUCKET + testName + "/" + destNameSuspended + "/" + oid, err), true);  
 
       // Ensure attr is replaced
-      rgw_obj copyObj = destObjSuspended->get_obj();
-      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp, &copyObj), 0);
+      ASSERT_EQ(destObjSuspended->get_obj_attrs(optional_yield{yield}, env->dpp), 0);
       rgw::sal::Attrs copyAttrs = destObjSuspended->get_attrs();
       buffer::list val = copyAttrs["user.rgw.test_attr"];
       EXPECT_EQ(val.to_str(), "copy_value");  
@@ -3000,6 +3019,7 @@ TEST_F(D4NFilterFixture, CopyReplaceVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3009,8 +3029,8 @@ TEST_F(D4NFilterFixture, CopyReplaceVersionedObjectWrite)
 TEST_F(D4NFilterFixture, DeleteVersionedObjectWrite)
 {
   env->cct->_conf->d4n_writecache_enabled = true;
-  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 0;
-  const std::string testName = "DeleteVersionedObjectRead";
+  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 1;
+  const std::string testName = "DeleteVersionedObjectWrite";
   const std::string bucketName = "/tmp/d4n_filter_tests/dbstore-default_ns.1";
   std::string version, instance;
  
@@ -3063,10 +3083,14 @@ TEST_F(D4NFilterFixture, DeleteVersionedObjectWrite)
     std::unique_ptr<rgw::sal::Object::DeleteOp> del_op_suspended = objSuspended->get_delete_op();
     EXPECT_EQ(del_op_suspended->delete_obj(env->dpp, optional_yield{yield}, rgw::sal::FLAG_LOG_OP), 0);
 
+    d4nFilter->get_policy_driver()->get_cache_policy()->update_refcount_if_key_exists(env->dpp, 
+                                     url_encode(bucketName, true) + "#" + instance + "#" + TEST_OBJ + testName, rgw::d4n::RefCount::DECR, optional_yield{yield});
+    d4nFilter->get_policy_driver()->get_cache_policy()->update_refcount_if_key_exists(env->dpp, 
+                                     url_encode(bucketName, true) + "#" + version + "#" + TEST_OBJ + testName, rgw::d4n::RefCount::DECR, optional_yield{yield});
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(null_yield);
   }, rethrow);
 
-  io.run_for(std::chrono::seconds(2)); // Allow cleaning cycle to complete
+  io.run_for(std::chrono::seconds(3)); // Allow cleaning cycle to complete
 
   net::spawn(io, [this, &testName, &bucketName, &version, &instance] (net::yield_context yield) {
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
@@ -3086,7 +3110,7 @@ TEST_F(D4NFilterFixture, DeleteVersionedObjectWrite)
     conn->async_exec(req, resp, yield[ec]);
 
     ASSERT_EQ((bool)ec, false);
-    //EXPECT_EQ((int)std::get<0>(resp).value(), 0); // TODO: Object entry is not deleted
+    EXPECT_EQ((int)std::get<0>(resp).value(), 0);
     EXPECT_EQ((int)std::get<1>(resp).value(), 0);
     EXPECT_EQ((int)std::get<2>(resp).value(), 0);
     EXPECT_EQ((int)std::get<3>(resp).value(), 0);
@@ -3104,6 +3128,7 @@ TEST_F(D4NFilterFixture, DeleteVersionedObjectWrite)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3175,12 +3200,11 @@ TEST_F(D4NFilterFixture, SimpleDeleteBeforeCleaning)
 
   io.run_for(std::chrono::seconds(2)); // Allow cleaning cycle to complete
 
-  net::spawn(io, [this, &testName, &bucketName, &deleteMarker, &location] (net::yield_context yield) {
+  net::spawn(io, [this] (net::yield_context yield) {
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
 
     std::unique_ptr<rgw::sal::Object::ReadOp> read_op(objEnabled->get_read_op());
     EXPECT_EQ(read_op->prepare(optional_yield{yield}, env->dpp), -2); // Simple read; should return -ENOENT
-    EXPECT_EQ(read_op->iterate(env->dpp, 0, ofs, nullptr, optional_yield{yield}), -2);
 
     /* TODO: 
     std::string attr_val;
@@ -3189,6 +3213,7 @@ TEST_F(D4NFilterFixture, SimpleDeleteBeforeCleaning)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3198,7 +3223,7 @@ TEST_F(D4NFilterFixture, SimpleDeleteBeforeCleaning)
 TEST_F(D4NFilterFixture, VersionedDeleteBeforeCleaning)
 {
   env->cct->_conf->d4n_writecache_enabled = true;
-  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 0;
+  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 1;
   const std::string testName = "VersionedDeleteBeforeCleaning";
   const std::string bucketName = "/tmp/d4n_filter_tests/dbstore-default_ns.1";
   std::vector<std::string> instances;
@@ -3256,14 +3281,16 @@ TEST_F(D4NFilterFixture, VersionedDeleteBeforeCleaning)
 
     std::unique_ptr<rgw::sal::Object::ReadOp> read_op(objEnabled->get_read_op());
     EXPECT_EQ(read_op->prepare(optional_yield{yield}, env->dpp), 0);
-    EXPECT_EQ(read_op->iterate(env->dpp, 0, ofs, nullptr, optional_yield{yield}), 0);
+    EXPECT_EQ(read_op->iterate(env->dpp, 0, (ofs - 1), nullptr, optional_yield{yield}), 0);
     EXPECT_EQ(objEnabled->get_instance(), instances[0]); // Next latest version
 
     objEnabled->set_instance(instances[0]);
+    d4nFilter->get_policy_driver()->get_cache_policy()->update_refcount_if_key_exists(env->dpp, 
+                                     url_encode(bucketName, true) + "#" + instances[1] + "#" + TEST_OBJ + testName, rgw::d4n::RefCount::DECR, optional_yield{yield});
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(null_yield);
   }, rethrow);
 
-  io.run_for(std::chrono::seconds(2)); // Allow cleaning cycle to complete
+  io.run_for(std::chrono::seconds(3)); // Allow cleaning cycle to complete
 
   net::spawn(io, [this, &testName, &bucketName, &instances] (net::yield_context yield) {
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
@@ -3294,12 +3321,13 @@ TEST_F(D4NFilterFixture, VersionedDeleteBeforeCleaning)
       next->set_instance("");
       std::unique_ptr<rgw::sal::Object::ReadOp> read_op(next->get_read_op());
       EXPECT_EQ(read_op->prepare(optional_yield{yield}, env->dpp), 0);
-      EXPECT_EQ(read_op->iterate(env->dpp, 0, ofs, &cb, optional_yield{yield}), 0);
+      EXPECT_EQ(read_op->iterate(env->dpp, 0, (ofs - 1), &cb, optional_yield{yield}), 0);
       EXPECT_EQ(next->get_instance(), instances[0]); // Next latest version
     }
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3352,6 +3380,7 @@ TEST_F(D4NFilterFixture, SimpleDeleteAfterCleaning)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3435,7 +3464,7 @@ TEST_F(D4NFilterFixture, VersionedDeleteAfterCleaning)
 
   io.run_for(std::chrono::seconds(2));
 
-  net::spawn(io, [this, &testName, &bucketName, &instances] (net::yield_context yield) {
+  net::spawn(io, [this] (net::yield_context yield) {
     dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
 
     /* TODO: Cleaning method removes head object, so delete_obj calls after a cleaning cycle will not find the head object and will immediately call the backend's delete_obj,
@@ -3448,6 +3477,7 @@ TEST_F(D4NFilterFixture, VersionedDeleteAfterCleaning)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 
@@ -3490,6 +3520,295 @@ TEST_F(D4NFilterFixture, ListObjectVersions)
 
     conn->cancel();
     testBucket->remove(env->dpp, true, optional_yield{yield});
+    driver->shutdown();
+    DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
+  }, rethrow);
+
+  io.run();
+}
+
+TEST_F(D4NFilterFixture, BucketRemoveBeforeCleaning)
+{
+  env->cct->_conf->d4n_writecache_enabled = true;
+  const std::string testName = "PutObjectWrite";
+  const std::string testName_1 = "PutObjectWrite_1";
+  const std::string testName_2 = "PutObjectWrite_2";
+  const std::string bucketName = "/tmp/d4n_filter_tests/dbstore-default_ns.1";
+  std::string instance;
+ 
+  net::spawn(io, [this, &testName, &testName_1, &testName_2, &bucketName, &instance] (net::yield_context yield) {
+    init_driver(yield);
+    create_bucket(testName, yield);
+    testBucket->get_info().bucket.bucket_id = bucketName;
+    put_object(testName, yield);
+    put_version_enabled_object(testName_1, instance, yield);
+    put_version_suspended_object(testName_2, yield);
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), -ENOTEMPTY);
+    std::string version, version_1, version_2; 
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName + "_0_0", "version");
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName_1 + "_0_0", "version");
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName_2 + "_0_0", "version");
+
+      response<std::string, std::string, std::string> resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      version = std::get<0>(resp).value();
+      version_1 = std::get<1>(resp).value();
+      version_2 = std::get<2>(resp).value();
+    }
+    
+    EXPECT_EQ(testBucket->remove(env->dpp, true, yield), 0);
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("EXISTS", bucketName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_1);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "__:null" + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_1 + "_0_0");
+      req.push("EXISTS", bucketName + "__:" + version_1 + TEST_OBJ + testName_1 + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2 + "_0_0");
+      req.push("EXISTS", bucketName + "__:null" + TEST_OBJ + testName_2 + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName + "_0_" + std::to_string(ofs));
+      req.push("EXISTS", bucketName + "__:" + version_1 + TEST_OBJ + testName_1 + "_0_" + std::to_string(ofs));
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2 + "_0_" + std::to_string(ofs));
+
+      response<int, int, int, int, int, int,
+               int, int, int, int, int, int, int > resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      EXPECT_EQ(std::get<0>(resp).value(), 0);
+      EXPECT_EQ(std::get<1>(resp).value(), 0);
+      EXPECT_EQ(std::get<2>(resp).value(), 0);
+      EXPECT_EQ(std::get<3>(resp).value(), 0);
+      EXPECT_EQ(std::get<4>(resp).value(), 0);
+      EXPECT_EQ(std::get<5>(resp).value(), 0);
+      EXPECT_EQ(std::get<6>(resp).value(), 0);
+      EXPECT_EQ(std::get<7>(resp).value(), 0);
+      EXPECT_EQ(std::get<8>(resp).value(), 0);
+      EXPECT_EQ(std::get<9>(resp).value(), 0);
+      EXPECT_EQ(std::get<10>(resp).value(), 0);
+      EXPECT_EQ(std::get<11>(resp).value(), 0);
+      EXPECT_EQ(std::get<12>(resp).value(), 0);
+    }
+
+    std::string attr_val;
+    std::string location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName + "/" + version;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_INVALID, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "1"); 
+
+    location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName_1 + "/" + version_1;
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_INVALID, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "1"); 
+
+    location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName_2 + "/" + version_2;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_INVALID, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "1"); 
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), 0);
+
+    conn->cancel();
+    driver->shutdown();
+    DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
+  }, rethrow);
+
+  io.run();
+}
+
+TEST_F(D4NFilterFixture, BucketRemoveAfterCleaning)
+{
+  env->cct->_conf->d4n_writecache_enabled = true;
+  env->cct->_conf->rgw_d4n_cache_cleaning_interval = 0;
+  const std::string testName = "PutObjectWrite";
+  const std::string testName_1 = "PutObjectWrite_1";
+  const std::string testName_2 = "PutObjectWrite_2";
+  const std::string bucketName = "/tmp/d4n_filter_tests/dbstore-default_ns.1";
+  std::string instance;
+  std::string version, version_1, version_2; 
+ 
+  net::spawn(io, [this, &testName, &testName_1, &testName_2, &bucketName, &instance, &version, &version_1, &version_2] (net::yield_context yield) {
+    init_driver(yield);
+    create_bucket(testName, yield);
+    testBucket->get_info().bucket.bucket_id = bucketName;
+    put_object(testName, yield);
+    put_version_enabled_object(testName_1, instance, yield);
+    put_version_suspended_object(testName_2, yield);
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName + "_0_0", "version");
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName_1 + "_0_0", "version");
+      req.push("HGET", bucketName + "_" + TEST_OBJ + testName_2 + "_0_0", "version");
+
+      response<std::string, std::string, std::string> resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      version = std::get<0>(resp).value();
+      version_1 = std::get<1>(resp).value();
+      version_2 = std::get<2>(resp).value();
+    }
+    
+
+    dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(null_yield);
+  }, rethrow);
+
+  io.run_for(std::chrono::seconds(2)); // Allow cleaning cycle to complete
+
+  net::spawn(io, [this, &testName, &testName_1, &testName_2, &bucketName, &version, &version_1, &version_2] (net::yield_context yield) {
+    dynamic_cast<rgw::d4n::LFUDAPolicy*>(d4nFilter->get_policy_driver()->get_cache_policy())->save_y(optional_yield{yield});
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), -ENOTEMPTY);
+    EXPECT_EQ(testBucket->remove(env->dpp, true, yield), 0);
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("EXISTS", bucketName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_1);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "__:null" + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_1 + "_0_0");
+      req.push("EXISTS", bucketName + "__:" + version_1 + TEST_OBJ + testName_1 + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2 + "_0_0");
+      req.push("EXISTS", bucketName + "__:null" + TEST_OBJ + testName_2 + "_0_0");
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName + "_0_" + std::to_string(ofs));
+      req.push("EXISTS", bucketName + "__:" + version_1 + TEST_OBJ + testName_1 + "_0_" + std::to_string(ofs));
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName_2 + "_0_" + std::to_string(ofs));
+
+      response<int, int, int, int, int, int,
+               int, int, int, int, int, int, int > resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      EXPECT_EQ(std::get<0>(resp).value(), 0);
+      EXPECT_EQ(std::get<1>(resp).value(), 0);
+      EXPECT_EQ(std::get<2>(resp).value(), 0);
+      EXPECT_EQ(std::get<3>(resp).value(), 0);
+      EXPECT_EQ(std::get<4>(resp).value(), 0);
+      EXPECT_EQ(std::get<5>(resp).value(), 0);
+      EXPECT_EQ(std::get<6>(resp).value(), 0);
+      EXPECT_EQ(std::get<7>(resp).value(), 0);
+      EXPECT_EQ(std::get<8>(resp).value(), 0);
+      EXPECT_EQ(std::get<9>(resp).value(), 0);
+      EXPECT_EQ(std::get<10>(resp).value(), 0);
+      EXPECT_EQ(std::get<11>(resp).value(), 0);
+      EXPECT_EQ(std::get<12>(resp).value(), 0);
+    }
+
+    /* Eviction will eventually lazily delete leftover cache blocks, so simply ensure
+     * they are no longer dirty */
+    std::string attr_val;
+    std::string location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName + "/" + version;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_DIRTY, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "0"); 
+
+    location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName_1 + "/" + version_1;
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_DIRTY, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "0"); 
+
+    location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName_2 + "/" + version_2;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_DIRTY, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "0"); 
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), 0);
+
+    conn->cancel();
+    driver->shutdown();
+    DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
+  }, rethrow);
+
+  io.run();
+}
+
+TEST_F(D4NFilterFixture, BucketRemoveDeleteMarker)
+{
+  env->cct->_conf->d4n_writecache_enabled = true;
+  const std::string testName = "PutObjectWrite";
+  const std::string bucketName = "/tmp/d4n_filter_tests/dbstore-default_ns.1";
+  std::string instance_1, instance_2, instance_3;
+ 
+  net::spawn(io, [this, &testName, &bucketName, &instance_1, &instance_2, &instance_3] (net::yield_context yield) {
+    init_driver(yield);
+    create_bucket(testName, yield);
+    testBucket->get_info().bucket.bucket_id = bucketName;
+    put_version_enabled_object(testName, instance_1, yield);
+    std::unique_ptr<rgw::sal::Object::DeleteOp> del_op = objEnabled->get_delete_op();
+    objEnabled->set_instance(""); 
+    EXPECT_EQ(del_op->delete_obj(env->dpp, optional_yield{yield}, rgw::sal::FLAG_LOG_OP), 0);
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), -ENOTEMPTY);
+    std::string version, delete_marker; 
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("ZREVRANGE", bucketName + "_" + TEST_OBJ + testName, "0", "-1");
+
+      response< std::vector<std::string> > resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      delete_marker = std::get<0>(resp).value()[0];
+      version = std::get<0>(resp).value()[1];
+    }
+    
+    EXPECT_EQ(testBucket->remove(env->dpp, true, yield), 0);
+
+    {
+      boost::system::error_code ec;
+      request req;
+      req.push("EXISTS", bucketName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName);
+      req.push("EXISTS", bucketName + "_" + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "__:" + version + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "__:" + delete_marker + TEST_OBJ + testName + "_0_0");
+      req.push("EXISTS", bucketName + "__:" + version + TEST_OBJ + testName + "_0_" + std::to_string(ofs));
+
+      response<int, int, int,
+               int, int, int > resp;
+
+      conn->async_exec(req, resp, yield[ec]);
+
+      ASSERT_EQ((bool)ec, false);
+      EXPECT_EQ(std::get<0>(resp).value(), 0);
+      EXPECT_EQ(std::get<1>(resp).value(), 0);
+      EXPECT_EQ(std::get<2>(resp).value(), 0);
+      EXPECT_EQ(std::get<3>(resp).value(), 0);
+      EXPECT_EQ(std::get<4>(resp).value(), 0);
+      EXPECT_EQ(std::get<5>(resp).value(), 0);
+    }
+
+    std::string attr_val;
+    std::string location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName + "/" + version;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_INVALID, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "1"); 
+
+    location = CACHE_DIR + "/" + url_encode(bucketName, true) + "/" + TEST_OBJ + testName + "/" + delete_marker;  
+    EXPECT_EQ(d4nFilter->get_cache_driver()->get_attr(env->dpp, location, RGW_CACHE_ATTR_DELETE_MARKER, attr_val, optional_yield({yield})), 0);
+    EXPECT_EQ(attr_val, "1"); 
+
+    EXPECT_EQ(testBucket->check_empty(env->dpp, yield), 0);
+    conn->cancel();
+    driver->shutdown();
     DriverDestructor driver_destructor(static_cast<rgw::sal::D4NFilterDriver*>(driver));
   }, rethrow);
 

@@ -43,10 +43,6 @@
 ;       Reference paper titled "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction"
 ;       URL: http://download.intel.com/design/intarch/papers/323102.pdf
 ;
-;
-;       sample yasm command line:
-;       yasm -f x64 -f elf64 -X gnu -g dwarf2 crc32_gzip_refl_by8
-;
 ;       As explained here:
 ;       http://docs.oracle.com/javase/7/docs/api/java/util/zip/package-summary.html
 ;       CRC-32 checksum is described in RFC 1952
@@ -55,7 +51,14 @@
 
 %include "reg_sizes.asm"
 
-%define	fetch_dist	1024
+%ifndef fetch_dist
+%define	fetch_dist	4096
+%endif
+
+%ifndef PREFETCH
+%define PREFETCH        prefetcht1
+%endif
+
 
 [bits 64]
 default rel
@@ -145,7 +148,7 @@ _fold_128_B_loop:
         ; update the buffer pointer
         add     arg2, 128
 
-	prefetchnta [arg2+fetch_dist+0]
+	PREFETCH [arg2+fetch_dist+0]
         movdqu  xmm9, [arg2+16*0]
         movdqu  xmm12, [arg2+16*1]
         movdqa  xmm8, xmm0
@@ -159,7 +162,7 @@ _fold_128_B_loop:
         pxor    xmm1, xmm12
         xorps   xmm1, xmm13
 
-	prefetchnta [arg2+fetch_dist+32]
+	PREFETCH [arg2+fetch_dist+32]
         movdqu  xmm9, [arg2+16*2]
         movdqu  xmm12, [arg2+16*3]
         movdqa  xmm8, xmm2
@@ -173,7 +176,7 @@ _fold_128_B_loop:
         pxor    xmm3, xmm12
         xorps   xmm3, xmm13
 
-	prefetchnta [arg2+fetch_dist+64]
+	PREFETCH [arg2+fetch_dist+64]
         movdqu  xmm9, [arg2+16*4]
         movdqu  xmm12, [arg2+16*5]
         movdqa  xmm8, xmm4
@@ -187,7 +190,7 @@ _fold_128_B_loop:
         pxor    xmm5, xmm12
         xorps   xmm5, xmm13
 
-	prefetchnta [arg2+fetch_dist+96]
+	PREFETCH [arg2+fetch_dist+96]
         movdqu  xmm9, [arg2+16*6]
         movdqu  xmm12, [arg2+16*7]
         movdqa  xmm8, xmm6
@@ -620,6 +623,3 @@ pshufb_shf_table:
 ;       dq 0x060504030201008f, 0x0e0d0c0b0a090807 ; shl 1  (16-15) / shr15
 dq 0x8786858483828100, 0x8f8e8d8c8b8a8988
 dq 0x0706050403020100, 0x000e0d0c0b0a0908
-
-;;;       func        core, ver, snum
-slversion crc32_gzip_refl_by8, 01,   00,  002c

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -172,7 +173,8 @@ static PyObject*
 ceph_standby_state_get(BaseMgrStandbyModule *self, PyObject *args)
 {
   char *whatc = NULL;
-  if (!PyArg_ParseTuple(args, "s:ceph_state_get", &whatc)) {
+  int get_mutable = 0;
+  if (!PyArg_ParseTuple(args, "s|i:ceph_state_get", &whatc, &get_mutable)) {
     return NULL;
   }
   std::string what(whatc);

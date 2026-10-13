@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -287,14 +287,14 @@ public:
 
   void expect_remove_mirror_image(librados::IoCtx &ioctx, int r) {
     EXPECT_CALL(get_mock_io_ctx(ioctx),
-                exec(StrEq("rbd_mirroring"), _, StrEq("rbd"),
+                exec_internal(StrEq("rbd_mirroring"), _, StrEq("rbd"),
                      StrEq("mirror_image_remove"), _, _, _, _))
       .WillOnce(Return(r));
   }
 
   void expect_dir_remove_image(librados::IoCtx &ioctx, int r) {
     EXPECT_CALL(get_mock_io_ctx(ioctx),
-                exec(RBD_DIRECTORY, _, StrEq("rbd"), StrEq("dir_remove_image"),
+                exec_internal(RBD_DIRECTORY, _, StrEq("rbd"), StrEq("dir_remove_image"),
                      _, _, _, _))
       .WillOnce(Return(r));
   }

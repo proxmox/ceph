@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -53,7 +54,7 @@ using ::cls::sem_set::max_keys;
   ss::increment call{std::move(key)};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::INCREMENT, in);
+    op.exec(ss::method::increment, in);
   }};
 }
 
@@ -73,7 +74,7 @@ using ::cls::sem_set::max_keys;
   ss::increment call{keys};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::INCREMENT, in);
+    op.exec(ss::method::increment, in);
   }};
 }
 
@@ -93,7 +94,7 @@ using ::cls::sem_set::max_keys;
   ss::increment call{std::move(keys)};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::INCREMENT, in);
+    op.exec(ss::method::increment, in);
   }};
 }
 
@@ -116,7 +117,7 @@ template<std::input_iterator I>
   ss::increment call{begin, end};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::INCREMENT, in);
+    op.exec(ss::method::increment, in);
   }};
 }
 
@@ -138,7 +139,7 @@ decrement(std::string key, ceph::timespan grace = 0ns)
   ss::decrement call{std::move(key), grace};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::DECREMENT, in);
+    op.exec(ss::method::decrement, in);
   }};
 }
 
@@ -160,7 +161,7 @@ decrement(std::initializer_list<std::string> keys, ceph::timespan grace = 0ns)
   ss::decrement call{keys, grace};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::DECREMENT, in);
+    op.exec(ss::method::decrement, in);
   }};
 }
 
@@ -182,7 +183,7 @@ decrement(boost::container::flat_set<std::string> keys, ceph::timespan grace = 0
   ss::decrement call{std::move(keys), grace};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::DECREMENT, in);
+    op.exec(ss::method::decrement, in);
   }};
 }
 
@@ -206,7 +207,7 @@ decrement(I begin, I end, ceph::timespan grace = 0ns)
   ss::decrement call{begin, end, grace};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::DECREMENT, in);
+    op.exec(ss::method::decrement, in);
   }};
 }
 
@@ -230,7 +231,7 @@ decrement(I begin, I end, ceph::timespan grace = 0ns)
   ss::reset call{std::move(key), val};
   encode(call, in);
   return ClsWriteOp{[in = std::move(in)](WriteOp& op) {
-    op.exec(ss::CLASS, ss::RESET, in);
+    op.exec(ss::method::reset, in);
   }};
 }
 
@@ -262,7 +263,7 @@ decrement(I begin, I end, ceph::timespan grace = 0ns)
   encode(call, in);
   return ClsReadOp{[entries, new_cursor,
 		    in = std::move(in)](ReadOp& op) {
-    op.exec(ss::CLASS, ss::LIST, in,
+    op.exec(ss::method::list, in,
 	    [entries, new_cursor](sys::error_code ec, const buffer::list& bl) {
 	      ss::list_ret ret;
 	      if (!ec) {
@@ -322,7 +323,7 @@ template<std::output_iterator<std::pair<std::string, std::uint64_t>> I>
   encode(call, in);
   return ClsReadOp{[output, new_cursor,
 		    in = std::move(in)](ReadOp& op) {
-    op.exec(ss::CLASS, ss::LIST, in,
+    op.exec(ss::method::list, in,
 	    [output, new_cursor](error_code ec, const buffer::list& bl) {
 	      ss::list_ret ret;
 	      if (!ec) {

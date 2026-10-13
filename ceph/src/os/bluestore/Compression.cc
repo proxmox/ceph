@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -14,6 +15,8 @@
 #include "Compression.h"
 #include "BlueStore.h"
 #include "include/intarith.h"
+#include "common/debug.h" // for dout()
+#include "common/Formatter.h"
 #include <limits>
 
 template <typename Char>
@@ -533,7 +536,7 @@ void Scan::candidate(const Extent* e)
       bit->second.consumed_size += e->length;
       if (bit->second.consumed_size == bit->second.blob_use_size) {
         // Seen all extents of the blob, can take gain.
-        gain = h_bblob.get_ondisk_length();
+        gain = h_bblob.get_ondisk_size();
       }
       estimator->batch(e, gain);
     } else {

@@ -13,9 +13,8 @@ is very safe and you cannot afford authentication, you can disable it.
              disable authentication, any access to the cluster will be
              permitted no matter the origin or identity of the client.
 
-For information about creating users, see `User Management`_. For details on
-the architecture of CephX, see `Architecture - High Availability
-Authentication`_.
+For information about creating users, see :ref:`user-management`. For details on
+the architecture of CephX, see :ref:`arch_high_availability_authentication`.
 
 
 Deployment Scenarios
@@ -59,9 +58,9 @@ Enabling CephX
 
 When CephX is enabled, Ceph will look for the keyring in the default search
 path: this path includes ``/etc/ceph/$cluster.$name.keyring``. It is possible
-to override this search-path location by adding a ``keyring`` option in the
-``[global]`` section of your `Ceph configuration`_ file, but this is not
-recommended.
+to override this search path location by adding a ``keyring`` option in the
+``[global]`` section of your :ref:`Ceph configuration <configuring-ceph>`
+file, but this is not recommended.
 
 To enable CephX on a cluster for which authentication has been disabled, carry
 out the following procedure.  If you (or your deployment utility) have already
@@ -110,7 +109,8 @@ generated the keys, you may skip the steps related to generating keys.
       ceph auth get-or-create mds.{$id} mon 'allow rwx' osd 'allow *' mds 'allow *' mgr 'allow profile mds' -o /var/lib/ceph/mds/ceph-{$id}/keyring
 
 #. Enable CephX authentication by setting the following options in the
-   ``[global]`` section of your `Ceph configuration`_ file:
+   ``[global]`` section of your :ref:`Ceph configuration <configuring-ceph>`
+   file:
 
    .. code-block:: ini
 
@@ -135,7 +135,8 @@ so.** However, setup and troubleshooting might be easier if authentication is
 temporarily disabled and subsequently re-enabled.
 
 #. Disable CephX authentication by setting the following options in the
-   ``[global]`` section of your `Ceph configuration`_ file:
+   ``[global]`` section of your :ref:`Ceph configuration <configuring-ceph>`
+   file:
 
    .. code-block:: ini
 
@@ -164,7 +165,7 @@ commands and Ceph clients is to include a Ceph keyring under the ``/etc/ceph``
 directory. For Octopus and later releases that use ``cephadm``, the filename is
 usually ``ceph.client.admin.keyring``.  If the keyring is included in the
 ``/etc/ceph`` directory, then it is unnecessary to specify a ``keyring`` entry
-in the Ceph configuration file.
+in the :ref:`Ceph configuration <configuring-ceph>` file.
 
 Because the Ceph Storage Cluster's keyring file contains the ``client.admin``
 key, we recommend copying the keyring file to nodes from which you run
@@ -224,7 +225,7 @@ As with other parts of Ceph authentication, signatures admit of fine-grained
 control.  You can enable or disable signatures for service messages between
 clients and Ceph, and for messages between Ceph daemons.
 
-Note that even when signatures are enabled data is not encrypted in flight.
+Note that even when signatures are enabled, data is not encrypted in flight.
 
 .. confval:: cephx_require_signatures
 
@@ -241,6 +242,12 @@ Time to Live
 .. confval:: auth_mon_ticket_ttl
 .. confval:: auth_service_ticket_ttl
 
+After decrypting a service ticket, the server checks its fields for signs
+of corruption. It rejects unexpected auid values, allow_all, malformed
+capability data, and invalid timestamps.
+
+Ticket creation must be within five minutes of session-key creation,
+since the monitor creates both together.
 
 
 .. _cephx-upgrade:
@@ -370,6 +377,27 @@ this upgrade, it's necessary to do the upgrade in several steps.
 
    Adjust the above script based on where the data directory for your daemons are located.
 
+   If the daemon is an OSD created using ceph-volume the ``osd_key`` bluestore label may also
+   need to be updated. To find the device that must be passed to the bluestore tool:
+
+   .. code:: bash
+
+       ceph-volume lvm list $OSD_ID --format json
+
+   and find the ``lv_path`` field. Or, for a raw OSD:
+
+   .. code:: bash
+
+       ceph-volume raw list --format json
+
+   and find the ``device`` field for the OSD who's key you wish to rotate.
+
+   Once the device path is acquired the bluestore label can be rotated by executing:
+
+   .. code:: bash
+
+       ceph-bluestore-tool --dev $DEV_PATH set-label-key --key osd_key -v $COPIED_KEYRING
+
    Finally, restart the daemon:
 
    .. code:: bash
@@ -380,7 +408,7 @@ this upgrade, it's necessary to do the upgrade in several steps.
 
    .. code:: bash
 
-       ceph --format=json health detail | jq '.checks | has("AUTH_INSECURE_SERVICE_KEY_TYPE") | not'
+       ceph --format=json health detail | jq '.checks | has("AUTH_INSECURE_SERVICE_KEY_TYPE")'
 
    output gives ``false``.
 
@@ -792,6 +820,3 @@ example, the caps listed are in a binary format that is unsuitable for analysis.
 .. _Monitor Bootstrapping: ../../../install/manual-deployment#monitor-bootstrapping
 .. _Operating a Cluster: ../../operations/operating
 .. _Manual Deployment: ../../../install/manual-deployment
-.. _Ceph configuration: ../ceph-conf
-.. _Architecture - High Availability Authentication: ../../../architecture#high-availability-authentication
-.. _User Management: ../../operations/user-management

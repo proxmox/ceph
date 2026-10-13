@@ -231,7 +231,7 @@ func(gf_3vect_mad_avx)
 
 	sub	len, pos
 
-	movdqa	xtmph3, [constip16]	;Load const of i + 16
+	vmovdqa	xtmph3, [constip16]	;Load const of i + 16
 	vpinsrb	xtmpl3, xtmpl3, len.w, 15
 	vpshufb	xtmpl3, xtmpl3, xmask0f		;Broadcast len to all bytes
 	vpcmpgtb	xtmpl3, xtmpl3, xtmph3
@@ -283,6 +283,3 @@ align 16
 mask0f: dq 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f
 constip16:
 	dq 0xf8f9fafbfcfdfeff, 0xf0f1f2f3f4f5f6f7
-
-;;;       func             core, ver, snum
-slversion gf_3vect_mad_avx, 02,  01,  0207

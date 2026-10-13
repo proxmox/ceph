@@ -5,8 +5,6 @@ import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { of } from 'rxjs';
 import { HttpClientModule } from '@angular/common/http';
 import { SharedModule } from '~/app/shared/shared.module';
-import { provideAnimations } from '@angular/platform-browser/animations';
-import { provideToastr } from 'ngx-toastr';
 
 describe('NvmeofGatewayGroupComponent', () => {
   let component: NvmeofGatewayGroupComponent;
@@ -22,11 +20,7 @@ describe('NvmeofGatewayGroupComponent', () => {
     await TestBed.configureTestingModule({
       imports: [HttpClientModule, SharedModule, TabsModule, GridModule],
       declarations: [NvmeofGatewayGroupComponent],
-      providers: [
-        provideAnimations(),
-        provideToastr(),
-        { provide: NvmeofService, useValue: nvmeofServiceSpy }
-      ]
+      providers: [{ provide: NvmeofService, useValue: nvmeofServiceSpy }]
     }).compileComponents();
 
     fixture = TestBed.createComponent(NvmeofGatewayGroupComponent);
@@ -69,7 +63,7 @@ describe('NvmeofGatewayGroupComponent', () => {
           log_level: 'INFO',
           max_gws_in_grp: 16,
           max_hosts: 2048,
-          max_hosts_per_namespace: 8,
+          max_hosts_per_namespace: 16,
           max_hosts_per_subsystem: 128,
           max_log_directory_backups: 10,
           max_log_file_size_in_mb: 10,
@@ -81,7 +75,7 @@ describe('NvmeofGatewayGroupComponent', () => {
           max_subsystems: 128,
           monitor_timeout: 1,
           notifications_interval: 60,
-          omap_file_lock_duration: 20,
+          omap_file_lock_duration: 40,
           omap_file_lock_on_read: true,
           omap_file_lock_retries: 30,
           omap_file_lock_retry_sleep_interval: 1,
@@ -166,7 +160,7 @@ describe('NvmeofGatewayGroupComponent', () => {
           log_level: 'INFO',
           max_gws_in_grp: 16,
           max_hosts: 2048,
-          max_hosts_per_namespace: 8,
+          max_hosts_per_namespace: 16,
           max_hosts_per_subsystem: 128,
           max_log_directory_backups: 10,
           max_log_file_size_in_mb: 10,
@@ -178,7 +172,7 @@ describe('NvmeofGatewayGroupComponent', () => {
           max_subsystems: 128,
           monitor_timeout: 1,
           notifications_interval: 60,
-          omap_file_lock_duration: 20,
+          omap_file_lock_duration: 40,
           omap_file_lock_on_read: true,
           omap_file_lock_retries: 30,
           omap_file_lock_retry_sleep_interval: 1,

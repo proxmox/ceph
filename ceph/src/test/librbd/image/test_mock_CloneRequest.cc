@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -328,7 +328,7 @@ public:
     encode(static_cast<uint32_t>(mirror_mode), out_bl);
 
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(RBD_MIRRORING, _, StrEq("rbd"), StrEq("mirror_mode_get"),
+                exec_internal(RBD_MIRRORING, _, StrEq("rbd"), StrEq("mirror_mode_get"),
                      _, _, _, _))
       .WillOnce(WithArg<5>(Invoke([out_bl, r](bufferlist* out) {
                              *out = out_bl;

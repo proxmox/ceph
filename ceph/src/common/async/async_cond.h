@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -24,6 +25,7 @@
 #include <boost/asio/execution/context.hpp>
 
 #include <boost/asio/any_completion_handler.hpp>
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/append.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/bind_executor.hpp>
@@ -47,7 +49,8 @@ namespace ceph::async {
 ///
 /// \tparam Executor An asio::executor
 /// \tparam BasicLockable The mutex
-template<typename Executor, typename BasicLockable = std::mutex>
+template<typename Executor = boost::asio::any_io_executor,
+         typename BasicLockable = std::mutex>
 class async_cond : public service_list_base_hook {
   friend service<async_cond>;
 

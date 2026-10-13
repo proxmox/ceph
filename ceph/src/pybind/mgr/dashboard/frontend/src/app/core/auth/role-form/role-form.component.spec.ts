@@ -5,7 +5,6 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
 import { RoleService } from '~/app/shared/api/role.service';
@@ -16,6 +15,7 @@ import { SharedModule } from '~/app/shared/shared.module';
 import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { RoleFormComponent } from './role-form.component';
 import { RoleFormModel } from './role-form.model';
+import { USER } from '~/app/shared/constants/app.constants';
 
 describe('RoleFormComponent', () => {
   let component: RoleFormComponent;
@@ -26,7 +26,7 @@ describe('RoleFormComponent', () => {
   let router: Router;
   const setUrl = (url: string) => Object.defineProperty(router, 'url', { value: url });
 
-  @Component({ selector: 'cd-fake', template: '' })
+  @Component({ selector: 'cd-fake', template: '', standalone: false })
   class FakeComponent {}
 
   const routes: Routes = [{ path: 'roles', component: FakeComponent }];
@@ -36,7 +36,6 @@ describe('RoleFormComponent', () => {
       RouterTestingModule.withRoutes(routes),
       HttpClientTestingModule,
       ReactiveFormsModule,
-      ToastrModule.forRoot(),
       SharedModule
     ],
     declarations: [RoleFormComponent, FakeComponent]
@@ -107,7 +106,7 @@ describe('RoleFormComponent', () => {
       description: 'Role 1',
       scopes_permissions: { osd: ['read', 'create'] }
     };
-    const scopes = ['osd', 'user'];
+    const scopes = ['osd', USER];
     beforeEach(() => {
       formHelper = new FormHelper(form);
       spyOn(roleService, 'get').and.callFake(() => of(role));

@@ -27,13 +27,21 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 #include <aarch64_multibinary.h>
+#include <stddef.h>
+
+extern int
+mem_zero_detect_neon(void *, size_t);
+extern int
+mem_zero_detect_base(void *, size_t);
 
 DEFINE_INTERFACE_DISPATCHER(isal_zero_detect)
 {
-	unsigned long auxval = getauxval(AT_HWCAP);
-	if (auxval & HWCAP_ASIMD)
-		return PROVIDER_INFO(mem_zero_detect_neon);
-
-	return PROVIDER_BASIC(mem_zero_detect);
-
+#if defined(__linux__)
+        unsigned long auxval = getauxval(AT_HWCAP);
+        if (auxval & HWCAP_ASIMD)
+                return mem_zero_detect_neon;
+#elif defined(__APPLE__)
+        return mem_zero_detect_neon;
+#endif
+        return mem_zero_detect_base;
 }

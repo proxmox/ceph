@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -11,6 +12,17 @@
  */
 
 #include "TrackedOp.h"
+#include "common/debug.h"
+#include "common/histogram.h"
+#include "common/Formatter.h"
+#include "common/perf_counters.h" // for class PerfCountersBuilder
+#include "common/StackStringStream.h"
+
+#ifdef WITH_CRIMSON
+#include "crimson/common/perf_counters_collection.h"
+#else
+#include "common/perf_counters_collection.h"
+#endif
 
 #include <shared_mutex> // for std::shared_lock
 #include <sstream>
@@ -71,6 +83,29 @@ void* OpHistoryServiceThread::entry() {
   return nullptr;
 }
 
+OpHistory::OpHistory(CephContext *c) : cct(c), opsvc(this) {
+  PerfCountersBuilder b(cct, "trackedop",
+                             l_trackedop_slow_op_first, l_trackedop_slow_op_last);
+  b.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
+
+  b.add_u64_counter(l_trackedop_slow_op_count, "slow_ops_count",
+					       "Number of operations taking over ten second");
+
+  logger.reset(b.create_perf_counters());
+  cct->get_perfcounters_collection()->add(logger.get());
+
+  opsvc.create("OpHistorySvc");
+}
+
+OpHistory::~OpHistory() {
+  ceph_assert(arrived.empty());
+  ceph_assert(duration.empty());
+  ceph_assert(slow_op.empty());
+  if(logger) {
+    cct->get_perfcounters_collection()->remove(logger.get());
+    logger.reset();
+  }
+}
 
 void OpHistory::on_shutdown()
 {
@@ -155,7 +190,8 @@ void OpHistory::dump_ops(utime_t now, Formatter *f, set<string> filters, bool by
 struct ShardedTrackingData {
   ceph::mutex ops_in_flight_lock_sharded;
   TrackedOp::tracked_op_list_t ops_in_flight_sharded;
-  explicit ShardedTrackingData(string lock_name)
+  std::atomic<uint64_t> ops_in_flight_count{0};
+  explicit ShardedTrackingData(const char* lock_name)
     : ops_in_flight_lock_sharded(ceph::make_mutex(lock_name)) {}
 };
 
@@ -281,6 +317,21 @@ bool OpTracker::dump_ops_in_flight(Formatter *f, bool print_only_blocked, set<st
   return true;
 }
 
+uint64_t OpTracker::get_num_ops_in_flight()
+{
+  if (!tracking_enabled)
+    return 0;
+
+  std::shared_lock l{lock};
+  uint64_t total_ops_in_flight = 0;
+  for (uint32_t i = 0; i < num_optracker_shards; ++i) {
+    ShardedTrackingData* sdata = sharded_in_flight_list[i];
+    ceph_assert(nullptr != sdata);
+    total_ops_in_flight += sdata->ops_in_flight_count.load(std::memory_order_relaxed);
+  }
+  return total_ops_in_flight;
+}
+
 bool OpTracker::register_inflight_op(TrackedOp *i)
 {
   if (!tracking_enabled)
@@ -295,6 +346,7 @@ bool OpTracker::register_inflight_op(TrackedOp *i)
     std::lock_guard locker(sdata->ops_in_flight_lock_sharded);
     sdata->ops_in_flight_sharded.push_back(*i);
     i->seq = current_seq;
+    sdata->ops_in_flight_count.fetch_add(1, std::memory_order_relaxed);
   }
   return true;
 }
@@ -311,6 +363,7 @@ void OpTracker::unregister_inflight_op(TrackedOp* const i)
     std::lock_guard locker(sdata->ops_in_flight_lock_sharded);
     auto p = sdata->ops_in_flight_sharded.iterator_to(*i);
     sdata->ops_in_flight_sharded.erase(p);
+    sdata->ops_in_flight_count.fetch_sub(1, std::memory_order_relaxed);
   }
 }
 
@@ -484,6 +537,67 @@ void OpTracker::get_age_ms_histogram(pow2_hist_t *h)
 
 #undef dout_context
 #define dout_context tracker->cct
+
+void TrackedOp::Event::dump(ceph::Formatter *f) const {
+  f->dump_stream("time") << stamp;
+  f->dump_string("event", str);
+}
+
+void TrackedOp::put() {
+  again:
+    auto nref_snap = nref.load();
+  if (nref_snap == 1) {
+    switch (state.load()) {
+    case STATE_UNTRACKED:
+      _unregistered();
+      delete this;
+      break;
+
+    case STATE_LIVE:
+      mark_event("done");
+      tracker->unregister_inflight_op(this);
+      _unregistered();
+      if (!tracker->is_tracking()) {
+	delete this;
+      } else {
+	state = TrackedOp::STATE_HISTORY;
+	tracker->record_history_op(
+	  TrackedOpRef(this, /* add_ref = */ false));
+      }
+      break;
+
+    case STATE_HISTORY:
+      delete this;
+      break;
+
+    default:
+      ceph_abort();
+    }
+  } else if (!nref.compare_exchange_weak(nref_snap, nref_snap - 1)) {
+    goto again;
+  }
+}
+
+std::string TrackedOp::get_desc() const {
+  std::string ret;
+  {
+    std::lock_guard l(desc_lock);
+    ret = desc;
+  }
+  if (ret.size() == 0 || want_new_desc.load()) {
+    CachedStackStringStream css;
+    std::scoped_lock l(lock, desc_lock);
+    if (desc.size() && !want_new_desc.load()) {
+      return desc;
+    }
+    _dump_op_descriptor(*css);
+    desc = css->strv();
+    want_new_desc = false;
+    return desc;
+  } else {
+    return ret;
+  }
+}
 
 void TrackedOp::mark_event(std::string_view event, utime_t stamp)
 {

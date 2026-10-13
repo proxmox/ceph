@@ -9,6 +9,12 @@ from teuthology.task import Task
 
 log = logging.getLogger(__name__)
 
+CBT_FIRST_RELEASE = 21
+CBT_RELEASE_MAP = {
+    21 : "umbrella",
+    # 22 : "vampire",
+    # 23 : "w_release" ...
+}
 
 class CBT(Task):
     """
@@ -67,7 +73,28 @@ class CBT(Task):
 
         if system_type == 'rpm':
             install_cmd = ['sudo', 'yum', '-y', 'install']
-            cbt_depends = ['python3-yaml', 'python3-lxml', 'librbd-devel', 'pdsh', 'pdsh-rcmd-ssh','perf']
+            cbt_depends = ['librbd-devel', 'perf']
+
+            # pdsh is not available in the repos for el10, use el9 version which works fine.
+            # Pull it straight from the epel9 repo rather than hardcoding an rpm URL, since
+            # epel rebuilds/bumps pdsh and any pinned version eventually 404s. The repo is
+            # limited to the pdsh packages so nothing else gets resolved against el9.
+            os_version = misc.get_distro_version(self.ctx)
+            os_major_version = int(os_version.split('.')[0])
+            if os_major_version >= 10:
+                self.log.info('Installing pdsh from el9 repo into el10 system')
+                pdsh_packages = ['pdsh', 'pdsh-rcmd-ssh']
+                epel9_baseurl = 'https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/'
+                self.first_mon.run(args=[
+                    'sudo', 'yum', '-y',
+                    '--repofrompath', f'epel9-pdsh,{epel9_baseurl}',
+                    f'--setopt=epel9-pdsh.includepkgs={",".join(pdsh_packages)}',
+                    '--nogpgcheck',
+                    'install',
+                ] + pdsh_packages)
+            else:
+                cbt_depends += ['pdsh', 'pdsh-rcmd-ssh']
+
             self.log.info('Installing collectl')
             collectl_location = "https://sourceforge.net/projects/collectl/files/collectl/collectl-4.3.1/collectl-4.3.1.src.tar.gz/download"
             self.first_mon.run(
@@ -82,8 +109,22 @@ class CBT(Task):
             )
         else:
             install_cmd = ['sudo', 'apt-get', '-y', '--force-yes', 'install']
-            cbt_depends = ['python3-yaml', 'python3-lxml', 'librbd-dev', 'collectl', 'linux-tools-generic']
+            cbt_depends = ['librbd-dev', 'collectl', 'linux-tools-generic', 'python3-venv']
         self.first_mon.run(args=install_cmd + cbt_depends)
+
+        # Create a virtual environment for CBT
+        testdir = misc.get_testdir(self.ctx)
+        venv_path = f'{testdir}/cbt-venv'
+        self.first_mon.run(args=['python3', '-m', 'venv', venv_path])
+
+        # Install the python dependencies from the CBT project requirements.txt file into the venv
+        pip_install_cmd = [
+            f'{venv_path}/bin/pip',
+            'install',
+            '-r',
+            f'{testdir}/cbt/requirements.txt',
+        ]
+        self.first_mon.run(args=pip_install_cmd)
 
         benchmark_type = next(iter(self.cbt_config.get('benchmarks').keys()))
         self.log.info('benchmark: %s', benchmark_type)
@@ -106,10 +147,37 @@ class CBT(Task):
                 ]
             )
 
+    def extract_ceph_major_version(self):
+        ceph_version_str = self.first_mon.sh(['ceph', '-v'])
+        self.log.debug('ceph -v output: %s', ceph_version_str)
+        # ceph version 21.3.0 <sha1> umbrella (dev)
+        
+        full_version_num = ceph_version_str.split()[2]
+        major_version_num = int(full_version_num.split(".")[0])
+
+        self.log.debug('extracted ceph major version: %d', major_version_num)
+        return major_version_num
+
+    def cbt_branch_from_version(self):
+        try:
+            # Extract major version number
+            ceph_major_version = self.extract_ceph_major_version()
+        except Exception as e:
+            self.log.error('Failed to extract ceph version: %s', e)
+            raise
+        
+        # If older than CBT's first release use 'master' CBT branch
+        if ceph_major_version < CBT_FIRST_RELEASE:
+            self.log.debug('ceph major version is %d, so returning master', ceph_major_version)
+            return "master"
+
+        # Otherwise use corresponding or latest release CBT branch
+        return CBT_RELEASE_MAP.get(ceph_major_version, CBT_RELEASE_MAP[max(CBT_RELEASE_MAP)])
+
     def checkout_cbt(self):
         testdir = misc.get_testdir(self.ctx)
         repo = self.config.get('repo', 'https://github.com/ceph/cbt.git')
-        branch = self.config.get('branch', 'master')
+        branch = self.config.get('branch', self.cbt_branch)
         branch = self.config.get('force-branch', branch)
         sha1 = self.config.get('sha1')
         if sha1 is None:
@@ -137,6 +205,7 @@ class CBT(Task):
         super(CBT, self).setup()
         self.first_mon = next(iter(self.ctx.cluster.only(misc.get_first_mon(self.ctx, self.config)).remotes.keys()))
         self.cbt_config = self.generate_cbt_config()
+        self.cbt_branch = self.cbt_branch_from_version()
         self.log.info('cbt configuration is %s', self.cbt_config)
         self.cbt_dir = os.path.join(misc.get_archive_dir(self.ctx), 'cbt')
         self.ctx.cluster.run(args=['mkdir', '-p', '-m0755', '--', self.cbt_dir])
@@ -161,6 +230,7 @@ class CBT(Task):
         )
         self.first_mon.run(
             args=[
+                '{tdir}/cbt-venv/bin/python'.format(tdir=testdir),
                 '{tdir}/cbt/cbt.py'.format(tdir=testdir),
                 '-a', self.cbt_dir,
                 '{cbtdir}/cbt_config.yaml'.format(cbtdir=self.cbt_dir),
@@ -176,6 +246,7 @@ class CBT(Task):
             args=[
                 'rm', '--one-file-system', '-rf', '--',
                 '{tdir}/cbt'.format(tdir=testdir),
+                '{tdir}/cbt-venv'.format(tdir=testdir),
             ]
         )
         benchmark_type = next(iter(self.cbt_config.get('benchmarks').keys()))

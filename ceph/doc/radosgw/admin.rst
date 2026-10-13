@@ -16,7 +16,7 @@ Ceph Object Storage user management refers only to users of the Ceph Object
 Storage service and not to the Ceph Object Gateway as a user of the Ceph
 Storage Cluster. Create a user, access key, and secret key to enable end users
 to interact with Ceph Object Gateway services. Optionally, the users can belong
-to `Accounts`_ for ease of management.
+to :ref:`Accounts <radosgw-account>` for ease of management.
 
 There are two types of user: 
 
@@ -38,8 +38,8 @@ There are two types of user:
                            +-----+  Subuser  |
                                  +-----------+
 
-Users and subusers can be created, modified, viewed, suspended and removed.
-you may add a Display names and an email addresses can be added to user
+Users and subusers can be created, modified, viewed, suspended, and removed.
+Display names and email addresses can be added to user
 profiles. Keys and secrets can either be specified or generated automatically.
 When generating or specifying keys, remember that user IDs correspond to S3 key
 types and subuser IDs correspond to Swift key types. 
@@ -366,7 +366,7 @@ To remove a Swift secret key, run a command of the following form:
 Add or Remove Admin Capabilities
 --------------------------------
 
-The Ceph Storage Cluster provides an `Admin Ops API`_ that enables users to
+The Ceph Storage Cluster provides an :ref:`Admin Ops API <radosgw admin ops>` that enables users to
 execute administrative functions via the REST API. By default, users do NOT
 have access to this API. To enable a user to exercise administrative
 functionality, provide the user with administrative capabilities.
@@ -406,7 +406,7 @@ Users with the ``--admin`` or ``--system`` flag have global read and write
 permissions. These permissions apply to all APIs including S3 and Swift,
 unlike Admin Capabilities, and cannot be denied by IAM policy.
 
-The ``--system`` flag should only be used as documented in `Multisite Configuration`_.
+The ``--system`` flag should only be used as documented in :ref:`Multisite Configuration <multisite>`.
 
 The ``--admin`` flag can be useful for troubleshooting and recovery. For
 example, if a user accidentally removes their permissions to a bucket or
@@ -418,19 +418,19 @@ requests necessary to restore them.
 
 To create an admin user:
 
-.. prompt:: bash
+.. prompt:: bash #
 
    radosgw-admin user create --uid={username} --display-name="{display-name}" --admin
 
 To add the admin flag to an existing user:
 
-.. prompt:: bash
+.. prompt:: bash #
 
    radosgw-admin user modify --uid={username} --admin
 
 To remove the admin flag from an existing user:
 
-.. prompt:: bash
+.. prompt:: bash #
 
    radosgw-admin user modify --uid={username} --admin=0
 
@@ -573,8 +573,7 @@ quota is set for all subsequently-created users, and that quota is enabled. See
 ``rgw_bucket_default_quota_max_objects``,
 ``rgw_bucket_default_quota_max_size``, ``rgw_user_default_quota_max_objects``,
 ``rgw_user_default_quota_max_size``, ``rgw_account_default_quota_max_objects``,
-and ``rgw_account_default_quota_max_size`` in `Ceph Object Gateway Config
-Reference`_.
+and ``rgw_account_default_quota_max_size`` in :ref:`radosgw-config-ref`.
 
 Quota Cache
 -----------
@@ -596,7 +595,7 @@ the multiple RGW instances closer to perfect quota synchronization.
 
 If all three values are set to ``0`` , then quota caching is effectively
 disabled, and multiple instances will have perfect quota enforcement.  See
-`Ceph Object Gateway Config Reference`_.
+:ref:`radosgw-config-ref`.
 
 Reading / Writing Global Quotas
 -------------------------------
@@ -629,9 +628,21 @@ Rate Limit Management
 =====================
 
 Quotas can be set for The Ceph Object Gateway on users and buckets. The "rate
-limit" includes the maximum number of read operations (read ops) and write
-operations (write ops) per minute as well as the number of bytes per minute
-that can be written or read per user or per bucket.
+limit" includes the maximum number of read operations and write operations
+per accumulation interval as well as the number of bytes per accumulation interval
+that can be written or read per user or per bucket. It also includes the maximum
+number of list requests and delete operations per accumulation interval.
+The accumulation interval is configured by the :confval:`rgw_ratelimit_interval` option.
+The default value is 60 seconds.
+(Note: S3 Multi-Object Delete operation are currently not supported by rate limiting)
+
+The configured limits should be divided by the number of active object gateways. For example,
+if "user A" is to be be limited to 10 ops per minute and there are two object gateways in the cluster,
+then the limit on "user A" should be 5 (10 ops per minute / 2 RGWs).
+If the requests are not balanced between RGWs, the rate limit might be underutilized.
+For example: if the ops limit is 5 and there are two RGWs,
+but the Load Balancer sends load to only one of those RGWs,
+the effective limit is 5 ops, because this limit is enforced per RGW.
 
 Read Requests and Write Requests
 --------------------------------
@@ -643,8 +654,8 @@ How Metrics Work
 Each object gateway tracks per-user metrics separately from bucket metrics.
 These metrics are not shared with other gateways. The configured limits should
 be divided by the number of active object gateways. For example, if "user A" is
-to be be limited to 10 ops per minute and there are two object gateways in the
-cluster, then the limit on "user A" should be ``5`` (10 ops per minute / 2
+to be be limited to 10 ops per accumulation interval and there are two object gateways in the
+cluster, then the limit on "user A" should be ``5`` (10 ops per accumulation interval / 2
 RGWs). If the requests are **not** balanced between RGWs, the rate limit might
 be underutilized. For example: if the ops limit is ``5`` and there are two
 RGWs, **but** the Load Balancer sends load to only one of those RGWs, the
@@ -661,12 +672,18 @@ rate limit is reached during the execution of the request. The RGW keeps track
 of a "debt" consisting of bytes used in excess of the configured value; users
 or buckets that incur this kind of debt are prevented from sending more
 requests until the "debt" has been repaid. The maximum size of the "debt" is
-twice the max-read/write-bytes per minute. If "user A" is subject to a 1-byte
-read limit per minute and they attempt to ``GET`` an object that is 1 GB in size,
+twice the max-read/write-bytes per accumulation interval. If "user A" is subject to a 1-byte
+read limit per accumulation interval and they attempt to ``GET`` an object that is 1 GB in size,
 then the ``GET`` action will fail. After "user A" has completed this 1 GB
-operation, RGW blocks the user's requests for up to two minutes. After this
+operation, RGW blocks the user's requests for up to two accumulation intervals. After this
 time has elapsed, "user A" will be able to send ``GET`` requests again.
 
+Rate-limited requests receive an HTTP ``503`` response with the S3 error code
+``SlowDown``, matching the AWS S3 behavior. The response includes a
+``Retry-After`` header with the estimated number of seconds until the rate-limit
+window allows the next request through, computed from the current token-bucket
+state. Load balancers or reverse proxies can be configured to map the ``503``
+with ``Retry-After`` to ``429 Too Many Requests`` if clients require it.
 
 - **Bucket:** The ``--bucket`` option allows you to specify a rate limit for a
   bucket.
@@ -674,20 +691,29 @@ time has elapsed, "user A" will be able to send ``GET`` requests again.
 - **User:** The ``--uid`` option allows you to specify a rate limit for a
   user.
 
-- **Maximum Read Ops:** The ``--max-read-ops`` setting allows you to limit read
-  bytes per minute per RGW instance. A ``0`` value disables throttling. 
+- **Maximum Read Ops:** The ``--max-read-ops`` setting allows you to specify
+  the maximum number of read ops per accumulation interval per RGW instance. A ``0`` value
+  disables throttling.
   
 - **Maximum Read Bytes:** The ``--max-read-bytes`` setting allows you to limit
-  read bytes per minute per RGW instance. A ``0`` value disables throttling. 
+  read bytes per accumulation interval per RGW instance. A ``0`` value disables throttling.
 
 - **Maximum Write Ops:** The ``--max-write-ops`` setting allows you to specify
-  the maximum number of write ops per minute per RGW instance. A ``0`` value
+  the maximum number of write ops per accumulation interval per RGW instance. A ``0`` value
   disables throttling.
   
 - **Maximum Write Bytes:** The ``--max-write-bytes`` setting allows you to
-  specify the maximum number of write bytes per minute per RGW instance. A
+  specify the maximum number of write bytes per accumulation interval per RGW instance. A
   ``0`` value disables throttling.
- 
+
+- **Maximum List Ops:** The ``--max-list-ops`` setting allows you to
+  specify the maximum number of bucket listing requests per accumulation interval per RGW instance.
+  A ``0`` value disables throttling.
+
+- **Maximum Delete Ops:** The ``--max-delete-ops`` setting allows you to
+  specify the maximum number of delete operations per accumulation interval per RGW instance.
+  A ``0`` value disables throttling.
+
 - **Rate Limit Scope:** The ``--ratelimit-scope`` option sets the scope for the
   rate limit.  The options are ``bucket`` , ``user`` and ``anonymous``. Bucket
   rate limit apply to buckets.  The user rate limit applies to a user.  The
@@ -706,7 +732,8 @@ parameters:
 
    radosgw-admin ratelimit set --ratelimit-scope=user --uid=<uid> \
                                  <[--max-read-ops=<num ops>] [--max-read-bytes=<num bytes>] \
-                                 [--max-write-ops=<num ops>] [--max-write-bytes=<num bytes>]>
+                                 [--max-write-ops=<num ops>] [--max-write-bytes=<num bytes>] \
+                                 [--max-list-ops=<num ops>] [--max-delete-ops=<num ops>]>
 
 An example of using ``radosgw-admin ratelimit set`` to set a rate limit might
 look like this: 
@@ -771,7 +798,8 @@ The following is the general form of commands that set rate limit parameters:
 
    radosgw-admin ratelimit set --ratelimit-scope=bucket --bucket=<bucket> \
                                  <[--max-read-ops=<num ops>] [--max-read-bytes=<num bytes>] \
-                                 [--max-write-ops=<num ops>] [--max-write-bytes=<num bytes>]>
+                                 [--max-write-ops=<num ops>] [--max-write-bytes=<num bytes>] \
+                                 [--max-list-ops=<num ops>] [--max-delete-ops=<num ops>]>
 
 An example of using ``radosgw-admin ratelimit set`` to set a rate limit for a
 bucket might look like this: 
@@ -825,7 +853,7 @@ An enabled bucket rate limit can be disabled by running a command of the followi
 
 .. prompt:: bash #
 
-   radosgw-admin ratelimit disable --ratelimit-scope=bucket --uid=mybucket
+   radosgw-admin ratelimit disable --ratelimit-scope=bucket --bucket=mybucket
 
 Reading and Writing Global Rate Limit Configuration
 ---------------------------------------------------
@@ -865,7 +893,7 @@ all unauthenticated users:
 
 .. note:: In a multisite configuration where a realm and a period are present,
    any changes to the global rate limit must be committed using ``period update
-   --commit``. If no period is present, the rados gateway(s) must be restarted
+   --commit``. If no period is present, the RGW instances must be restarted
    for the changes to take effect.
 
 Usage
@@ -897,7 +925,6 @@ Options include:
 .. note:: You can specify time to a precision of minutes and seconds, but the
    specified time is stored only with a one-hour resolution.
 
-
 Show Usage
 ----------
 
@@ -917,6 +944,14 @@ ID, as in the following example command:
 
    radosgw-admin usage show --show-log-entries=false
 
+.. note:: If ``usage show`` returns empty results even though usage logging is
+   enabled and the cluster is active, verify that ``rgw_usage_max_shards`` is
+   set consistently across all RGW daemons and for ``radosgw-admin``.
+   A mismatch causes reads to target different objects than where data was
+   written. Use ``ceph config set global rgw_usage_max_shards <N>`` to enforce
+   a consistent value. Alternatively, ``radosgw-admin`` supports the
+   ``--rgw-usage-max-shards`` command-line parameter.
+
 
 Trim Usage
 ----------
@@ -932,10 +967,41 @@ example commands:
    radosgw-admin usage trim --uid=johndoe	
    radosgw-admin usage trim --uid=johndoe --end-date=2013-12-31
 
+.. note:: If ``usage trim`` appears to have no effect (e.g., ``usage show`` still
+   returns data or omap keys are not reduced), verify that
+   ``rgw_usage_max_shards`` is set consistently across all RGW daemons and for
+   ``radosgw-admin``. A mismatch causes trim operations to target different
+   objects than where data was written. Use
+   ``ceph config set global rgw_usage_max_shards <N>`` to enforce a consistent
+   value. Alternatively, ``radosgw-admin`` supports the
+   ``--rgw-usage-max-shards`` command-line parameter.
 
-.. _radosgw-admin: ../../man/8/radosgw-admin/
-.. _Pool Configuration: ../../rados/configuration/pool-pg-config-ref/
-.. _Ceph Object Gateway Config Reference: ../config-ref/
-.. _Accounts: ../account/
-.. _Admin Ops API: ../adminops/
-.. _Multisite Configuration: ../multisite/
+Usage Log Key Transition
+-------------------------
+
+.. versionadded:: Umbrella
+
+The ``rgw_usage_log_key_transition`` configuration option controls how RGW handles
+usage log keys in the Umbrella release. This option is enabled by default to ensure
+compatibility with existing usage logs.
+
+In previous versions, usage log keys for user/payer IDs starting with '0' could interfere
+with time-based log keys, causing issues with log trimming and iteration. The new key format
+adds a '~' prefix to prevent this conflict.
+
+When ``rgw_usage_log_key_transition`` is enabled (default: ``true``), RGW will:
+
+- Handle both old and new usage log key formats
+- Automatically migrate old keys to the new format during normal operations
+- Ensure proper trimming and reading of usage logs during the transition period
+
+You can disable this option once all old usage logs have been migrated to improve performance:
+
+.. prompt:: bash #
+
+   ceph config set client.rgw rgw_usage_log_key_transition false
+
+.. note:: Only disable ``rgw_usage_log_key_transition`` after confirming that no old
+   usage log entries remain in your system, as this will prevent RGW from handling
+   the old key format and may result in incomplete usage statistics or failed trim operations.
+

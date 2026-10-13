@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -133,12 +134,64 @@ public:
     }
   }
 
+  int omap_iterate(
+    ObjectStore::CollectionHandle &c_, ///< [in] collection
+    const ghobject_t &oid, ///< [in] object
+    const ObjectStore::omap_iter_seek_t &start_from,
+    ///^ [in] where the iterator should point to at the beginning
+    const OmapIterFunction &f ///< [in] function to call for each key/value pair
+  ) override {
+    return store->omap_iterate(c_, oid, start_from, f);
+  }
+  int omap_get_values(
+    ObjectStore::CollectionHandle &c_, ///< [in] collection
+    const ghobject_t &oid, ///< [in] object
+    const std::set<std::string> &keys, ///< [in] keys to get
+    std::map<std::string, ceph::buffer::list> *out ///< [out] returned key/values
+  ) override {
+    return store->omap_get_values(c_, oid, keys, out);
+  }
+  int omap_get_header(
+    ObjectStore::CollectionHandle &c_, ///< [in] Collection containing oid
+    const ghobject_t &oid, ///< [in] Object containing omap
+    ceph::buffer::list *header, ///< [out] omap header
+    bool allow_eio ///< [in] don't assert on eio
+  ) override {
+    return store->omap_get_header(c_, oid, header, allow_eio);
+  }
+  int omap_get(
+    ObjectStore::CollectionHandle &c_, ///< [in] Collection containing oid
+    const ghobject_t &oid, ///< [in] Object containing omap
+    ceph::buffer::list *header, ///< [out] omap header
+    std::map<std::string, ceph::buffer::list> *out /// < [out] Key to value map
+  ) override {
+    return store->omap_get(c_, oid, header, out);
+  }
+  int omap_check_keys(
+    ObjectStore::CollectionHandle &c_, ///< [in] Collection containing oid
+    const ghobject_t &oid, ///< [in] Object containing omap
+    const std::set<std::string> &keys, ///< [in] Keys to check
+    std::set<std::string> *out ///< [out] Subset of keys defined on oid
+  ) override {
+    return store->omap_check_keys(c_, oid, keys, out);
+  }
+
   int objects_read_sync(
     const hobject_t &hoid,
     uint64_t off,
     uint64_t len,
     uint32_t op_flags,
-    ceph::buffer::list *bl) override;
+    ceph::buffer::list *bl,
+    uint64_t object_size,
+    std::optional<CoroHandles> coro
+  ) override;
+
+  int objects_read_local(
+   const hobject_t &hoid,
+   uint64_t off,
+   uint64_t len,
+   uint32_t op_flags,
+   ceph::buffer::list *bl) override;
 
   int objects_readv_sync(
     const hobject_t &hoid,
@@ -153,8 +206,15 @@ public:
 	       std::pair<ceph::buffer::list*, Context*> > > &to_read,
                Context *on_complete,
                bool fast_read = false) override;
+  bool get_ec_supports_crc_encode_decode() const override;
+  ECUtil::stripe_info_t ec_get_sinfo() const override;
+  bool ec_can_decode(const shard_id_set &available_shards) const override;
+  shard_id_map<bufferlist> ec_encode_acting_set(
+      const bufferlist &in_bl) const override;
+  shard_id_map<bufferlist> ec_decode_acting_set(
+      const shard_id_map<bufferlist> &shard_map, int chunk_size) const override;
 
-private:
+ private:
   // push
   struct push_info_t {
     ObjectRecoveryProgress recovery_progress;
@@ -455,6 +515,10 @@ private:
   void repop_commit(RepModifyRef rm);
   bool auto_repair_supported() const override { return store->has_builtin_csum(); }
 
+  static inline const uint32_t scrub_fadvise_flags{
+      CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
+      CEPH_OSD_OP_FLAG_FADVISE_DONTNEED |
+      CEPH_OSD_OP_FLAG_SCRUB};
 
   int be_deep_scrub(
     const Scrub::ScrubCounterSet& io_counters,
@@ -462,6 +526,21 @@ private:
     ScrubMap &map,
     ScrubMapBuilder &pos,
     ScrubMap::object &o) override;
+
+  /**
+   * an auxiliary used by ReplicatedBackend::be_deep_scrub(), to
+   * read the data of the object being scrubbed, and calculate
+   * its digest (CRC).
+   * If a value other than std::nullopt is returned, the calling function
+   * is expected to return immediately with that value. The possible
+   * return values are -EINPROGRESS (indicating that we have not reached the
+   * end of the object yet), or 0 (indicating a read error).
+   */
+  std::optional<int32_t> be_deep_scrub_read_data(
+    const Scrub::ScrubCounterSet& io_counters,
+    const hobject_t& poid,
+    ScrubMapBuilder& pos,
+    ScrubMap::object& smap_object);
 
   uint64_t be_get_ondisk_size(uint64_t logical_size,
                               shard_id_t unused,

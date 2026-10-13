@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -673,18 +673,20 @@ int FilterDriver::list_roles(const DoutPrefixProvider *dpp,
 int FilterDriver::store_oidc_provider(const DoutPrefixProvider* dpp,
                                       optional_yield y,
                                       const RGWOIDCProviderInfo& info,
-                                      bool exclusive)
+                                      bool exclusive,
+                                      RGWObjVersionTracker* objv_tracker)
 {
-  return next->store_oidc_provider(dpp, y, info, exclusive);
+  return next->store_oidc_provider(dpp, y, info, exclusive, objv_tracker);
 }
 
 int FilterDriver::load_oidc_provider(const DoutPrefixProvider* dpp,
                                      optional_yield y,
                                      std::string_view tenant,
                                      std::string_view url,
-                                     RGWOIDCProviderInfo& info)
+                                     RGWOIDCProviderInfo& info,
+                                     RGWObjVersionTracker* objv_tracker)
 {
-  return next->load_oidc_provider(dpp, y, tenant, url, info);
+  return next->load_oidc_provider(dpp, y, tenant, url, info, objv_tracker);
 }
 
 int FilterDriver::delete_oidc_provider(const DoutPrefixProvider* dpp,
@@ -1067,12 +1069,12 @@ RGWAccessControlPolicy& FilterObject::get_acl()
 
 int FilterObject::list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			     int max_parts, int marker, int* next_marker,
-			     bool* truncated, list_parts_each_t each_func,
+			     bool* truncated, list_parts_each_t&& each_func,
 			     optional_yield y)
 {
   return next->list_parts(dpp, cct, max_parts, marker, next_marker,
 			  truncated,
-			  sal::Object::list_parts_each_t(each_func),
+			  std::move(each_func),
 			  y);
 }
 
@@ -1087,10 +1089,9 @@ int FilterObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
   return next->set_obj_attrs(dpp, setattrs, delattrs, y, flags);
 }
 
-int FilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
-				rgw_obj* target_obj)
+int FilterObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp)
 {
-  return next->get_obj_attrs(y, dpp, target_obj);
+  return next->get_obj_attrs(y, dpp);
 }
 
 int FilterObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
@@ -1115,10 +1116,10 @@ void FilterObject::gen_rand_obj_instance_name()
   return next->gen_rand_obj_instance_name();
 }
 
-std::unique_ptr<MPSerializer> FilterObject::get_serializer(const DoutPrefixProvider *dpp,
+std::unique_ptr<MPSerializer> FilterObject::get_serializer(const DoutPrefixProvider *dpp, optional_yield y,
 							   const std::string& lock_name)
 {
-  std::unique_ptr<MPSerializer> s = next->get_serializer(dpp, lock_name);
+  std::unique_ptr<MPSerializer> s = next->get_serializer(dpp, y, lock_name);
   return std::make_unique<FilterMPSerializer>(std::move(s));
 }
 
@@ -1152,11 +1153,12 @@ int FilterObject::restore_obj_from_cloud(Bucket* bucket,
 		          CephContext* cct,
 		          std::optional<uint64_t> days,
 			  bool& in_progress,
+		          uint64_t& size,
 		          const DoutPrefixProvider* dpp,
 		          optional_yield y)
 {
   return next->restore_obj_from_cloud(nextBucket(bucket), nextPlacementTier(tier),
-           cct, days, in_progress, dpp, y);
+           cct, days, in_progress, size, dpp, y);
 }
 
 bool FilterObject::placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2)
@@ -1384,16 +1386,24 @@ std::unique_ptr<Writer> FilterMultipartUpload::get_writer(
   return std::make_unique<FilterWriter>(std::move(writer), obj);
 }
 
-int FilterMPSerializer::try_lock(const DoutPrefixProvider *dpp, utime_t dur,
+int FilterMPSerializer::try_lock(const DoutPrefixProvider *dpp, ceph::timespan dur,
 				 optional_yield y)
 {
   return next->try_lock(dpp, dur, y);
 }
+int FilterMPSerializer::unlock(const DoutPrefixProvider* dpp, optional_yield y)
+{
+  return next->unlock(dpp, y);
+}
 
-int FilterLCSerializer::try_lock(const DoutPrefixProvider *dpp, utime_t dur,
+int FilterLCSerializer::try_lock(const DoutPrefixProvider *dpp, ceph::timespan dur,
 				 optional_yield y)
 {
   return next->try_lock(dpp, dur, y);
+}
+int FilterLCSerializer::unlock(const DoutPrefixProvider* dpp, optional_yield y)
+{
+  return next->unlock(dpp, y);
 }
 
 int FilterLifecycle::get_entry(const DoutPrefixProvider* dpp, optional_yield y,
@@ -1453,7 +1463,7 @@ std::unique_ptr<LCSerializer> FilterLifecycle::get_serializer(
   return std::make_unique<FilterLCSerializer>(std::move(ns));
 }
 
-int FilterRestoreSerializer::try_lock(const DoutPrefixProvider *dpp, utime_t dur,
+int FilterRestoreSerializer::try_lock(const DoutPrefixProvider *dpp, ceph::timespan dur,
 				 optional_yield y)
 {
   return next->try_lock(dpp, dur, y);
@@ -1533,6 +1543,12 @@ int FilterLuaManager::get_script(const DoutPrefixProvider* dpp, optional_yield y
   return next->get_script(dpp, y, key, script);
 }
 
+std::tuple<rgw::lua::LuaCodeType, int> FilterLuaManager::get_script_or_bytecode(const DoutPrefixProvider* dpp, optional_yield y,
+				             const std::string& key)
+{
+  return next->get_script_or_bytecode(dpp, y, key);
+}
+
 int FilterLuaManager::put_script(const DoutPrefixProvider* dpp, optional_yield y,
 				const std::string& key, const std::string& script)
 {
@@ -1574,6 +1590,9 @@ const std::string& FilterLuaManager::luarocks_path() const {
 
 void FilterLuaManager::set_luarocks_path(const std::string& path) {
   next->set_luarocks_path(path);
+}
+void FilterLuaManager::set_lua_background(rgw::lua::Background* background) {
+  next->set_lua_background(background);
 }
 
 } } // namespace rgw::sal

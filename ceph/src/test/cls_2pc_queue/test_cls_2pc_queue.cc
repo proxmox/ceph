@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "include/types.h"
 
@@ -270,7 +270,7 @@ TEST_F(TestCls2PCQueue, UpgradeFromReef)
     cls_queue_remove_op rem_op;
     rem_op.end_marker = end_marker;
     encode(rem_op, in);
-    wop.exec(TPC_QUEUE_CLASS, TPC_QUEUE_REMOVE_ENTRIES, in);
+    wop.exec(cls::tpc_queue::method::remove_entries, in);
   };
 
   while (truncated) {

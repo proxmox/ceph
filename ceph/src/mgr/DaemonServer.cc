@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -39,10 +40,12 @@
 #include "messages/MCommandReply.h"
 #include "messages/MMgrCommand.h"
 #include "messages/MMgrCommandReply.h"
+#include "messages/MMgrReport.h"
 #include "messages/MPGStats.h"
 #include "messages/MOSDScrub2.h"
 #include "messages/MOSDForceRecovery.h"
 #include "common/errno.h"
+#include "common/JSONFormatter.h"
 #include "common/pick_address.h"
 #include "common/TextTable.h"
 #include "crush/CrushWrapper.h"
@@ -173,6 +176,8 @@ int DaemonServer::init(uint64_t gid, entity_addrvec_t client_addrs)
 			   entity_name_t::MGR(gid),
 			   "mgr",
 			   Messenger::get_random_nonce());
+  msgr->set_dispatch_throttle_size(
+      g_conf().get_val<Option::size_t>("mgr_dispatch_throttle_bytes"));
   msgr->set_default_policy(Messenger::Policy::stateless_server(0));
   // throttle policy
   msgr->set_policy(entity_name_t::TYPE_OSD,
@@ -326,21 +331,27 @@ void DaemonServer::ms_handle_accept(Connection* con)
 
 bool DaemonServer::ms_handle_reset(Connection *con)
 {
+  std::lock_guard l(lock);
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_OSD) {
     auto priv = con->get_priv();
     auto session = static_cast<MgrSession*>(priv.get());
-    if (!session) {
-      return false;
+    if (session) {
+      dout(10) << "unregistering osd." << session->osd_id
+               << "  session " << session << " con " << con << dendl;
+      osd_cons[session->osd_id].erase(con);
     }
-    std::lock_guard l(lock);
-    dout(10) << "unregistering osd." << session->osd_id
-	     << "  session " << session << " con " << con << dendl;
-    osd_cons[session->osd_id].erase(con);
+  }
 
-    auto iter = daemon_connections.find(con);
-    if (iter != daemon_connections.end()) {
-      daemon_connections.erase(iter);
-    }
+  auto iter = daemon_connections.find(con);
+  if (iter != daemon_connections.end()) {
+    dout(10) << "removing daemon connection " << con
+             << " peer " << con->get_peer_addr()
+             << dendl;
+    daemon_connections.erase(iter);
+  } else {
+    dout(10) << "reset for untracked daemon connection " << con
+             << " peer " << con->get_peer_addr()
+             << dendl;
   }
   return false;
 }
@@ -845,7 +856,7 @@ bool DaemonServer::handle_report(const ref_t<MMgrReport>& m)
 
   if (m->metric_report_message) {
     const MetricReportMessage &message = *m->metric_report_message;
-    boost::apply_visitor(HandlePayloadVisitor(this), message.payload);
+    std::visit(HandlePayloadVisitor(this), message.payload);
   }
 
   return true;
@@ -1123,13 +1134,10 @@ void DaemonServer::_check_offlines_pgs(
       }
     }
   }
-  CephContext *pcct = cct; // Resolve context outside lambda
-  std::visit([pcct, report](const auto& container) {
-    ldout(pcct, 20) << container << " -> " << report->ok.size() << " ok, "
-                    << report->not_ok.size() << " not ok, "
-                    << report->unknown.size() << " unknown"
-                    << dendl;
-  }, osds);
+  dout(20) << osds << " -> " << report->ok.size() << " ok, "
+	   << report->not_ok.size() << " not ok, "
+	   << report->unknown.size() << " unknown"
+	   << dendl;
 }
 
 void DaemonServer::_maximize_ok_to_stop_set(
@@ -2995,7 +3003,7 @@ bool DaemonServer::_handle_command(
 	"}";
       op->mark_start_mon_command();
       auto on_finish = new ReplyOnFinish(cmdctx, op);
-      monc->start_mon_command({cmd}, json, nullptr, nullptr, on_finish);
+      monc->start_mon_command({cmd}, std::move(json), nullptr, nullptr, on_finish);
     }
     return true;
   } else if (prefix == "device rm-life-expectancy") {
@@ -3028,7 +3036,7 @@ bool DaemonServer::_handle_command(
       }
       op->mark_start_mon_command();
       auto on_finish = new ReplyOnFinish(cmdctx, op);
-      monc->start_mon_command({cmd}, json, nullptr, nullptr, on_finish);
+      monc->start_mon_command({std::move(cmd)}, std::move(json), nullptr, nullptr, on_finish);
     } else {
       cmdctx->reply(0, ss);
     }
@@ -3300,6 +3308,7 @@ void DaemonServer::adjust_pgs()
   std::map<string,unsigned> pg_num_to_set;
   std::map<string,unsigned> pgp_num_to_set;
   std::set<pg_t> upmaps_to_clear;
+  std::map<uint64_t,string> current_pools; // pid -> pool_name
   cluster_state.with_osdmap_and_pgmap([&](const OSDMap& osdmap, const PGMap& pg_map) {
       unsigned creating_or_unknown = 0;
       for (auto& i : pg_map.num_pg_by_state) {
@@ -3334,7 +3343,8 @@ void DaemonServer::adjust_pgs()
 
       for (auto& i : osdmap.get_pools()) {
 	const pg_pool_t& p = i.second;
-
+        const auto& pool_name = osdmap.get_pool_name(i.first);
+        current_pools[i.first] = pool_name;
 	// adjust pg_num?
 	if (p.get_pg_num_target() != p.get_pg_num()) {
 	  dout(20) << "pool " << i.first
@@ -3591,7 +3601,9 @@ void DaemonServer::adjust_pgs()
       "}";
     monc->start_mon_command({cmd}, {}, nullptr, nullptr, nullptr);
   }
+  std::set<uint64_t> affected_pools;
   for (auto pg : upmaps_to_clear) {
+    affected_pools.emplace(pg.pool());
     const string cmd =
       "{"
       "\"prefix\": \"osd rm-pg-upmap\", "
@@ -3604,6 +3616,20 @@ void DaemonServer::adjust_pgs()
       "\"pgid\": \"" + stringify(pg) + "\"" +
       "}";
     monc->start_mon_command({cmd2}, {}, nullptr, nullptr, nullptr);
+   }
+  // remove all pg_upmap_primary mappings from any pool where pg_num was changed.
+  for (auto pool_id : affected_pools) {
+   std::string pool_name;
+   auto it = current_pools.find(pool_id);
+   if (it != current_pools.end()) {
+     pool_name = it->second;
+     const string cmd =
+       "{"
+       "\"prefix\": \"osd rm-pg-upmap-primary-all\", "
+       "\"pool\": \"" + pool_name + "\"" +
+       "}";
+     monc->start_mon_command({cmd}, {}, nullptr, nullptr, nullptr);
+   }
   }
 }
 

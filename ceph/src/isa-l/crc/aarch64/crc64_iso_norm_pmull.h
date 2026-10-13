@@ -27,48 +27,49 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #########################################################################
 
-.equ	p4_low_b0, (0x0101)
-.equ	p4_low_b1, 0x0100
-.equ	p4_low_b2, 0x0001
-.equ	p4_low_b3, 0x0000
-.equ	p4_high_b0, 0x1b1b
-.equ	p4_high_b1, 0x1b00
-.equ	p4_high_b2, 0x001b
-.equ	p4_high_b3, 0x0000
+#define	p4_low_b0 (0x0101)
+#define	p4_low_b1 0x0100
+#define	p4_low_b2 0x0001
+#define	p4_low_b3 0x0000
+#define	p4_high_b0 0x1b1b
+#define	p4_high_b1 0x1b00
+#define	p4_high_b2 0x001b
+#define	p4_high_b3 0x0000
 
-.equ	p1_low_b0, (0x0145)
-.equ	p1_low_b1, 0x0000
-.equ	p1_low_b2, 0x0000
-.equ	p1_low_b3, 0x0000
-.equ	p1_high_b0, 0x1db7
-.equ	p1_high_b1, 0x0000
-.equ	p1_high_b2, 0x0000
-.equ	p1_high_b3, 0x0000
+#define	p1_low_b0 (0x0145)
+#define	p1_low_b1 0x0000
+#define	p1_low_b2 0x0000
+#define	p1_low_b3 0x0000
+#define	p1_high_b0 0x1db7
+#define	p1_high_b1 0x0000
+#define	p1_high_b2 0x0000
+#define	p1_high_b3 0x0000
 
-.equ	p0_low_b0, (0x0145)
-.equ	p0_low_b1, 0x0000
-.equ	p0_low_b2, 0x0000
-.equ	p0_low_b3, 0x0000
-.equ	p0_high_b0, 0x0000
-.equ	p0_high_b1, 0x0000
-.equ	p0_high_b2, 0x0000
-.equ	p0_high_b3, 0x0000
+#define	p0_low_b0 (0x0145)
+#define	p0_low_b1 0x0000
+#define	p0_low_b2 0x0000
+#define	p0_low_b3 0x0000
+#define	p0_high_b0 0x0000
+#define	p0_high_b1 0x0000
+#define	p0_high_b2 0x0000
+#define	p0_high_b3 0x0000
 
-.equ	br_low_b0, (0x001b)
-.equ	br_low_b1, 0x0000
-.equ	br_low_b2, 0x0000
-.equ	br_low_b3, 0x0000
-.equ	br_high_b0, 0x001b
-.equ	br_high_b1, 0x0000
-.equ	br_high_b2, 0x0000
-.equ	br_high_b3, 0x0000
+#define	br_low_b0 (0x001b)
+#define	br_low_b1 0x0000
+#define	br_low_b2 0x0000
+#define	br_low_b3 0x0000
+#define	br_high_b0 0x001b
+#define	br_high_b1 0x0000
+#define	br_high_b2 0x0000
+#define	br_high_b3 0x0000
 
-	.text
-	.section	.rodata
+ASM_DEF_RODATA
 	.align	4
 	.set	.lanchor_crc_tab,. + 0
+#ifndef __APPLE__
 	.type	crc64_tab, %object
 	.size	crc64_tab, 2048
+#endif
 
 crc64_tab:
 	.xword 0x0000000000000000, 0x000000000000001b

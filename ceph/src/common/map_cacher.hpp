@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -92,6 +93,31 @@ public:
   MapCacher(StoreDriver<K, V> *driver) : driver(driver) {}
 
   void reset() {
+    in_progress.reset();
+  }
+
+  /// Flush all pending writes/removals into a Transaction, then reset.
+  /// This ensures in-flight cached state is persisted before the cache
+  /// is cleared (e.g. on PG interval change).
+  void flush_and_reset(Transaction<K, V> *t) {
+    std::map<K, V> to_set;
+    std::set<K> to_remove;
+    K key{};
+    std::pair<K, boost::optional<V>> cached;
+    while (in_progress.get_next(key, &cached)) {
+      if (cached.second) {
+        to_set[cached.first] = cached.second.get();
+      } else {
+        to_remove.insert(cached.first);
+      }
+      key = cached.first;
+    }
+    if (!to_set.empty()) {
+      t->set_keys(to_set);
+    }
+    if (!to_remove.empty()) {
+      t->remove_keys(to_remove);
+    }
     in_progress.reset();
   }
 

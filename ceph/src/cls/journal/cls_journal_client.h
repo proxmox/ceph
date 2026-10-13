@@ -1,11 +1,12 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_CLS_JOURNAL_CLIENT_H
 #define CEPH_CLS_JOURNAL_CLIENT_H
 
 #include "include/rados/librados_fwd.hpp"
 #include "cls/journal/cls_journal_types.h"
+#include "cls/journal/cls_journal_ops.h"
 #include <set>
 #include <boost/optional.hpp>
 

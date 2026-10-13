@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -18,15 +19,15 @@
 #define CEPH_MSG_ASYNCCONNECTION_H
 
 #include <atomic>
-#include <pthread.h>
 #include <climits>
+#include <deque>
 #include <list>
 #include <mutex>
 #include <map>
+#include <set>
 #include <functional>
 #include <optional>
 
-#include "auth/AuthSessionHandler.h"
 #include "common/ceph_time.h"
 #include "common/perf_counters.h"
 #include "include/buffer.h"

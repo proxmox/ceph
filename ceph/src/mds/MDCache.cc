@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -13,6 +14,7 @@
  */
 
 #include "MDCache.h"
+#include "Mutation.h"
 #include "RetryMessage.h"
 #include "RetryRequest.h"
 
@@ -191,6 +193,7 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   kill_dirfrag_at = static_cast<enum dirfrag_killpoint>(g_conf().get_val<int64_t>("mds_kill_dirfrag_at"));
 
   kill_shutdown_at = g_conf().get_val<uint64_t>("mds_kill_shutdown_at");
+  use_global_snaprealm_seq = g_conf().get_val<bool>("mds_use_global_snaprealm_seq_for_subvol");
 
   lru.lru_set_midpoint(g_conf().get_val<double>("mds_cache_mid"));
 
@@ -268,6 +271,10 @@ void MDCache::handle_conf_change(const std::set<std::string>& changed, const MDS
   }
   if (changed.count("mds_kill_shutdown_at")) {
     kill_shutdown_at = g_conf().get_val<uint64_t>("mds_kill_shutdown_at");
+  }
+  if (changed.count("mds_use_global_snaprealm_seq_for_subvol")) {
+    use_global_snaprealm_seq = g_conf().get_val<bool>("mds_use_global_snaprealm_seq_for_subvol");
+    dout(20) << __func__ << " mds_use_global_snaprealm_seq_for_subvol now " << use_global_snaprealm_seq << dendl;
   }
 
   migrator->handle_conf_change(changed, mdsmap);
@@ -2094,10 +2101,34 @@ void MDCache::broadcast_quota_to_client(CInode *in, client_t exclude_ct, bool qu
     return;
 
   const auto& pi = in->get_projected_inode();
+  inodeno_t subvolume_id = in->get_subvolume_id();
+  dout(10) << __func__ << " ino " << in->ino()
+           << " subvol " << subvolume_id
+           << " quota_enabled=" << pi->quota.is_enabled()
+           << " quota_change=" << quota_change
+           << " max_bytes=" << pi->quota.max_bytes
+           << " rbytes=" << pi->rstat.rbytes
+           << dendl;
+
+  // Update subvolume quota cache in MetricsHandler.
+  // Update when quota is enabled OR when there's a quota change (e.g., removing quota).
+  // This ensures cache is updated to 0 when quota is set to unlimited.
+  // Pass both quota and current used_bytes from this inode.
+  if (subvolume_id != inodeno_t{0} && (pi->quota.is_enabled() || quota_change)) {
+    // force_zero=true when quota was removed (quota_change but not enabled)
+    bool force_zero = quota_change && !pi->quota.is_enabled();
+    uint64_t used_bytes = pi->rstat.rbytes > 0 ? static_cast<uint64_t>(pi->rstat.rbytes) : 0;
+    mds->metrics_handler.maybe_update_subvolume_quota(
+      subvolume_id,
+      pi->quota.max_bytes > 0 ? static_cast<uint64_t>(pi->quota.max_bytes) : 0,
+      used_bytes,
+      force_zero);
+  }
+
   if (!pi->quota.is_enabled() && !quota_change)
     return;
 
-  // creaete snaprealm for quota inode (quota was set before mimic)
+  // create snaprealm for quota inode (quota was set before mimic)
   if (!in->get_projected_srnode())
     mds->server->create_quota_realm(in);
 
@@ -6520,7 +6551,7 @@ struct C_IO_MDC_TruncateWriteFinish : public MDCacheIOContext {
   LogSegmentRef ls;
   uint32_t block_size;
   C_IO_MDC_TruncateWriteFinish(MDCache *c, CInode *i, LogSegmentRef const& l, uint32_t bs) :
-    MDCacheIOContext(c, false), in(i), ls(l), block_size(bs) {
+    MDCacheIOContext(c), in(i), ls(l), block_size(bs) {
   }
   void finish(int r) override {
     ceph_assert(r == 0 || r == -ENOENT);
@@ -6535,7 +6566,7 @@ struct C_IO_MDC_TruncateFinish : public MDCacheIOContext {
   CInode *in;
   LogSegmentRef ls;
   C_IO_MDC_TruncateFinish(MDCache *c, CInode *i, LogSegmentRef const& l) :
-    MDCacheIOContext(c, false), in(i), ls(l) {
+    MDCacheIOContext(c), in(i), ls(l) {
   }
   void finish(int r) override {
     ceph_assert(r == 0 || r == -ENOENT);
@@ -6866,7 +6897,12 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
   bool throttled = false;
   while (1) {
     throttled |= trim_counter_start+trimmed >= trim_threshold;
-    if (throttled) break;
+    if (throttled) {
+      if (logger) {
+        logger->inc(l_mdss_cache_trim_throttle);
+      }
+      break;
+    }
     CDentry *dn = static_cast<CDentry*>(bottom_lru.lru_expire());
     if (!dn)
       break;
@@ -6892,7 +6928,12 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
   // trim dentries from the LRU until count is reached
   while (!throttled && (cache_toofull() || count > 0)) {
     throttled |= trim_counter_start+trimmed >= trim_threshold;
-    if (throttled) break;
+    if (throttled) {
+      if (logger) {
+        logger->inc(l_mdss_cache_trim_throttle);
+      }
+      break;
+    }
     CDentry *dn = static_cast<CDentry*>(lru.lru_expire());
     if (!dn) {
       break;
@@ -8596,17 +8637,17 @@ int MDCache::path_traverse(const MDRequestRef& mdr, MDSContextFactory& cf,
 	return -ENOENT;
       }
 
-      // do we have inode?
+      // do we have the inode?
       CInode *in = dnl->get_inode();
       if (!in) {
         ceph_assert(dnl->is_remote());
-        // do i have it?
+        // do we have it?
         in = get_inode(dnl->get_remote_ino());
         if (in) {
 	  dout(7) << "linking in remote in " << *in << dendl;
 	  dn->link_remote(dnl, in);
 	} else {
-          dout(7) << "remote link to " << dnl->get_remote_ino() << ", which i don't have" << dendl;
+          dout(7) << "remote link to " << dnl->get_remote_ino() << ", which we don't have" << dendl;
 	  ceph_assert(mdr);  // we shouldn't hit non-primary dentries doing a non-mdr traversal!
           if (mds->damage_table.is_remote_damaged(dnl->get_remote_ino())) {
             dout(4) << "traverse: remote dentry points to damaged ino "
@@ -10556,7 +10597,7 @@ void MDCache::handle_discover(const cref_t<MDiscover> &dis)
 
 
   CInode *cur = 0;
-  auto reply = make_message<MDiscoverReply>(*dis);
+  auto reply = ceph::make_message<MDiscoverReply>(*dis);
 
   snapid_t snapid = dis->get_snapid();
 
@@ -11778,6 +11819,10 @@ bool MDCache::can_fragment(CInode *diri, const std::vector<CDir*>& dirs)
   }
   if (diri->is_quiesced()) {
     dout(7) << "can_fragment: directory inode is quiesced" << dendl;
+    return false;
+  }
+  if (diri->ino() == CEPH_INO_ROOT) {
+    dout(7) << "can_fragment: i won't fragment root direcory" << dendl;
     return false;
   }
 
@@ -13047,9 +13092,13 @@ int MDCache::dump_cache(std::string_view fn, Formatter *f, double timeout)
   } else {
     char path[PATH_MAX] = "";
     if (fn.length()) {
-      snprintf(path, sizeof path, "%s", fn.data());
+      auto [out, size] = fmt::format_to_n(path, sizeof(path) - 1, "{}", fn);
+      *out = '\0';
     } else {
-      snprintf(path, sizeof path, "cachedump.%d.mds%d", (int)mds->mdsmap->get_epoch(), int(mds->get_nodeid()));
+      auto [out, size] = fmt::format_to_n(
+          path, sizeof(path) - 1, "cachedump.{}.mds{}",
+          (int)mds->mdsmap->get_epoch(), int(mds->get_nodeid()));
+      *out = '\0';
     }
 
     dout(1) << "dump_cache to " << path << dendl;
@@ -14403,9 +14452,11 @@ MDRequestRef MDCache::lock_path(LockPathConfig config, std::function<void(MDRequ
       cb(mdr);
     });
   }
+  auto config_lifetime = config.lifetime;
   mdr->internal_op_private = new LockPathState{std::move(config)};
-  if (config.lifetime) {
-    mds->timer.add_event_after(*config.lifetime, new LambdaContext([this, mdr]() {
+  // config was just moved so is in an undefined state
+  if (config_lifetime) {
+    mds->timer.add_event_after(*config_lifetime, new LambdaContext([this, mdr]() {
       if (!mdr->result && !mdr->aborted && !mdr->killed && !mdr->dead) {
         mdr->result = -ECANCELED;
         request_kill(mdr);

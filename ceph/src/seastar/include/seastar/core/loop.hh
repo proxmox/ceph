@@ -22,7 +22,6 @@
 
 #pragma once
 
-#ifndef SEASTAR_MODULE
 #include <cassert>
 #include <cstddef>
 #include <iterator>
@@ -30,17 +29,14 @@
 #include <optional>
 #include <type_traits>
 #include <vector>
-#endif
 #include <seastar/core/future.hh>
 #include <seastar/core/task.hh>
 #include <seastar/util/assert.hh>
 #include <seastar/util/bool_class.hh>
-#include <seastar/util/modules.hh>
 #include <seastar/core/semaphore.hh>
 
 namespace seastar {
 
-SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \addtogroup future-util
 /// @{
@@ -80,6 +76,11 @@ public:
                 auto f = futurize_invoke(_action);
                 if (!f.available()) {
                     internal::set_callback(std::move(f), this);
+                    return;
+                }
+                if (f.failed()) {
+                    _promise.set_exception(f.get_exception());
+                    delete this;
                     return;
                 }
                 if (f.get() == stop_iteration::yes) {
@@ -197,6 +198,11 @@ public:
                 auto f = futurize_invoke(_action);
                 if (!f.available()) {
                     internal::set_callback(std::move(f), this);
+                    return;
+                }
+                if (f.failed()) {
+                    _promise.set_exception(f.get_exception());
+                    delete this;
                     return;
                 }
                 auto ret = f.get();
@@ -765,6 +771,5 @@ max_concurrent_for_each(Range&& range, size_t max_concurrent, Func&& func) noexc
 
 /// @}
 
-SEASTAR_MODULE_EXPORT_END
 
 } // namespace seastar

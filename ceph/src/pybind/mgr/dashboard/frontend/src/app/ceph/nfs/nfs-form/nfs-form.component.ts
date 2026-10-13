@@ -38,7 +38,8 @@ import { DEFAULT_SUBVOLUME_GROUP } from '~/app/shared/constants/cephfs.constant'
 @Component({
   selector: 'cd-nfs-form',
   templateUrl: './nfs-form.component.html',
-  styleUrls: ['./nfs-form.component.scss']
+  styleUrls: ['./nfs-form.component.scss'],
+  standalone: false
 })
 export class NfsFormComponent extends CdForm implements OnInit {
   @ViewChild('nfsClients', { static: true })
@@ -111,7 +112,7 @@ export class NfsFormComponent extends CdForm implements OnInit {
   ) {
     super();
     this.permission = this.authStorageService.getPermissions().pool;
-    this.resource = $localize`NFS export`;
+    this.resource = $localize`NFS share`;
     this.storageBackend = getFsalFromRoute(this.router.url);
   }
 
@@ -497,8 +498,9 @@ export class NfsFormComponent extends CdForm implements OnInit {
         )
         .subscribe({
           error: (error) => {
-            const fsalDescr = this.nfsService.nfsFsal.find((f) => f.value === this.storageBackend)
-              .descr;
+            const fsalDescr = this.nfsService.nfsFsal.find(
+              (f) => f.value === this.storageBackend
+            ).descr;
             this.storageBackendError = $localize`${fsalDescr} backend is not available. ${error}`;
           }
         });

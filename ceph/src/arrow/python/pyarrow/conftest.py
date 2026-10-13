@@ -16,20 +16,26 @@
 # under the License.
 
 import pytest
+
+import os
 import pyarrow as pa
 from pyarrow import Codec
 from pyarrow import fs
+from pyarrow.lib import is_threading_enabled
+from pyarrow.tests.util import windows_has_tzdata
+import sys
 
-import numpy as np
 
 groups = [
     'acero',
+    'azure',
     'brotli',
     'bz2',
     'cython',
     'dataset',
     'hypothesis',
     'fastparquet',
+    'flight',
     'gandiva',
     'gcs',
     'gdb',
@@ -39,21 +45,27 @@ groups = [
     'lz4',
     'memory_leak',
     'nopandas',
+    'nonumpy',
+    'numpy',
     'orc',
     'pandas',
     'parquet',
     'parquet_encryption',
-    's3',
-    'snappy',
-    'substrait',
-    'flight',
-    'slow',
+    'processes',
     'requires_testing_data',
+    's3',
+    'slow',
+    'snappy',
+    'sockets',
+    'substrait',
+    'threading',
+    'timezone_data',
     'zstd',
 ]
 
 defaults = {
     'acero': False,
+    'azure': False,
     'brotli': Codec.is_available('brotli'),
     'bz2': Codec.is_available('bz2'),
     'cython': False,
@@ -70,17 +82,36 @@ defaults = {
     'lz4': Codec.is_available('lz4'),
     'memory_leak': False,
     'nopandas': False,
+    'nonumpy': False,
+    'numpy': False,
     'orc': False,
     'pandas': False,
     'parquet': False,
     'parquet_encryption': False,
+    'processes': True,
     'requires_testing_data': True,
     's3': False,
     'slow': False,
     'snappy': Codec.is_available('snappy'),
+    'sockets': True,
     'substrait': False,
+    'threading': is_threading_enabled(),
+    'timezone_data': True,
     'zstd': Codec.is_available('zstd'),
 }
+
+if sys.platform == "emscripten":
+    # Emscripten doesn't support subprocess,
+    # multiprocessing, gdb or socket based
+    # networking
+    defaults['gdb'] = False
+    defaults['processes'] = False
+    defaults['sockets'] = False
+
+if sys.platform == "win32":
+    defaults['timezone_data'] = windows_has_tzdata()
+elif sys.platform == "emscripten":
+    defaults['timezone_data'] = os.path.exists("/usr/share/zoneinfo")
 
 try:
     import cython  # noqa
@@ -114,7 +145,13 @@ except ImportError:
 
 try:
     import pyarrow.orc  # noqa
-    defaults['orc'] = True
+    if sys.platform == "win32":
+        defaults['orc'] = True
+    else:
+        # orc tests on non-Windows platforms only work
+        # if timezone data exists, so skip them if
+        # not.
+        defaults['orc'] = defaults['timezone_data']
 except ImportError:
     pass
 
@@ -123,6 +160,12 @@ try:
     defaults['pandas'] = True
 except ImportError:
     defaults['nopandas'] = True
+
+try:
+    import numpy  # noqa
+    defaults['numpy'] = True
+except ImportError:
+    defaults['nonumpy'] = True
 
 try:
     import pyarrow.parquet  # noqa
@@ -143,11 +186,16 @@ except ImportError:
     pass
 
 try:
+    from pyarrow.fs import AzureFileSystem  # noqa
+    defaults['azure'] = True
+except ImportError:
+    pass
+
+try:
     from pyarrow.fs import GcsFileSystem  # noqa
     defaults['gcs'] = True
 except ImportError:
     pass
-
 
 try:
     from pyarrow.fs import S3FileSystem  # noqa
@@ -288,6 +336,7 @@ def unary_agg_func_fixture():
     Register a unary aggregate function (mean)
     """
     from pyarrow import compute as pc
+    import numpy as np
 
     def func(ctx, x):
         return pa.scalar(np.nanmean(x))
@@ -313,6 +362,7 @@ def varargs_agg_func_fixture():
     Register a unary aggregate function
     """
     from pyarrow import compute as pc
+    import numpy as np
 
     def func(ctx, *args):
         sum = 0.0

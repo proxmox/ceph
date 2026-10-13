@@ -1,8 +1,8 @@
 .overview-storage-card {
   &-dropdown {
-    align-items: flex-end;
     display: flex;
     justify-content: flex-end;
+    align-items: flex-end;
 
     .cds--label {
       padding-right: var(--cds-spacing-03);
@@ -31,7 +31,6 @@
   }
 
   .cds--tag--gray {
-    /* stylelint-disable-next-line sh-waqar/declaration-use-variable */
     background-color: #fddc69;
     color: var(--cds-text-secondary);
   }

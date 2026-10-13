@@ -32,7 +32,7 @@ export class ServicesPageHelper extends PageHelper {
   clickServiceTab(serviceName: string, tabName: string) {
     this.getExpandCollapseElement(serviceName).click();
     cy.get('cd-service-details').within(() => {
-      this.getTab(tabName).click();
+      this.getCdsTab(tabName).click();
     });
   }
 
@@ -156,6 +156,7 @@ export class ServicesPageHelper extends PageHelper {
       }
 
       cy.get('cd-service-daemon-list').within(() => {
+        cy.wait(1000); // wait for the status to be updated
         this.getTableCell(daemonNameIndex, daemon, true)
           .parent()
           .find(`[cdstabledata]:nth-child(${statusIndex}) cds-tag`)

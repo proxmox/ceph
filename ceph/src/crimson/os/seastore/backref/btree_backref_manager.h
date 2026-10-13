@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -48,7 +48,8 @@ public:
 
   remove_mapping_ret remove_mapping(
     Transaction &t,
-    paddr_t offset) final;
+    paddr_t offset,
+    extent_types_t type) final;
 
   scan_mapped_space_ret scan_mapped_space(
     Transaction &t,

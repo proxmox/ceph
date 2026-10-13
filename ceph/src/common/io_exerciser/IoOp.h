@@ -61,42 +61,78 @@ class RemoveOp : public TestOp<OpType::Remove> {
   std::string to_string(uint64_t block_size) const override;
 };
 
+class ConsistencyOp : public TestOp<OpType::Consistency> {
+  public:
+   ConsistencyOp();
+   static std::unique_ptr<ConsistencyOp> generate();
+   std::string to_string(uint64_t block_size) const override;
+ };
+
+class SwapOp : public TestOp<OpType::Swap> {
+ public:
+  SwapOp();
+  static std::unique_ptr<SwapOp> generate();
+  std::string to_string(uint64_t block_size) const override;
+};
+
+class CopyOp : public TestOp<OpType::Copy> {
+ public:
+  CopyOp();
+  static std::unique_ptr<CopyOp> generate();
+  std::string to_string(uint64_t block_size) const override;
+};
+
 template <OpType opType, int numIOs>
 class ReadWriteOp : public TestOp<opType> {
  public:
   std::array<uint64_t, numIOs> offset;
   std::array<uint64_t, numIOs> length;
+  std::optional<bool> balanced_read = std::nullopt;
 
  protected:
   ReadWriteOp(std::array<uint64_t, numIOs>&& offset,
               std::array<uint64_t, numIOs>&& length);
+  ReadWriteOp(std::array<uint64_t, numIOs>&& offset,
+              std::array<uint64_t, numIOs>&& length,
+              std::optional<bool> balanced_read);
   std::string to_string(uint64_t block_size) const override;
 };
 
 class SingleReadOp : public ReadWriteOp<OpType::Read, 1> {
  public:
-  SingleReadOp(uint64_t offset, uint64_t length);
+  SingleReadOp(uint64_t offset, uint64_t length, std::optional<bool> balanced_read);
   static std::unique_ptr<SingleReadOp> generate(uint64_t offset,
                                                 uint64_t length);
+  static std::unique_ptr<SingleReadOp> generate(uint64_t offset,
+                                uint64_t length, bool balanced_read);
 };
 
 class DoubleReadOp : public ReadWriteOp<OpType::Read2, 2> {
  public:
   DoubleReadOp(uint64_t offset1, uint64_t length1, uint64_t offset2,
-               uint64_t length2);
+               uint64_t length2, std::optional<bool> balanced_read);
   static std::unique_ptr<DoubleReadOp> generate(uint64_t offset1,
                                                 uint64_t length1,
                                                 uint64_t offset2,
                                                 uint64_t length2);
+  static std::unique_ptr<DoubleReadOp> generate(uint64_t offset1,
+                                                uint64_t length1,
+                                                uint64_t offset2,
+                                                uint64_t length2,
+                                                bool balanced_read);
 };
 
 class TripleReadOp : public ReadWriteOp<OpType::Read3, 3> {
  public:
   TripleReadOp(uint64_t offset1, uint64_t length1, uint64_t offset2,
-               uint64_t length2, uint64_t offset3, uint64_t length3);
+               uint64_t length2, uint64_t offset3, uint64_t length3,
+               std::optional<bool> balanced_read);
   static std::unique_ptr<TripleReadOp> generate(
       uint64_t offset1, uint64_t length1, uint64_t offset2, uint64_t length2,
       uint64_t offset3, uint64_t length3);
+  static std::unique_ptr<TripleReadOp> generate(
+      uint64_t offset1, uint64_t length1, uint64_t offset2, uint64_t length2,
+      uint64_t offset3, uint64_t length3, bool balanced_read);
 };
 
 class SingleWriteOp : public ReadWriteOp<OpType::Write, 1> {

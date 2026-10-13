@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -150,15 +151,15 @@ void librados::ObjectOperation::assert_exists()
   o->stat(nullptr, nullptr, nullptr);
 }
 
-void librados::ObjectOperation::exec(const char *cls, const char *method,
-				     bufferlist& inbl)
+void librados::ObjectOperation::exec_impl(const char *cls, const char *method,
+				          bufferlist& inbl)
 {
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
   o->call(cls, method, inbl);
 }
 
-void librados::ObjectOperation::exec(const char *cls, const char *method, bufferlist& inbl, bufferlist *outbl, int *prval)
+void librados::ObjectOperation::exec_impl(const char *cls, const char *method, bufferlist& inbl, bufferlist *outbl, int *prval)
 {
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
@@ -180,7 +181,8 @@ public:
   }
 };
 
-void librados::ObjectOperation::exec(const char *cls, const char *method, bufferlist& inbl, librados::ObjectOperationCompletion *completion)
+void librados::ObjectOperation::exec_impl(const char *cls, const char *method,
+    bufferlist& inbl, librados::ObjectOperationCompletion *completion)
 {
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
@@ -569,6 +571,15 @@ void librados::ObjectWriteOperation::omap_rm_keys(
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
   o->omap_rm_keys(to_rm);
+}
+
+void librados::ObjectWriteOperation::omap_rm_range(
+  const std::string &start,
+  const std::string &end)
+{
+  ceph_assert(impl);
+  ::ObjectOperation *o = &impl->o;
+  o->omap_rm_range(start, end);
 }
 
 void librados::ObjectWriteOperation::copy_from(const std::string& src,
@@ -1362,7 +1373,7 @@ int librados::IoCtx::stat2(const std::string& oid, uint64_t *psize, struct times
   return io_ctx_impl->stat2(obj, psize, pts);
 }
 
-int librados::IoCtx::exec(const std::string& oid, const char *cls, const char *method,
+int librados::IoCtx::exec_impl(const std::string& oid, const char *cls, const char *method,
 			  bufferlist& inbl, bufferlist& outbl)
 {
   object_t obj(oid);
@@ -1513,6 +1524,15 @@ int librados::IoCtx::omap_rm_keys(const std::string& oid,
 {
   ObjectWriteOperation op;
   op.omap_rm_keys(keys);
+  return operate(oid, &op);
+}
+
+int librados::IoCtx::omap_rm_range(const std::string& oid,
+                                   const std::string& start,
+                                   const std::string& end)
+{
+  ObjectWriteOperation op;
+  op.omap_rm_range(start, end);
   return operate(oid, &op);
 }
 
@@ -1952,7 +1972,7 @@ int librados::IoCtx::aio_read(const std::string& oid, librados::AioCompletion *c
   return io_ctx_impl->aio_read(oid, c->pc, pbl, len, off, snapid);
 }
 
-int librados::IoCtx::aio_exec(const std::string& oid,
+int librados::IoCtx::aio_exec_impl(const std::string& oid,
 			      librados::AioCompletion *c, const char *cls,
 			      const char *method, bufferlist& inbl,
 			      bufferlist *outbl)
@@ -2617,33 +2637,27 @@ int librados::Rados::pool_reverse_lookup(int64_t id, std::string *name)
   return client->pool_get_name(id, name, true);
 }
 
-int librados::Rados::mon_command(string cmd, const bufferlist& inbl,
+int librados::Rados::mon_command(std::string&& cmd, bufferlist&& inbl,
 				 bufferlist *outbl, string *outs)
 {
-  vector<string> cmdvec;
-  cmdvec.push_back(cmd);
-  return client->mon_command(cmdvec, inbl, outbl, outs);
+  return client->mon_command({std::move(cmd)}, std::move(inbl), outbl, outs);
 }
 
-int librados::Rados::osd_command(int osdid, std::string cmd, const bufferlist& inbl,
+int librados::Rados::osd_command(int osdid, std::string&& cmd, bufferlist&& inbl,
                                  bufferlist *outbl, std::string *outs)
 {
-  vector<string> cmdvec;
-  cmdvec.push_back(cmd);
-  return client->osd_command(osdid, cmdvec, inbl, outbl, outs);
+  return client->osd_command(osdid, {std::move(cmd)}, std::move(inbl), outbl, outs);
 }
 
-int librados::Rados::mgr_command(std::string cmd, const bufferlist& inbl,
+int librados::Rados::mgr_command(std::string&& cmd, bufferlist&& inbl,
                                  bufferlist *outbl, std::string *outs)
 {
-  vector<string> cmdvec;
-  cmdvec.push_back(cmd);
-  return client->mgr_command(cmdvec, inbl, outbl, outs);
+  return client->mgr_command({std::move(cmd)}, std::move(inbl), outbl, outs);
 }
 
 
 
-int librados::Rados::pg_command(const char *pgstr, std::string cmd, const bufferlist& inbl,
+int librados::Rados::pg_command(const char *pgstr, std::string&& cmd, bufferlist&& inbl,
                                 bufferlist *outbl, std::string *outs)
 {
   vector<string> cmdvec;
@@ -2653,7 +2667,7 @@ int librados::Rados::pg_command(const char *pgstr, std::string cmd, const buffer
   if (!pgid.parse(pgstr))
     return -EINVAL;
 
-  return client->pg_command(pgid, cmdvec, inbl, outbl, outs);
+  return client->pg_command(pgid, std::move(cmdvec), std::move(inbl), outbl, outs);
 }
 
 int librados::Rados::ioctx_create(const char *name, IoCtx &io)
@@ -3201,4 +3215,9 @@ int librados::IoCtx::application_metadata_list(const std::string& app_name,
                                                std::map<std::string, std::string> *values)
 {
   return io_ctx_impl->application_metadata_list(app_name, values);
+}
+
+void librados::IoCtx::set_no_version_on_read(bool value)
+{
+  io_ctx_impl->set_no_version_on_read(value);
 }

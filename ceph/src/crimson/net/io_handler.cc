@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "io_handler.h"
 
@@ -75,6 +75,8 @@ IOHandler::sweep_out_pending_msgs_to_sent(
   bool require_ack)
 {
   std::size_t num_msgs = out_pending_msgs.size();
+  const unsigned max_bufs =
+      local_conf().get_val<uint64_t>("crimson_osd_max_send_buffers");
   ceph::bufferlist bl;
 
 #ifdef UNIT_TESTS_BUILT
@@ -108,15 +110,10 @@ IOHandler::sweep_out_pending_msgs_to_sent(
 #endif
   }
 
-  std::for_each(
-      out_pending_msgs.begin(),
-      out_pending_msgs.begin()+num_msgs,
-      [this, &bl
-#ifdef UNIT_TESTS_BUILT
-        , &tags
-#endif
-      ](const MessageFRef& msg) {
-    // set priority
+  std::size_t num_swept = 0;
+  for (std::size_t i = 0; i < num_msgs; ++i) {
+    auto& msg = out_pending_msgs[i];
+
     msg->get_header().src = conn.messenger.get_myname();
 
     msg->encode(conn.features, 0);
@@ -144,15 +141,21 @@ IOHandler::sweep_out_pending_msgs_to_sent(
     auto tag = MessageFrame::tag;
     tags.push_back(tag);
 #endif
-  });
+    ++num_swept;
+    if (bl.get_num_buffers() >= max_bufs) {
+      break;
+    }
+  }
 
   if (!conn.policy.lossy) {
     out_sent_msgs.insert(
         out_sent_msgs.end(),
         std::make_move_iterator(out_pending_msgs.begin()),
-        std::make_move_iterator(out_pending_msgs.end()));
+        std::make_move_iterator(out_pending_msgs.begin() + num_swept));
   }
-  out_pending_msgs.clear();
+  out_pending_msgs.erase(
+      out_pending_msgs.begin(),
+      out_pending_msgs.begin() + num_swept);
 
 #ifdef UNIT_TESTS_BUILT
   return sweep_ret{std::move(bl), tags};
@@ -912,7 +915,7 @@ IOHandler::do_out_dispatch(shard_states_t &ctx)
       ctx.exit_out_dispatching("switched", conn);
       return seastar::make_ready_future<stop_t>(stop_t::yes);
      default:
-      ceph_abort("impossible");
+      ceph_abort_msg("impossible");
     }
   }).handle_exception_type([this, &ctx](const std::system_error& e) {
     auto io_state = ctx.get_io_state();
@@ -1130,7 +1133,7 @@ void IOHandler::do_in_dispatch()
                 return seastar::now();
               }
               // TODO: message throttler
-              ceph_abort("TODO");
+              ceph_abort_msg("TODO");
               return seastar::now();
             }).then([this, msg_size] {
               // throttle_bytes() logic

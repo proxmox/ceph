@@ -22,12 +22,12 @@ They consist of the following tests:
   - `tests/playTests.sh --test-large-data`
   - Fuzzer tests: `tests/fuzzer.c`, `tests/zstreamtest.c`, and `tests/decodecorpus.c`
 - `tests/zstreamtest.c` under Tsan (streaming mode, including multithreaded mode)
-- Valgrind Test (`make -C tests valgrindTest`) (testing CLI and fuzzer under valgrind)
+- Valgrind Test (`make -C tests test-valgrind`) (testing CLI and fuzzer under `valgrind`)
 - Fuzzer tests (see above) on ARM, AArch64, PowerPC, and PowerPC64
 
 Long Tests
 ----------
-Long tests run on all commits to `master` branch,
+Long tests run on all commits to `release` branch,
 and once a day on the current version of `dev` branch,
 on TravisCI.
 They consist of the following tests:
@@ -40,5 +40,4 @@ They consist of the following tests:
 - Versions test (ensuring `zstd` can decode files from all previous versions)
 - `pzstd` with asan and tsan, as well as in 32-bits mode
 - Testing `zstd` with legacy mode off
-- Testing `zbuff` (old streaming API)
 - Entire test suite and make install on macOS

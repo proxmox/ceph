@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "include/neorados/RADOS.hpp"
 #include "include/rados/librados.hpp"
@@ -375,7 +375,7 @@ void Op::localize_reads() {
   // no-op
 }
 
-void Op::exec(std::string_view cls, std::string_view method,
+void Op::exec_impl(std::string_view cls, std::string_view method,
               const ceph::buffer::list& inbl,
               ceph::buffer::list* out,
               boost::system::error_code* ec) {
@@ -386,7 +386,7 @@ void Op::exec(std::string_view cls, std::string_view method,
     [cls_handler, cls, method, inbl = const_cast<bufferlist&>(inbl), out]
     (librados::TestIoCtxImpl* io_ctx, const std::string& oid, bufferlist* outbl,
      uint64_t snap_id, const SnapContext& snapc, uint64_t*) mutable -> int {
-      return io_ctx->exec(
+      return io_ctx->exec_internal(
         oid, cls_handler, std::string(cls).c_str(),
         std::string(method).c_str(), inbl,
         (out != nullptr ? out : outbl), snap_id, snapc);
@@ -398,7 +398,7 @@ void Op::exec(std::string_view cls, std::string_view method,
   o->ops.push_back(op);
 }
 
-void Op::exec(std::string_view cls, std::string_view method,
+void Op::exec_impl(std::string_view cls, std::string_view method,
               const ceph::buffer::list& inbl,
               boost::system::error_code* ec) {
   auto o = *reinterpret_cast<librados::TestObjectOperationImpl**>(&impl);
@@ -408,7 +408,7 @@ void Op::exec(std::string_view cls, std::string_view method,
     [cls_handler, cls, method, inbl = const_cast<bufferlist&>(inbl)]
     (librados::TestIoCtxImpl* io_ctx, const std::string& oid, bufferlist* outbl,
      uint64_t snap_id, const SnapContext& snapc, uint64_t*) mutable -> int {
-      return io_ctx->exec(
+      return io_ctx->exec_internal(
         oid, cls_handler, std::string(cls).c_str(),
         std::string(method).c_str(), inbl, outbl, snap_id, snapc);
     };
@@ -626,11 +626,11 @@ void RADOS::execute_(Object o, IOContext ioc, WriteOp op,
   ceph_assert(r == 0);
 }
 
-void RADOS::mon_command_(std::vector<std::string> command,
-			 bufferlist bl,
+void RADOS::mon_command_(std::vector<std::string>&& command,
+			 bufferlist&& bl,
 			 std::string* outs, bufferlist* outbl,
 			 Op::Completion c) {
-  auto r = impl->test_rados_client->mon_command(command, bl, outbl, outs);
+  auto r = impl->test_rados_client->mon_command(std::move(command), std::move(bl), outbl, outs);
   asio::post(get_executor(),
 	     asio::append(std::move(c),
 			  (r < 0 ? bs::error_code(-r, osd_category()) :

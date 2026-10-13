@@ -24,9 +24,6 @@
 /*
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <ucontext.h>
 #ifndef SEASTAR_ASAN_ENABLED
@@ -38,14 +35,10 @@ module;
 #include <utility>
 #include <boost/intrusive/list.hpp>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/thread.hh>
 #include <seastar/core/posix.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/core/internal/current_task.hh>
 #include <seastar/util/assert.hh>
-#endif
 
 /// \cond internal
 
@@ -256,7 +249,7 @@ thread_context::setup(size_t stack_size) {
 
 void
 thread_context::switch_in() {
-    local_engine->_current_task = nullptr; // thread_wake_task is on the stack and will be invalid when we resume
+    internal::set_current_task(nullptr); // thread_wake_task is on the stack and will be invalid when we resume
     _context.switch_in();
 }
 
@@ -342,11 +335,6 @@ void init() {
     g_unthreaded_context.link = nullptr;
     g_unthreaded_context.thread = nullptr;
     g_current_context = &g_unthreaded_context;
-}
-
-scheduling_group
-sched_group(const thread_context* thread) {
-    return thread->group();
 }
 
 }

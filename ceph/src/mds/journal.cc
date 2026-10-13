@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -42,6 +43,8 @@
 #include "include/denc.h"
 #include "include/random.h" // for ceph::util::generate_random_number()
 #include "include/stringify.h"
+
+#include "messages/MMDSTableRequest.h"
 
 #include "LogSegment.h"
 
@@ -615,16 +618,17 @@ void EMetaBlob::fullbit::dump(Formatter *f) const
   f->dump_string("alternate_name", alternate_name);
 }
 
-void EMetaBlob::fullbit::generate_test_instances(std::list<EMetaBlob::fullbit*>& ls)
+std::list<EMetaBlob::fullbit> EMetaBlob::fullbit::generate_test_instances()
 {
+  std::list<EMetaBlob::fullbit> ls;
   auto _inode = CInode::allocate_inode();
   fragtree_t fragtree;
   auto _xattrs = CInode::allocate_xattr_map();
   bufferlist empty_snapbl;
-  fullbit *sample = new fullbit("/testdn", "", 0, 0, 0,
-                                _inode, fragtree, _xattrs, "", 0, empty_snapbl,
-                                false, NULL);
-  ls.push_back(sample);
+  ls.emplace_back("/testdn", "", 0, 0, 0,
+		  _inode, fragtree, _xattrs, "", 0, empty_snapbl,
+		  false, nullptr);
+  return ls;
 }
 
 void EMetaBlob::fullbit::update_inode(MDSRank *mds, CInode *in)
@@ -756,13 +760,14 @@ void EMetaBlob::remotebit::dump(Formatter *f) const
   f->dump_string("alternate_name", alternate_name);
 }
 
-void EMetaBlob::remotebit::
-generate_test_instances(std::list<EMetaBlob::remotebit*>& ls)
+std::list<EMetaBlob::remotebit> EMetaBlob::remotebit::generate_test_instances()
 {
-  remotebit *remote = new remotebit("/test/dn", "", 0, 10, 15, 1, IFTODT(S_IFREG), false);
+  std::list<EMetaBlob::remotebit> ls;
+  auto remote = remotebit("/test/dn", "", 0, 10, 15, 1, IFTODT(S_IFREG), false);
+  ls.push_back(std::move(remote));
+  remote = remotebit("/test/dn2", "foo", 0, 10, 15, 1, IFTODT(S_IFREG), false);
   ls.push_back(remote);
-  remote = new remotebit("/test/dn2", "foo", 0, 10, 15, 1, IFTODT(S_IFREG), false);
-  ls.push_back(remote);
+  return ls;
 }
 
 // EMetaBlob::nullbit
@@ -800,12 +805,14 @@ void EMetaBlob::nullbit::dump(Formatter *f) const
   f->dump_string("dirty", dirty ? "true" : "false");
 }
 
-void EMetaBlob::nullbit::generate_test_instances(std::list<nullbit*>& ls)
+auto EMetaBlob::nullbit::generate_test_instances() -> std::list<nullbit>
 {
-  nullbit *sample = new nullbit("/test/dentry", 0, 10, 15, false);
-  nullbit *sample2 = new nullbit("/test/dirty", 10, 20, 25, true);
-  ls.push_back(sample);
-  ls.push_back(sample2);
+  std::list<nullbit> ls;
+  nullbit sample("/test/dentry", 0, 10, 15, false);
+  nullbit sample2("/test/dirty", 10, 20, 25, true);
+  ls.push_back(std::move(sample));
+  ls.push_back(std::move(sample2));
+  return ls;
 }
 
 // EMetaBlob::dirlump
@@ -879,11 +886,13 @@ void EMetaBlob::dirlump::dump(Formatter *f) const
   f->close_section(); // null bits
 }
 
-void EMetaBlob::dirlump::generate_test_instances(std::list<dirlump*>& ls)
+auto EMetaBlob::dirlump::generate_test_instances() -> std::list<dirlump>
 {
-  auto dl = new dirlump();
-  dl->fnode = CDir::allocate_fnode();
-  ls.push_back(dl);
+  std::list<dirlump> ls;
+  ls.emplace_back();
+  dirlump& dl = ls.back();
+  dl.fnode = CDir::allocate_fnode();
+  return ls;
 }
 
 /**
@@ -1218,9 +1227,11 @@ void EMetaBlob::dump(Formatter *f) const
   f->close_section(); // client requests
 }
 
-void EMetaBlob::generate_test_instances(std::list<EMetaBlob*>& ls)
+std::list<EMetaBlob> EMetaBlob::generate_test_instances()
 {
-  ls.push_back(new EMetaBlob());
+  std::list<EMetaBlob> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void EMetaBlob::replay(MDSRank *mds, LogSegmentRef const& logseg, int type, MDPeerUpdate *peerup)
@@ -1883,6 +1894,9 @@ void ESession::replay(MDSRank *mds)
       session = mds->sessionmap.get_or_add_session(client_inst);
       mds->sessionmap.set_state(session, Session::STATE_OPEN);
       session->set_client_metadata(client_metadata);
+      if (session->info.auth_name.to_str().empty()) {
+        session->info.auth_name = auth_name;
+      }
       dout(10) << " opened session " << session->info.inst << dendl;
     } else {
       session = mds->sessionmap.get_session(client_inst.name);
@@ -1932,7 +1946,7 @@ void ESession::replay(MDSRank *mds)
 
 void ESession::encode(bufferlist &bl, uint64_t features) const
 {
-  ENCODE_START(6, 5, bl);
+  ENCODE_START(7, 5, bl);
   encode(stamp, bl);
   encode(client_inst, bl, features);
   encode(open, bl);
@@ -1941,12 +1955,13 @@ void ESession::encode(bufferlist &bl, uint64_t features) const
   encode(inotablev, bl);
   encode(client_metadata, bl);
   encode(inos_to_purge, bl);
+  encode(auth_name, bl);
   ENCODE_FINISH(bl);
 }
 
 void ESession::decode(bufferlist::const_iterator &bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(6, 3, 3, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(7, 3, 3, bl);
   if (struct_v >= 2)
     decode(stamp, bl);
   decode(client_inst, bl);
@@ -1961,6 +1976,9 @@ void ESession::decode(bufferlist::const_iterator &bl)
   }
   if (struct_v >= 6){
     decode(inos_to_purge, bl);
+  }
+  if (struct_v >= 7) {
+    decode(auth_name, bl);
   }
     
   DECODE_FINISH(bl);
@@ -1979,9 +1997,11 @@ void ESession::dump(Formatter *f) const
   f->close_section();  // client_metadata
 }
 
-void ESession::generate_test_instances(std::list<ESession*>& ls)
+std::list<ESession> ESession::generate_test_instances()
 {
-  ls.push_back(new ESession);
+  std::list<ESession> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 // -----------------------
@@ -2032,9 +2052,11 @@ void ESessions::dump(Formatter *f) const
   f->close_section(); // client map
 }
 
-void ESessions::generate_test_instances(std::list<ESessions*>& ls)
+std::list<ESessions> ESessions::generate_test_instances()
 {
-  ls.push_back(new ESessions());
+  std::list<ESessions> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void ESessions::update_segment()
@@ -2098,9 +2120,11 @@ void ETableServer::dump(Formatter *f) const
   f->dump_int("version", version);
 }
 
-void ETableServer::generate_test_instances(std::list<ETableServer*>& ls)
+std::list<ETableServer> ETableServer::generate_test_instances()
 {
-  ls.push_back(new ETableServer());
+  std::list<ETableServer> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 
@@ -2190,9 +2214,11 @@ void ETableClient::dump(Formatter *f) const
   f->dump_int("tid", tid);
 }
 
-void ETableClient::generate_test_instances(std::list<ETableClient*>& ls)
+std::list<ETableClient> ETableClient::generate_test_instances()
 {
-  ls.push_back(new ETableClient());
+  std::list<ETableClient> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void ETableClient::replay(MDSRank *mds)
@@ -2288,9 +2314,11 @@ void EUpdate::dump(Formatter *f) const
   f->dump_string("had peers", had_peers ? "true" : "false");
 }
 
-void EUpdate::generate_test_instances(std::list<EUpdate*>& ls)
+std::list<EUpdate> EUpdate::generate_test_instances()
 {
-  ls.push_back(new EUpdate());
+  std::list<EUpdate> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 
@@ -2377,11 +2405,13 @@ void EOpen::dump(Formatter *f) const
   f->close_section(); // inos
 }
 
-void EOpen::generate_test_instances(std::list<EOpen*>& ls)
+std::list<EOpen> EOpen::generate_test_instances()
 {
-  ls.push_back(new EOpen());
-  ls.push_back(new EOpen());
-  ls.back()->add_ino(0);
+  std::list<EOpen> ls;
+  ls.emplace_back();
+  ls.emplace_back();
+  ls.back().add_ino(0);
+  return ls;
 }
 
 void EOpen::update_segment()
@@ -2451,12 +2481,14 @@ void ECommitted::dump(Formatter *f) const {
   f->dump_stream("reqid") << reqid;
 }
 
-void ECommitted::generate_test_instances(std::list<ECommitted*>& ls)
+std::list<ECommitted> ECommitted::generate_test_instances()
 {
-  ls.push_back(new ECommitted);
-  ls.push_back(new ECommitted);
-  ls.back()->stamp = utime_t(1, 2);
-  ls.back()->reqid = metareqid_t(entity_name_t::CLIENT(123), 456);
+  std::list<ECommitted> ls;
+  ls.emplace_back();
+  ls.emplace_back();
+  ls.back().stamp = utime_t(1, 2);
+  ls.back().reqid = metareqid_t(entity_name_t::CLIENT(123), 456);
+  return ls;
 }
 
 // -----------------------
@@ -2499,9 +2531,11 @@ void link_rollback::dump(Formatter *f) const
   f->dump_stream("old_dir_rctime") << old_dir_rctime;
 }
 
-void link_rollback::generate_test_instances(std::list<link_rollback*>& ls)
+std::list<link_rollback> link_rollback::generate_test_instances()
 {
-  ls.push_back(new link_rollback());
+  std::list<link_rollback> ls;
+  ls.push_back(link_rollback());
+  return ls;
 }
 
 void rmdir_rollback::encode(bufferlist& bl) const
@@ -2538,9 +2572,11 @@ void rmdir_rollback::dump(Formatter *f) const
   f->dump_string("destination dname", dest_dname);
 }
 
-void rmdir_rollback::generate_test_instances(std::list<rmdir_rollback*>& ls)
+std::list<rmdir_rollback> rmdir_rollback::generate_test_instances()
 {
-  ls.push_back(new rmdir_rollback());
+  std::list<rmdir_rollback> ls;
+  ls.push_back(rmdir_rollback());
+  return ls;
 }
 
 void rename_rollback::drec::encode(bufferlist &bl) const
@@ -2595,10 +2631,12 @@ void rename_rollback::drec::dump(Formatter *f) const
   f->dump_stream("old ctime") << old_ctime;
 }
 
-void rename_rollback::drec::generate_test_instances(std::list<drec*>& ls)
+auto rename_rollback::drec::generate_test_instances() -> std::list<drec>
 {
-  ls.push_back(new drec());
-  ls.back()->remote_d_type = IFTODT(S_IFREG);
+  std::list<drec> ls;
+  ls.push_back(drec());
+  ls.back().remote_d_type = IFTODT(S_IFREG);
+  return ls;
 }
 
 void rename_rollback::encode(bufferlist &bl) const
@@ -2644,12 +2682,14 @@ void rename_rollback::dump(Formatter *f) const
   f->dump_stream("ctime") << ctime;
 }
 
-void rename_rollback::generate_test_instances(std::list<rename_rollback*>& ls)
+std::list<rename_rollback> rename_rollback::generate_test_instances()
 {
-  ls.push_back(new rename_rollback());
-  ls.back()->orig_src.remote_d_type = IFTODT(S_IFREG);
-  ls.back()->orig_dest.remote_d_type = IFTODT(S_IFREG);
-  ls.back()->stray.remote_d_type = IFTODT(S_IFREG);
+  std::list<rename_rollback> ls;
+  ls.push_back(rename_rollback());
+  ls.back().orig_src.remote_d_type = IFTODT(S_IFREG);
+  ls.back().orig_dest.remote_d_type = IFTODT(S_IFREG);
+  ls.back().stray.remote_d_type = IFTODT(S_IFREG);
+  return ls;
 }
 
 void EPeerUpdate::encode(bufferlist &bl, uint64_t features) const
@@ -2695,9 +2735,11 @@ void EPeerUpdate::dump(Formatter *f) const
   f->dump_int("original op", origop);
 }
 
-void EPeerUpdate::generate_test_instances(std::list<EPeerUpdate*>& ls)
+std::list<EPeerUpdate> EPeerUpdate::generate_test_instances()
 {
-  ls.push_back(new EPeerUpdate());
+  std::list<EPeerUpdate> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void EPeerUpdate::replay(MDSRank *mds)
@@ -2793,9 +2835,11 @@ void ESubtreeMap::dump(Formatter *f) const
   f->dump_int("expire position", expire_pos);
 }
 
-void ESubtreeMap::generate_test_instances(std::list<ESubtreeMap*>& ls)
+std::list<ESubtreeMap> ESubtreeMap::generate_test_instances()
 {
-  ls.push_back(new ESubtreeMap());
+  std::list<ESubtreeMap> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void ESubtreeMap::replay(MDSRank *mds) 
@@ -3021,13 +3065,15 @@ void EFragment::dump(Formatter *f) const
   f->dump_int("bits", bits);
 }
 
-void EFragment::generate_test_instances(std::list<EFragment*>& ls)
+std::list<EFragment> EFragment::generate_test_instances()
 {
-  ls.push_back(new EFragment);
-  ls.push_back(new EFragment);
-  ls.back()->op = OP_PREPARE;
-  ls.back()->ino = 1;
-  ls.back()->bits = 5;
+  std::list<EFragment> ls;
+  ls.emplace_back();
+  ls.emplace_back();
+  ls.back().op = OP_PREPARE;
+  ls.back().ino = 1;
+  ls.back().bits = 5;
+  return ls;
 }
 
 void dirfrag_rollback::encode(bufferlist &bl) const
@@ -3118,10 +3164,11 @@ void EExport::dump(Formatter *f) const
   f->close_section(); // bounds dirfrags
 }
 
-void EExport::generate_test_instances(std::list<EExport*>& ls)
+std::list<EExport> EExport::generate_test_instances()
 {
-  EExport *sample = new EExport();
-  ls.push_back(sample);
+  std::list<EExport> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 
@@ -3217,9 +3264,11 @@ void EImportStart::dump(Formatter *f) const
   f->close_section();
 }
 
-void EImportStart::generate_test_instances(std::list<EImportStart*>& ls)
+std::list<EImportStart> EImportStart::generate_test_instances()
 {
-  ls.push_back(new EImportStart);
+  std::list<EImportStart> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 // -----------------------
@@ -3275,11 +3324,13 @@ void EImportFinish::dump(Formatter *f) const
   f->dump_stream("base dirfrag") << base;
   f->dump_string("success", success ? "true" : "false");
 }
-void EImportFinish::generate_test_instances(std::list<EImportFinish*>& ls)
+std::list<EImportFinish> EImportFinish::generate_test_instances()
 {
-  ls.push_back(new EImportFinish);
-  ls.push_back(new EImportFinish);
-  ls.back()->success = true;
+  std::list<EImportFinish> ls;
+  ls.emplace_back();
+  ls.emplace_back();
+  ls.back().success = true;
+  return ls;
 }
 
 
@@ -3305,9 +3356,11 @@ void EResetJournal::dump(Formatter *f) const
   f->dump_stream("timestamp") << stamp;
 }
 
-void EResetJournal::generate_test_instances(std::list<EResetJournal*>& ls)
+std::list<EResetJournal> EResetJournal::generate_test_instances()
 {
-  ls.push_back(new EResetJournal());
+  std::list<EResetJournal> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void EResetJournal::replay(MDSRank *mds)
@@ -3354,9 +3407,11 @@ void ESegment::dump(Formatter *f) const
   f->dump_int("seq", seq);
 }
 
-void ESegment::generate_test_instances(std::list<ESegment*>& ls)
+std::list<ESegment> ESegment::generate_test_instances()
 {
-  ls.push_back(new ESegment);
+  std::list<ESegment> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void ELid::encode(bufferlist &bl, uint64_t features) const
@@ -3383,9 +3438,11 @@ void ELid::dump(Formatter *f) const
   f->dump_int("seq", seq);
 }
 
-void ELid::generate_test_instances(std::list<ELid*>& ls)
+std::list<ELid> ELid::generate_test_instances()
 {
-  ls.push_back(new ELid);
+  std::list<ELid> ls;
+  ls.emplace_back();
+  return ls;
 }
 
 void ENoOp::encode(bufferlist &bl, uint64_t features) const

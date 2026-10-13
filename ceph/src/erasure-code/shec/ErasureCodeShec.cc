@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -27,8 +28,8 @@
 #include "common/strtol.h"
 #include "ErasureCodeShec.h"
 extern "C" {
-#include "jerasure/include/jerasure.h"
-#include "jerasure/include/galois.h"
+#include "jerasure.h"
+#include "galois.h"
 
 extern int calc_determinant(int *matrix, int dim);
 extern int* reed_sol_vandermonde_coding_matrix(int k, int m, int w);

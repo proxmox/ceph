@@ -1,3 +1,5 @@
+.. _cephfs_mds_cache_configuration:
+
 =======================
 MDS Cache Configuration
 =======================
@@ -19,9 +21,10 @@ When the MDS cache is too large, the MDS will **recall** client state so cache
 items become unpinned and eligible to be dropped. The MDS can only drop cache
 state when no clients refer to the metadata to be dropped. Also described below
 is how to configure the MDS recall settings for your workload's needs. This is
-necessary if the internal throttles on the MDS recall can not keep up with the
+necessary if the internal throttles on the MDS recall cannot keep up with the
 client workload.
 
+.. _cephfs_cache_configuration_mds_cache_memory_limit:
 
 MDS Cache Size
 --------------
@@ -89,15 +92,9 @@ MDS Recall
 
 MDS limits its recall of client state (capabilities/leases) to prevent creating
 too much work for itself handling release messages from clients. This is controlled
-via the following configurations:
-
-
-The maximum number of capabilities to recall from a single client in a given recall
-event:
+via the following central config options:
 
 .. confval:: mds_recall_max_caps
-
-The threshold and decay rate for the decay counter on a session:
 
 .. confval:: mds_recall_max_decay_threshold
 
@@ -111,7 +108,7 @@ There is also a global decay counter that throttles for all session recall:
 
 .. confval:: mds_recall_global_max_decay_threshold
 
-its decay rate is the same as ``mds_recall_max_decay_rate``. Any recalled
+Its decay rate is the same as ``mds_recall_max_decay_rate``. Any recalled
 capability for any session also increments this counter.
 
 If clients are slow to release state, the warning "failing to respond to cache
@@ -215,7 +212,7 @@ Dealing with "clients failing to respond to cache pressure" messages
 --------------------------------------------------------------------
 
 Every second (or every interval set by the ``mds_cache_trim_interval``
-configuration paramater), the MDS runs the "cache trim" procedure. One of the
+configuration parameter), the MDS runs the "cache trim" procedure. One of the
 steps of this procedure is "recall client state". During this step, the MDS
 checks every client (session) to determine whether it needs to recall caps.
 If any of the following are true, then the MDS needs to recall caps:

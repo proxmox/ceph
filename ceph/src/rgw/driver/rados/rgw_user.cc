@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "rgw_user.h"
 #include "common/errno.h"
@@ -8,7 +8,9 @@
 #include "rgw_account.h"
 #include "rgw_bucket.h"
 #include "rgw_metadata.h"
+#ifdef WITH_RADOSGW_RADOS
 #include "rgw_metadata_lister.h"
+#endif
 #include "rgw_quota.h"
 #include "rgw_rest_iam.h" // validate_iam_user_name()
 
@@ -30,33 +32,6 @@ static string key_type_to_str(int key_type) {
       return "s3";
       break;
   }
-}
-
-static bool char_is_unreserved_url(char c)
-{
-  if (isalnum(c))
-    return true;
-
-  switch (c) {
-  case '-':
-  case '.':
-  case '_':
-  case '~':
-    return true;
-  default:
-    return false;
-  }
-}
-
-static bool validate_access_key(string& key)
-{
-  const char *p = key.c_str();
-  while (*p) {
-    if (!char_is_unreserved_url(*p))
-      return false;
-    p++;
-  }
-  return true;
 }
 
 static void set_err_msg(std::string *sink, std::string msg)
@@ -500,41 +475,6 @@ int RGWAccessKeyPool::check_op(RGWUserAdminOpState& op_state,
     op_state.set_access_key_exist();
   }
   return 0;
-}
-
-void rgw_generate_secret_key(CephContext* cct,
-                             std::string& secret_key)
-{
-  char secret_key_buf[SECRET_KEY_LEN + 1];
-  gen_rand_alphanumeric_plain(cct, secret_key_buf, sizeof(secret_key_buf));
-  secret_key = secret_key_buf;
-}
-
-int rgw_generate_access_key(const DoutPrefixProvider* dpp,
-                            optional_yield y,
-                            rgw::sal::Driver* driver,
-                            std::string& access_key_id)
-{
-  std::string id;
-  int r = 0;
-
-  do {
-    id.resize(PUBLIC_ID_LEN + 1);
-    gen_rand_alphanumeric_upper(dpp->get_cct(), id.data(), id.size());
-    id.pop_back(); // remove trailing null
-
-    if (!validate_access_key(id))
-      continue;
-
-    std::unique_ptr<rgw::sal::User> duplicate_check;
-    r = driver->get_user_by_access_key(dpp, id, y, &duplicate_check);
-  } while (r == 0);
-
-  if (r == -ENOENT) {
-    access_key_id = std::move(id);
-    return 0;
-  }
-  return r;
 }
 
 // Generate a new random key
@@ -2754,6 +2694,7 @@ public:
   }
 };
 
+#ifdef WITH_RADOSGW_RADOS
 class RGWUserMetadataHandler : public RGWMetadataHandler {
   RGWSI_User *svc_user{nullptr};
  public:
@@ -2907,7 +2848,7 @@ std::string RGWUserMetadataHandler::get_marker(void *handle)
   auto lister = static_cast<RGWMetadataLister*>(handle);
   return lister->get_marker();
 }
-
+#endif
 
 RGWUserCtl::RGWUserCtl(RGWSI_Zone *zone_svc, RGWSI_User *user_svc)
 {
@@ -3037,11 +2978,13 @@ int RGWUserCtl::remove_info(const DoutPrefixProvider *dpp,
   return svc.user->remove_user_info(info, params.objv_tracker, y, dpp);
 }
 
+#ifdef WITH_RADOSGW_RADOS
 auto create_user_metadata_handler(RGWSI_User *user_svc)
     -> std::unique_ptr<RGWMetadataHandler>
 {
   return std::make_unique<RGWUserMetadataHandler>(user_svc);
 }
+#endif
 
 void rgw_user::dump(Formatter *f) const
 {

@@ -22,12 +22,9 @@
 #pragma once
 
 #include <seastar/core/metrics.hh>
-#include <seastar/util/modules.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sharded.hh>
-#ifndef SEASTAR_MODULE
 #include <boost/functional/hash.hpp>
-#endif
 
 #include <deque>
 
@@ -42,7 +39,6 @@ namespace seastar {
 namespace metrics {
 namespace impl {
 
-using labels_type = std::map<sstring, sstring>;
 using internalized_labels_ref = lw_shared_ptr<const labels_type>;
 
 }
@@ -69,10 +65,8 @@ struct hash<seastar::metrics::impl::labels_type> {
 namespace seastar {
 namespace metrics {
 
-SEASTAR_MODULE_EXPORT
 struct relabel_config;
 
-SEASTAR_MODULE_EXPORT
 struct metric_family_config;
 /*!
  * \brief result of metric relabeling
@@ -85,7 +79,6 @@ struct metric_family_config;
  * Non zero value indicates there were name collisions.
  *
  */
-SEASTAR_MODULE_EXPORT
 struct metric_relabeling_result {
     size_t metrics_relabeled_due_to_collision;
 };

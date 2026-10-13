@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -123,6 +124,10 @@ public:
 
   double get_dispatch_queue_max_age(utime_t now) const override {
     return dispatch_queue.get_max_age(now);
+  }
+
+  void set_dispatch_throttle_size(uint64_t size) override {
+    dispatch_queue.dispatch_throttler.reset_max(size);
   }
   /** @} Accessors */
 
@@ -400,8 +405,15 @@ public:
    *
    * @return a global sequence ID that nobody else has seen.
    */
-  __u32 get_global_seq(__u32 old=0);
+  __u32 get_global_seq(__u32 old=0) {
+    std::lock_guard<ceph::spinlock> lg(global_seq_lock);
 
+    if (old > global_seq)
+      global_seq = old;
+    __u32 ret = ++global_seq;
+
+    return ret;
+  }
   /**
    * Get the protocol version we support for the given peer type: either
    * a peer protocol (if it matches our own), the protocol version for the

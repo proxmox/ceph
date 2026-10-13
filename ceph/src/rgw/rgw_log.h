@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include <vector>
 #include <fstream>
 #include "rgw_sal_fwd.h"
+#include "rgw_keystone_scope.h"
 
 class RGWOp;
 
@@ -105,8 +106,11 @@ struct rgw_log_entry {
   rgw_account_id account_id;
   std::string role_id;
 
+  // Keystone scope (optional) - uses unified structure from rgw_keystone_scope.h
+  std::optional<rgw::keystone::ScopeInfo> keystone_scope;
+
   void encode(bufferlist &bl) const {
-    ENCODE_START(15, 5, bl);
+    ENCODE_START(16, 5, bl);
     // old object/bucket owner ids, encoded in full in v8
     std::string empty_owner_id;
     encode(empty_owner_id, bl);
@@ -142,10 +146,11 @@ struct rgw_log_entry {
     encode(delete_multi_obj_meta, bl);
     encode(account_id, bl);
     encode(role_id, bl);
+    encode(keystone_scope, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator &p) {
-    DECODE_START_LEGACY_COMPAT_LEN(15, 5, 5, p);
+    DECODE_START_LEGACY_COMPAT_LEN(16, 5, 5, p);
     std::string object_owner_id;
     std::string bucket_owner_id;
     decode(object_owner_id, p);
@@ -218,10 +223,13 @@ struct rgw_log_entry {
       decode(account_id, p);
       decode(role_id, p);
     }
+    if (struct_v >= 16) {
+      decode(keystone_scope, p);
+    }
     DECODE_FINISH(p);
   }
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<rgw_log_entry*>& o);
+  static std::list<rgw_log_entry> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(rgw_log_entry)
 

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -14,7 +14,7 @@
 
 #include "include/buffer.h"
 #include "crimson/os/seastore/seastore_types.h"
-#include "crimson/os/seastore/transaction_interruptor.h"
+#include "crimson/common/errorator.h"
 
 struct btree_lba_manager_test;
 struct lba_btree_test;
@@ -23,6 +23,8 @@ struct cache_test_t;
 
 namespace crimson::os::seastore {
 
+class ExtentCommitter;
+class Transaction;
 class CachedExtent;
 using CachedExtentRef = boost::intrusive_ptr<CachedExtent>;
 class SegmentedAllocator;
@@ -67,11 +69,16 @@ class read_set_item_t {
   using set_hook_t = boost::intrusive::set_member_hook<
     boost::intrusive::link_mode<
       boost::intrusive::auto_unlink>>;
-  set_hook_t trans_hook;
-  using set_hook_options = boost::intrusive::member_hook<
+  set_hook_t trans_hook; // used to attach transactions to extents
+  set_hook_t extent_hook; // used to attach extents to transactions
+  using trans_hook_options = boost::intrusive::member_hook<
     read_set_item_t,
     set_hook_t,
     &read_set_item_t::trans_hook>;
+  using extent_hook_options = boost::intrusive::member_hook<
+    read_set_item_t,
+    set_hook_t,
+    &read_set_item_t::extent_hook>;
 
 public:
   struct extent_cmp_t {
@@ -101,12 +108,25 @@ public:
 
   using trans_set_t =  boost::intrusive::set<
     read_set_item_t,
-    set_hook_options,
+    trans_hook_options,
     boost::intrusive::constant_time_size<false>,
     boost::intrusive::compare<trans_cmp_t>>;
+  using extent_set_t =  boost::intrusive::set<
+    read_set_item_t,
+    extent_hook_options,
+    boost::intrusive::constant_time_size<false>,
+    boost::intrusive::compare<extent_cmp_t>>;
 
   T *t = nullptr;
   CachedExtentRef ref;
+
+  bool is_extent_attached_to_trans() const {
+    return extent_hook.is_linked();
+  }
+
+  bool is_trans_attached_to_extent() const {
+    return trans_hook.is_linked();
+  }
 
   read_set_item_t(T *t, CachedExtentRef ref);
   read_set_item_t(const read_set_item_t &) = delete;
@@ -115,9 +135,7 @@ public:
 };
 
 template <typename T>
-using read_extent_set_t = std::set<
-  read_set_item_t<T>,
-  typename read_set_item_t<T>::extent_cmp_t>;
+using read_extent_set_t = typename read_set_item_t<T>::extent_set_t;
 
 template <typename T>
 using read_trans_set_t = typename read_set_item_t<T>::trans_set_t;
@@ -218,10 +236,10 @@ private:
   // create and append the read-hole to
   // load_ranges_t and bl
   static void create_hole_append_bl(
-      load_ranges_t& ret,
-      ceph::bufferlist& bl,
-      extent_len_t hole_offset,
-      extent_len_t hole_length) {
+    load_ranges_t& ret,
+    ceph::bufferlist& bl,
+    extent_len_t hole_offset,
+    extent_len_t hole_length) {
     ceph::bufferptr hole_ptr = create_extent_ptr_rand(hole_length);
     bl.append(hole_ptr);
     ret.push_back(hole_offset, std::move(hole_ptr));
@@ -231,10 +249,10 @@ private:
   // and append to load_ranges_t
   // returns the iterator containing the inserted read-hole
   auto create_hole_insert_map(
-      load_ranges_t& ret,
-      extent_len_t hole_offset,
-      extent_len_t hole_length,
-      const map_t::const_iterator& next_it) {
+    load_ranges_t& ret,
+    extent_len_t hole_offset,
+    extent_len_t hole_length,
+    const map_t::const_iterator& next_it) {
     assert(!buffer_map.contains(hole_offset));
     ceph::bufferlist bl;
     create_hole_append_bl(ret, bl, hole_offset, hole_length);
@@ -248,15 +266,62 @@ private:
   map_t buffer_map;
 };
 
+enum class extent_2q_state_t : uint8_t {
+  Fresh = 0,
+  WarmIn,
+  Hot,
+  Max
+};
+
+class ExtentCommitter : public boost::intrusive_ref_counter<
+  ExtentCommitter, boost::thread_unsafe_counter> {
+public:
+  ExtentCommitter(CachedExtent &extent, Transaction &t)
+    : extent(extent), t(t) {}
+
+  void block_trans(Transaction &);
+  void unblock_trans(Transaction &);
+  // commit all extent states to the prior instance,
+  // except poffset and extent content
+  void commit_state();
+
+  void commit_data();
+
+  // synchronize last_committed_crc among mutation pending extents
+  void sync_checksum();
+
+  void sync_dirty_from();
+
+  void sync_version();
+
+  void commit_and_share_paddr();
+
+  void maybe_sync_copied_lba_key();
+private:
+  // the rewritten extent
+  CachedExtent &extent;
+  Transaction &t;
+
+  void _share_prior_data_to_mutations();
+  void _share_prior_data_to_pending_versions();
+
+  template <typename T>
+  void _set_invalidaters(Transaction &t);
+
+  friend class Cache;
+};
+using ExtentCommitterRef = boost::intrusive_ptr<ExtentCommitter>;
+
 class ExtentIndex;
 class CachedExtent
   : public boost::intrusive_ref_counter<
       CachedExtent, boost::thread_unsafe_counter>,
     public trans_spec_view_t {
   enum class extent_state_t : uint8_t {
-    INITIAL_WRITE_PENDING, // In Transaction::write_set and fresh_block_list
-    MUTATION_PENDING,      // In Transaction::write_set and mutated_block_list
-    CLEAN_PENDING,         // CLEAN, but not yet read out
+    INITIAL_WRITE_PENDING, // In Transaction::write_set and fresh_block_list,
+                           // has prior_instance under rewrite
+    MUTATION_PENDING,      // In Transaction::write_set and mutated_block_list,
+                           // has prior_instance
     CLEAN,                 // In Cache::extent_index, Transaction::read_set
                            //  during write, contents match disk, version == 0
     DIRTY,                 // Same as CLEAN, but contents do not match disk,
@@ -281,7 +346,8 @@ class CachedExtent
 
   uint32_t last_committed_crc = 0;
 
-  // Points at current version while in state MUTATION_PENDING
+  // Points at the prior stable version while in state MUTATION_PENDING
+  // or is rewriting (in state INITIAL_WRITE_PENDING).
   CachedExtentRef prior_instance;
 
   // time of the last modification
@@ -293,7 +359,6 @@ public:
             placement_hint_t hint,
             rewrite_gen_t gen,
 	    transaction_id_t trans_id) {
-    assert(gen == NULL_GENERATION || is_rewrite_generation(gen));
     state = _state;
     set_paddr(paddr);
     user_hint = hint;
@@ -337,7 +402,7 @@ public:
    * Called prior to committing the transaction in which this extent
    * is living.
    */
-  virtual void prepare_commit() {}
+  virtual void prepare_commit(Transaction &) {}
 
   /**
    * on_initial_write
@@ -388,7 +453,7 @@ public:
    * with the states of Cache and can't wait till transaction
    * completes.
    */
-  virtual void on_replace_prior() {}
+  virtual void on_replace_prior(Transaction &) {}
 
   /**
    * on_invalidated
@@ -406,6 +471,13 @@ public:
    */
   virtual extent_types_t get_type() const = 0;
 
+  /**
+   * clear_delta
+   *
+   * clear the mutation delta buffer of the cached extent.
+   */
+  virtual void clear_delta() {}
+
   virtual bool is_logical() const {
     assert(!is_logical_type(get_type()));
     assert(is_physical_type(get_type()));
@@ -418,11 +490,12 @@ public:
 
   void rewrite(Transaction &t, CachedExtent &e, extent_len_t o) {
     assert(is_initial_pending());
-    if (!e.is_pending()) {
-      prior_instance = &e;
+    assert(e.is_valid());
+    if (e.is_stable()) {
+      set_prior_instance(&e);
     } else {
-      assert(e.is_mutation_pending());
-      prior_instance = e.get_prior_instance();
+      assert(e.has_mutation());
+      set_prior_instance(e.prior_instance);
     }
     e.get_bptr().copy_out(
       o,
@@ -450,9 +523,8 @@ public:
     out << "CachedExtent(addr=" << this
 	<< ", type=" << get_type()
 	<< ", trans=" << pending_for_transaction
-	<< ", pending_io=" << is_pending_io()
 	<< ", version=" << version
-	<< ", dirty_from_or_retired_at=" << dirty_from_or_retired_at
+	<< ", dirty_from=" << dirty_from
 	<< ", modify_time=" << sea_time_point_printer_t{modify_time}
 	<< ", paddr=" << get_paddr()
 	<< ", prior_paddr=" << prior_poffset_str
@@ -462,9 +534,14 @@ public:
 	<< ", last_committed_crc=" << last_committed_crc
 	<< ", refcount=" << use_count()
 	<< ", user_hint=" << user_hint
-	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation};
-    if (state != extent_state_t::INVALID &&
-        state != extent_state_t::CLEAN_PENDING) {
+	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation}
+	<< ", pending_io=";
+    if (is_pending_io()) {
+      out << io_wait->from_state;
+    } else {
+      out << "N/A";
+    }
+    if (is_valid() && is_fully_loaded() && !is_stable_clean_pending()) {
       print_detail(out);
     }
     return out << ")";
@@ -499,6 +576,8 @@ public:
     paddr_t base, const ceph::bufferlist &bl) = 0;
 
   /**
+   * complete_load
+   *
    * Called on dirty CachedExtent implementation after replay.
    * Implementation should perform any reads/in-memory-setup
    * necessary. (for instance, the lba implementation will use this
@@ -525,51 +604,28 @@ public:
     return TCachedExtentRef<const T>(static_cast<const T*>(this));
   }
 
-  /// Returns true if extent can be mutated in an open transaction
+  /// Returns true if extent can be mutated in an open transaction,
+  /// equivalent to !is_data_stable.
   bool is_mutable() const {
     return state == extent_state_t::INITIAL_WRITE_PENDING ||
       state == extent_state_t::MUTATION_PENDING ||
       state == extent_state_t::EXIST_MUTATION_PENDING;
   }
 
-  /// Returns true if extent is part of an open transaction
+  /// Returns true if extent is part of an open transaction,
+  /// equivalent to !is_stable.
   bool is_pending() const {
     return is_mutable() || state == extent_state_t::EXIST_CLEAN;
   }
 
-  bool is_rewrite() {
-    return is_initial_pending() && get_prior_instance();
-  }
-
-  /// Returns true if extent is stable, written and shared among transactions
-  bool is_stable_written() const {
-    return state == extent_state_t::CLEAN_PENDING ||
-      state == extent_state_t::CLEAN ||
-      state == extent_state_t::DIRTY;
-  }
-
-  bool is_stable_writting() const {
-    // MUTATION_PENDING and under-io extents are already stable and visible,
-    // see prepare_record().
-    //
-    // XXX: It might be good to mark this case as DIRTY from the definition,
-    // which probably can make things simpler.
-    return is_mutation_pending() && is_pending_io();
-  }
-
-  /// Returns true if extent is stable and shared among transactions
-  bool is_stable() const {
-    return is_stable_written() || is_stable_writting();
-  }
-
-  bool is_data_stable() const {
-    return is_stable() || is_exist_clean();
-  }
-
   /// Returns true if extent has a pending delta
-  bool is_mutation_pending() const {
+  bool has_mutation() const {
     return state == extent_state_t::MUTATION_PENDING
       || state == extent_state_t::EXIST_MUTATION_PENDING;
+  }
+
+  bool is_mutation_pending() const {
+    return state == extent_state_t::MUTATION_PENDING;
   }
 
   /// Returns true if extent is a fresh extent
@@ -577,20 +633,8 @@ public:
     return state == extent_state_t::INITIAL_WRITE_PENDING;
   }
 
-  /// Returns true if extent is clean (does not have deltas on disk)
-  bool is_clean() const {
-    ceph_assert(is_valid());
-    return state == extent_state_t::INITIAL_WRITE_PENDING ||
-           state == extent_state_t::CLEAN ||
-           state == extent_state_t::CLEAN_PENDING ||
-           state == extent_state_t::EXIST_CLEAN;
-  }
-
-  // Returs true if extent is stable and clean
-  bool is_stable_clean() const {
-    ceph_assert(is_valid());
-    return state == extent_state_t::CLEAN ||
-           state == extent_state_t::CLEAN_PENDING;
+  bool is_rewrite() {
+    return is_initial_pending() && get_prior_instance();
   }
 
   /// Ruturns true if data is persisted while metadata isn't
@@ -603,10 +647,37 @@ public:
     return state == extent_state_t::EXIST_MUTATION_PENDING;
   }
 
-  /// Returns true if extent is dirty (has deltas on disk)
-  bool is_dirty() const {
-    ceph_assert(is_valid());
-    return !is_clean();
+  /// Returns true iff extent is stable (shared among transactions),
+  /// equivalent to !is_pending()
+  bool is_stable() const {
+    return state == extent_state_t::CLEAN
+        || state == extent_state_t::DIRTY;
+  }
+
+  /// Returns true iff extent is stable and not io-pending
+  bool is_stable_ready() const {
+    return is_stable() && (!is_pending_io() || io_wait->stable_view);
+  }
+
+  /// Returns true if extent can not be mutated,
+  /// equivalent to !is_mutable.
+  bool is_data_stable() const {
+    return is_stable() || is_exist_clean();
+  }
+
+  /// Returns iff extent is DIRTY
+  bool is_stable_dirty() const {
+    return state == extent_state_t::DIRTY;
+  }
+
+  /// Returns iff extent is CLEAN
+  bool is_stable_clean() const {
+    return state == extent_state_t::CLEAN;
+  }
+
+  /// Returns iff extent is CLEAN and io-pending
+  bool is_stable_clean_pending() const {
+    return is_stable_clean() && is_pending_io();
   }
 
   /// Returns true if extent has not been superceded or retired
@@ -616,28 +687,17 @@ public:
 
   /// Returns true if extent or prior_instance has been invalidated
   bool has_been_invalidated() const {
-    return !is_valid() || (is_mutation_pending() && !prior_instance->is_valid());
-  }
-
-  /// Returns true if extent is a plcaeholder
-  bool is_placeholder() const {
-    return is_retired_placeholder_type(get_type());
+    return !is_valid() || (prior_instance && !prior_instance->is_valid());
   }
 
   bool is_pending_io() const {
-    return !!io_wait_promise;
+    return io_wait.has_value();
   }
 
   /// Return journal location of oldest relevant delta, only valid while DIRTY
   auto get_dirty_from() const {
-    ceph_assert(is_dirty());
-    return dirty_from_or_retired_at;
-  }
-
-  /// Return journal location of oldest relevant delta, only valid while RETIRED
-  auto get_retired_at() const {
-    ceph_assert(!is_valid());
-    return dirty_from_or_retired_at;
+    ceph_assert(is_stable_dirty());
+    return dirty_from;
   }
 
   /// Return true if extent is fully loaded or is about to be fully loaded (call 
@@ -697,7 +757,8 @@ public:
     return loaded_length;
   }
 
-  /// Returns version, get_version() == 0 iff is_clean()
+  /// Returns version, get_version() == 0
+  /// iff CLEAN/EXIST_CLEAN/INITIAL_WRITE_PENDING
   extent_version_t get_version() const {
     return version;
   }
@@ -748,8 +809,6 @@ public:
 
   /// assign the target rewrite generation for the followup rewrite
   void set_target_rewrite_generation(rewrite_gen_t gen) {
-    assert(is_target_rewrite_generation(gen));
-
     user_hint = placement_hint_t::REWRITE;
     rewrite_generation = gen;
   }
@@ -792,7 +851,6 @@ public:
   enum class viewable_state_t {
     stable,                // viewable
     pending,               // viewable
-    invalid,               // unviewable
     stable_become_retired, // unviewable
     stable_become_pending, // unviewable
   };
@@ -807,6 +865,28 @@ public:
    */
   std::pair<bool, viewable_state_t>
   is_viewable_by_trans(Transaction &t);
+
+  extent_2q_state_t get_2q_state() const {
+    assert("2Q" == crimson::common::get_conf<std::string>
+	   ("seastore_cachepin_type"));
+    return cache_state;
+  }
+
+  void set_2q_state(extent_2q_state_t state) {
+    assert("2Q" == crimson::common::get_conf<std::string>
+	   ("seastore_cachepin_type"));
+    assert(state < extent_2q_state_t::Max);
+    cache_state = state;
+  }
+
+  extent_len_t get_last_touch_end() const {
+    return last_touch_end;
+  }
+
+  void set_last_touch_end(extent_len_t touch_end) {
+    assert(touch_end != 0);
+    last_touch_end = touch_end;
+  }
 
 private:
   template <typename T>
@@ -829,9 +909,14 @@ private:
   using index = boost::intrusive::set<CachedExtent, index_member_options>;
   friend class ExtentIndex;
   friend class Transaction;
+  friend class ExtentCommitter;
 
-  bool is_linked() {
+  bool is_linked_to_index() {
     return extent_index_hook.is_linked();
+  }
+
+  bool is_linked_to_list() {
+    return primary_ref_list_hook.is_linked();
   }
 
   /// hook for intrusive ref list (mainly dirty or lru list)
@@ -845,12 +930,11 @@ private:
     primary_ref_list_member_options>;
 
   /**
-   * dirty_from_or_retired_at
+   * dirty_from
    *
-   * Encodes ordering token for primary_ref_list -- dirty_from when
-   * dirty or retired_at if retired.
+   * Encodes ordering token for primary_ref_list -- dirty_from when dirty
    */
-  journal_seq_t dirty_from_or_retired_at;
+  journal_seq_t dirty_from;
 
   /// cache data contents, std::nullopt iff partially loaded
   std::optional<ceph::bufferptr> ptr;
@@ -874,30 +958,42 @@ private:
   /// relative address before ool write, used to update mapping
   std::optional<paddr_t> prior_poffset = std::nullopt;
 
-  /// used to wait while in-progress commit completes
-  std::optional<seastar::shared_promise<>> io_wait_promise;
+  struct io_wait_t {
+    seastar::shared_promise<> pr;  /// completes when the I/O finishes
+    extent_state_t from_state;     /// state before entering the wait
 
-  void set_io_wait() {
-    ceph_assert(!io_wait_promise);
-    io_wait_promise = seastar::shared_promise<>();
+    /**
+      * If true, treat the extent as "stable-ready" for visibility checks
+      * even while I/O is pending. Used by:
+      *  See: stage_visibility_handoff()
+      */
+    bool stable_view = false;
+  };
+
+  std::optional<io_wait_t> io_wait;
+
+  void set_io_wait(extent_state_t new_state, bool stable_view) {
+    ceph_assert(!io_wait);
+    io_wait.emplace(seastar::shared_promise<>(), state, stable_view);
+    state = new_state;
+    assert(is_data_stable());
   }
 
   void complete_io() {
-    ceph_assert(io_wait_promise);
-    io_wait_promise->set_value();
-    io_wait_promise = std::nullopt;
+    ceph_assert(io_wait.has_value());
+    io_wait->pr.set_value();
+    io_wait = std::nullopt;
   }
 
   seastar::future<> wait_io() {
-    if (!io_wait_promise) {
+    if (!io_wait) {
       return seastar::now();
     } else {
-      return io_wait_promise->get_shared_future();
+      return io_wait->pr.get_shared_future();
     }
   }
 
-  CachedExtent* get_transactional_view(Transaction &t);
-  CachedExtent* get_transactional_view(transaction_id_t tid);
+  CachedExtent* maybe_get_transactional_view(Transaction &t);
 
   read_trans_set_t<Transaction> read_transactions;
 
@@ -906,6 +1002,17 @@ private:
   // the target rewrite generation for the followup rewrite
   // or the rewrite generation for the fresh write
   rewrite_gen_t rewrite_generation = NULL_GENERATION;
+
+  // save the end offset of the most recent of extent touching,
+  // see Cache::touch_extent_by_range() and ExtentPinboardTwoQ.
+  extent_len_t last_touch_end = 0;
+
+  // This field is unused when the ExtentPinboard use LRU algorithm
+  extent_2q_state_t cache_state = extent_2q_state_t::Fresh;
+
+  ExtentCommitterRef committer;
+
+  void new_committer(Transaction &t);
 
 protected:
   trans_view_set_t mutation_pending_extents;
@@ -940,7 +1047,7 @@ protected:
   /// construct new CachedExtent, will deep copy the buffer
   CachedExtent(const CachedExtent &other)
     : state(other.state),
-      dirty_from_or_retired_at(other.dirty_from_or_retired_at),
+      dirty_from(other.dirty_from),
       length(other.get_length()),
       loaded_length(other.get_loaded_length()),
       version(other.version),
@@ -962,7 +1069,7 @@ protected:
   /// construct new CachedExtent, will shallow copy the buffer
   CachedExtent(const CachedExtent &other, share_buffer_t)
     : state(other.state),
-      dirty_from_or_retired_at(other.dirty_from_or_retired_at),
+      dirty_from(other.dirty_from),
       ptr(other.ptr),
       length(other.get_length()),
       loaded_length(other.get_loaded_length()),
@@ -985,18 +1092,10 @@ protected:
     // must call init() to fully initialize
   }
 
-  struct retired_placeholder_construct_t {};
-  CachedExtent(retired_placeholder_construct_t, extent_len_t _length)
-    : state(extent_state_t::CLEAN),
-      length(_length),
-      loaded_length(0),
-      buffer_space(std::in_place) {
-    assert(!is_fully_loaded());
-    assert(is_aligned(length, CEPH_PAGE_SIZE));
-    // must call init() to fully initialize
-  }
-
   friend class Cache;
+  friend class ExtentQueue;
+  friend class ExtentPinboardLRU;
+  friend class ExtentPinboardTwoQ;
   template <typename T, typename... Args>
   static TCachedExtentRef<T> make_cached_extent_ref(
     Args&&... args) {
@@ -1007,6 +1106,36 @@ protected:
   static TCachedExtentRef<T> make_cached_extent_ref() {
     return new T();
   }
+
+  /**
+   * on_state_commit
+   *
+   * Called when the current extent's common states
+   * are copied to its prior instance, this should
+   * only be used in the context of rewriting transactions,
+   * e.g. TRIM_DIRTY and CLEANER
+   */
+  virtual void on_state_commit() {}
+
+  /**
+   * on_data_commit
+   *
+   * Called when the current extent's ptr is shared with
+   * its prior instance, this should only be used when
+   * commit extent rewriting transactions, e.g. TRIM_DIRTY
+   * and CLEANER
+   */
+  virtual void on_data_commit() {}
+
+  /**
+   * reapply_delta
+   *
+   * Called when there's need to reapply the current extent's
+   * deltas, this happens when the rewritting transaction
+   * overwrite the data of mutation pending extents, which erase
+   * all modifications and make the deltas needed to be reapplied
+   */
+  virtual void reapply_delta() {}
 
   void reset_prior_instance() {
     prior_instance.reset();
@@ -1020,6 +1149,7 @@ protected:
   virtual void update_in_extent_chksum_field(uint32_t) {}
 
   void set_prior_instance(CachedExtentRef p) {
+    assert(!prior_instance);
     prior_instance = p;
   }
 
@@ -1038,6 +1168,9 @@ protected:
 
   /// set bufferptr
   void set_bptr(ceph::bufferptr &&nptr) {
+    ptr = nptr;
+  }
+  void set_bptr(ceph::bufferptr &nptr) {
     ptr = nptr;
   }
 
@@ -1063,7 +1196,7 @@ protected:
     if (is_initial_pending() && addr.is_record_relative()) {
       return addr.block_relative_to(get_paddr());
     } else {
-      ceph_assert(!addr.is_record_relative() || is_mutation_pending());
+      ceph_assert(!addr.is_record_relative() || has_mutation());
       return addr;
     }
   }
@@ -1254,13 +1387,17 @@ public:
   }
 
   void erase(CachedExtent &extent) {
-    assert(extent.parent_index);
-    assert(extent.is_linked());
-    [[maybe_unused]] auto erased = extent_index.erase(
-      extent_index.s_iterator_to(extent));
-    extent.parent_index = nullptr;
+    auto it = extent_index.s_iterator_to(extent);
+    erase(it);
+  }
 
+  void erase(CachedExtent::index::iterator &it) {
+    auto &extent = *it;
+    assert(extent.parent_index);
+    assert(extent.is_linked_to_index());
+    [[maybe_unused]] auto erased = extent_index.erase(it);
     assert(erased);
+    extent.parent_index = nullptr;
     bytes -= extent.get_length();
   }
 
@@ -1310,54 +1447,6 @@ public:
 
 private:
   uint64_t bytes = 0;
-};
-
-/**
- * RetiredExtentPlaceholder
- *
- * Cache::retire_extent_addr(Transaction&, paddr_t, extent_len_t) can retire an
- * extent not currently in cache. In that case, in order to detect transaction
- * invalidation, we need to add a placeholder to the cache to create the
- * mapping back to the transaction. And whenever there is a transaction tries
- * to read the placeholder extent out, Cache is responsible to replace the
- * placeholder by the real one. Anyway, No placeholder extents should escape
- * the Cache interface boundary.
- */
-class RetiredExtentPlaceholder : public CachedExtent {
-
-public:
-  RetiredExtentPlaceholder(extent_len_t length)
-    : CachedExtent(CachedExtent::retired_placeholder_construct_t{}, length) {}
-
-  CachedExtentRef duplicate_for_write(Transaction&) final {
-    ceph_abort("Should never happen for a placeholder");
-    return CachedExtentRef();
-  }
-
-  ceph::bufferlist get_delta() final {
-    ceph_abort("Should never happen for a placeholder");
-    return ceph::bufferlist();
-  }
-
-  static constexpr extent_types_t TYPE = extent_types_t::RETIRED_PLACEHOLDER;
-  extent_types_t get_type() const final {
-    return TYPE;
-  }
-
-  void apply_delta_and_adjust_crc(
-    paddr_t base, const ceph::bufferlist &bl) final {
-    ceph_abort("Should never happen for a placeholder");
-  }
-
-  void on_rewrite(Transaction &, CachedExtent&, extent_len_t) final {}
-
-  std::ostream &print_detail(std::ostream &out) const final {
-    return out << ", RetiredExtentPlaceholder";
-  }
-
-  void on_delta_write(paddr_t record_block_offset) final {
-    ceph_abort("Should never happen for a placeholder");
-  }
 };
 
 class LBAMapping;
@@ -1434,12 +1523,12 @@ public:
     extent_len_t len;
   };
   virtual std::optional<modified_region_t> get_modified_region() {
-    ceph_abort("Unsupported");
+    ceph_abort_msg("Unsupported");
     return std::nullopt;
   }
 
   virtual void clear_modified_region() {
-    ceph_abort("Unsupported");
+    ceph_abort_msg("Unsupported");
   }
 
   virtual ~LogicalCachedExtent() {}
@@ -1455,10 +1544,16 @@ protected:
   virtual void logical_on_delta_write() {}
 
   void on_delta_write(paddr_t record_block_offset) final {
-    assert(is_exist_mutation_pending() ||
-	   get_prior_instance());
     logical_on_delta_write();
   }
+
+  void on_state_commit() final {
+    auto &prior = static_cast<LogicalCachedExtent&>(*get_prior_instance());
+    prior.laddr = laddr;
+    do_on_state_commit();
+  }
+
+  virtual void do_on_state_commit() {}
 
 private:
   // the logical address of the extent, and if shared,
@@ -1527,3 +1622,24 @@ template <> struct fmt::formatter<crimson::os::seastore::CachedExtent> : fmt::os
 template <> struct fmt::formatter<crimson::os::seastore::CachedExtent::viewable_state_t> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<crimson::os::seastore::LogicalCachedExtent> : fmt::ostream_formatter {};
 #endif
+
+template <>
+struct fmt::formatter<crimson::os::seastore::extent_2q_state_t>
+    : public fmt::formatter<std::string_view> {
+  using State = crimson::os::seastore::extent_2q_state_t;
+  auto format(const State &s, auto &ctx) const {
+    switch (s) {
+    case State::Fresh:
+      return fmt::format_to(ctx.out(), "Fresh");
+    case State::WarmIn:
+      return fmt::format_to(ctx.out(), "WarmIn");
+    case State::Hot:
+      return fmt::format_to(ctx.out(), "Hot");
+    case State::Max:
+      return fmt::format_to(ctx.out(), "Max");
+    default:
+      __builtin_unreachable();
+      return ctx.out();
+    }
+  }
+};

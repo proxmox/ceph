@@ -1,7 +1,7 @@
 import { Component, Inject, OnInit, Optional } from '@angular/core';
 import { UntypedFormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import expand from 'brace-expansion';
+import { expand } from 'brace-expansion';
 
 import { HostService } from '~/app/shared/api/host.service';
 import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
@@ -18,7 +18,8 @@ const HOSTS = 'hosts';
 @Component({
   selector: 'cd-host-form',
   templateUrl: './host-form.component.html',
-  styleUrls: ['./host-form.component.scss']
+  styleUrls: ['./host-form.component.scss'],
+  standalone: false
 })
 export class HostFormComponent extends CdForm implements OnInit {
   open: boolean = false;

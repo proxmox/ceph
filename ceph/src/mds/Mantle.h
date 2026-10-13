@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -24,14 +25,19 @@
 
 #include "mdstypes.h"
 
+#include "include/cephfs/types.h" // for mds_rank_t
+
 class Mantle {
   public:
     Mantle();
-    ~Mantle() { if (L) lua_close(L); }
-    int balance(std::string_view script,
-                mds_rank_t whoami,
-                const std::vector <std::map<std::string, double>> &metrics,
-                std::map<mds_rank_t,double> &my_targets);
+    ~Mantle() { if (L) lua_close(L);
+    }
+
+    int balance(
+        const std::string& script,
+        mds_rank_t whoami,
+        const std::vector<std::map<std::string, double>>& metrics,
+        std::map<mds_rank_t, double>& my_targets);
 
   protected:
     lua_State *L;

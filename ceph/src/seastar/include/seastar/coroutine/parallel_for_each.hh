@@ -27,7 +27,7 @@
 
 #include <seastar/core/loop.hh>
 #include <seastar/core/coroutine.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/core/internal/current_task.hh>
 
 namespace seastar::coroutine {
 
@@ -102,7 +102,7 @@ class [[nodiscard("must co_await an parallel_for_each() object")]] parallel_for_
 
     void resume_or_set_callback() noexcept {
         if (consume_next()) {
-            local_engine->set_current_task(_waiting_task);
+            seastar::internal::set_current_task(_waiting_task);
             _when_ready.resume();
         } else {
             set_callback();
@@ -152,7 +152,8 @@ public:
     }
 
     template<typename T>
-    void await_suspend(std::coroutine_handle<T> h) {
+    void await_suspend(std::coroutine_handle<T> h SEASTAR_COROUTINE_LOC_PARAM) noexcept {
+        SEASTAR_COROUTINE_LOC_STORE(h.promise());
         _when_ready = h;
         _waiting_task = &h.promise();
         resume_or_set_callback();

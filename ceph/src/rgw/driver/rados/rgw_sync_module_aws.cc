@@ -1,7 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "common/errno.h"
+#include "common/JSONFormatter.h"
+#include "common/XMLFormatter.h"
 
 #include "rgw_common.h"
 #include "rgw_coroutine.h"
@@ -965,9 +967,9 @@ public:
 
     new_attrs["x-amz-meta-rgwx-source-mtime"] = buf;
     new_attrs["x-amz-meta-rgwx-source-etag"] = src_properties.etag;
-    new_attrs["x-amz-meta-rgwx-source-key"] = rest_obj.key.name;
+    new_attrs["x-amz-meta-rgwx-source-key"] = url_encode(rest_obj.key.name);
     if (!rest_obj.key.instance.empty()) {
-      new_attrs["x-amz-meta-rgwx-source-version-id"] = rest_obj.key.instance;
+      new_attrs["x-amz-meta-rgwx-source-version-id"] = url_encode(rest_obj.key.instance);
     }
   }
 

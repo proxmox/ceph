@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -20,9 +20,15 @@ public:
   template <typename... T>
   LogicalChildNode(T&&... t) : LogicalCachedExtent(std::forward<T>(t)...) {}
 
+  virtual void lcn_on_invalidated(Transaction &t) {}
+
+  void on_invalidated(Transaction &t) final {
+    this->lba_child_node_t::on_invalidated();
+    lcn_on_invalidated(t);
+  }
+
   virtual ~LogicalChildNode() {
-    if (this->is_valid() &&
-	!this->is_pending()) {
+    if (this->is_stable()) {
       lba_child_node_t::destroy();
     }
   }
@@ -39,12 +45,17 @@ public:
     return (get_laddr() + get_length()).checked_to_laddr();
   }
 protected:
-  void on_replace_prior() final {
+  void on_replace_prior(Transaction &t) final {
     assert(is_seen_by_users());
-    lba_child_node_t::on_replace_prior();
-    do_on_replace_prior();
+    if (!is_rewrite_transaction(t.get_src())) {
+      lba_child_node_t::on_replace_prior();
+    }
+    do_on_replace_prior(t);
   }
-  virtual void do_on_replace_prior() {}
+  virtual void do_on_replace_prior(Transaction &t) {}
+  void on_data_commit() final {
+    ceph_abort("impossible");
+  }
 };
 using LogicalChildNodeRef = TCachedExtentRef<LogicalChildNode>;
 } // namespace crimson::os::seastore

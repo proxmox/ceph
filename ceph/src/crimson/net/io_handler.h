@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -329,7 +329,7 @@ public:
         crimson::get_logger(ceph_subsys_ms).error(
           "{} try_enter_out_dispatching() got wrong io_state {}",
           conn, io_state);
-        ceph_abort("impossible");
+        ceph_abort_msg("impossible");
       }
     }
 
@@ -447,6 +447,14 @@ public:
 #else
   ceph::bufferlist
 #endif
+  /**
+   * Encode and drain pending outgoing messages into a single bufferlist
+   * for a batched socket write. Stops early when the accumulated number
+   * of buffer fragments reaches crimson_osd_max_send_buffers to prevent
+   * overflowing seastar's uint16_t packet fragment
+   * counter. Un-swept messages remain in the queue and are picked up
+   * by the next do_out_dispatch() iteration.
+   */
   sweep_out_pending_msgs_to_sent(
       bool require_keepalive,
       std::optional<utime_t> maybe_keepalive_ack,

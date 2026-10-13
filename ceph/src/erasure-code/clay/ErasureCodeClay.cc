@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -550,7 +551,7 @@ int ErasureCodeClay::repair_one_lost_chunk(map<int, bufferlist> &recovered_data,
       }
       ceph_assert(order > 0);
       ordered_planes[order].insert(j);
-      // to keep track of a sub chunk within helper buffer recieved
+      // to keep track of a sub chunk within helper buffer received
       repair_plane_to_ind[j] = plane_ind;
       plane_ind++;
     }

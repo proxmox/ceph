@@ -337,7 +337,7 @@
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">39</context>
+          <context context-type="linenumber">38</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/smb/smb-tabs/smb-tabs.component.html</context>
@@ -1370,7 +1370,7 @@
       </trans-unit>
       <trans-unit id="f717bad2da5944a2567a52f971ccc6806db85805" datatype="html">
         <source>User names must have a length of 8 to 64 characters and can contain alphanumeric characters, '.', '@', '-', '_' or ':'.</source>
-        <target>ユーザ名の長さは8〜64文字で、英数字、「.」、「@」、「-」、「_」、または「:」を含めることができます。</target>
+        <target>ユーザ名の長さは8〜64文字で、英数字、「」、「@」、「-」、「_」、または「：」を含めることができます。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/iscsi-target-discovery-modal/iscsi-target-discovery-modal.component.html</context>
           <context context-type="linenumber">28,29</context>
@@ -1747,7 +1747,7 @@
       </trans-unit>
       <trans-unit id="137fbf154ecad4d580354db0858b76faea7e4686" datatype="html">
         <source>User names must have a length of 8 to 64 characters and can contain alphanumeric characters, '.', '@', '-', '_' or ':'.</source>
-        <target>ユーザ名の長さは8〜64文字で、英数字、「.」、「@」、「-」、「_」、または「:」を含めることができます。</target>
+        <target>ユーザ名の長さは8〜64文字で、英数字、「」、「@」、「-」、「_」、または「：」を含めることができます。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/iscsi-target-form/iscsi-target-form.component.html</context>
           <context context-type="linenumber">221,222</context>
@@ -1811,7 +1811,7 @@
       </trans-unit>
       <trans-unit id="7e7cad911fa524e512d9744b16358b7ee6791385" datatype="html">
         <source>User names must have a length of 8 to 64 characters and can contain alphanumeric characters, '.', '@', '-', '_' or ':'.</source>
-        <target>ユーザ名の長さは8〜64文字で、英数字、「.」、「@」、「-」、「_」、または「:」を含めることができます。</target>
+        <target>ユーザ名の長さは8〜64文字で、英数字、「」、「@」、「-」、「_」、または「：」を含めることができます。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/iscsi-target-form/iscsi-target-form.component.html</context>
           <context context-type="linenumber">383,384</context>
@@ -2157,7 +2157,7 @@
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">33</context>
+          <context context-type="linenumber">32</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-tabs/nvmeof-tabs.component.html</context>
@@ -2551,7 +2551,7 @@
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.ts</context>
-          <context context-type="linenumber">69</context>
+          <context context-type="linenumber">71</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/hosts/hosts.component.ts</context>
@@ -3023,15 +3023,15 @@
           <context context-type="linenumber">152</context>
         </context-group>
       </trans-unit>
-      <trans-unit id="cf378a96424886fda41c2c758e3996513692cd54" datatype="html">
-        <source>Selected Gateway Group</source>
+      <trans-unit id="f5ff2607cf2fd0645a263371d6f93f063d07e33a" datatype="html">
+        <source>Enter group</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">8</context>
+          <context context-type="linenumber">10</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.html</context>
-          <context context-type="linenumber">8</context>
+          <context context-type="linenumber">10</context>
         </context-group>
       </trans-unit>
       <trans-unit id="3cc9c2ae277393b3946b38c088dabff671b1ee1b" datatype="html">
@@ -3039,7 +3039,7 @@
         <target>パフォーマンス</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">45</context>
+          <context context-type="linenumber">44</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/rbd-details/rbd-details.component.html</context>
@@ -3054,39 +3054,28 @@
         <source> Gateways <x id="START_TAG_CD_HELP_TEXT" ctype="x-cd_help_text" equiv-text="&lt;cd-help-text&gt;"/> Ceph NVMe-oF gateways provide Ceph Block Device storage through NVMe/TCP. For VMware clients the NVMe/TCP volumes display as VMFS Datastores. For Linux clients the NVMe/TCP volumes display as as block devices. <x id="CLOSE_TAG_CD_HELP_TEXT" ctype="x-cd_help_text" equiv-text="&lt;/cd-help-text&gt;"/></source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">54,58</context>
+          <context context-type="linenumber">53,57</context>
         </context-group>
       </trans-unit>
       <trans-unit id="88d52a108e372081c5e122c5b369aac3ec904146" datatype="html">
         <source>Gateway overview</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">70</context>
+          <context context-type="linenumber">69</context>
         </context-group>
       </trans-unit>
       <trans-unit id="9517e7f935e73e6889dda20c0fa0408465c18f2e" datatype="html">
         <source>Gateway performance</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.html</context>
-          <context context-type="linenumber">80</context>
-        </context-group>
-      </trans-unit>
-      <trans-unit id="5032690935748986815" datatype="html">
-        <source>Enter group name</source>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.ts</context>
-          <context context-type="linenumber">25</context>
-        </context-group>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.ts</context>
-          <context context-type="linenumber">20</context>
+          <context context-type="linenumber">79</context>
         </context-group>
       </trans-unit>
       <trans-unit id="7974613004081450726" datatype="html">
         <source>Gateway ID</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.ts</context>
-          <context context-type="linenumber">65</context>
+          <context context-type="linenumber">67</context>
         </context-group>
       </trans-unit>
       <trans-unit id="5611592591303869712" datatype="html">
@@ -3094,7 +3083,7 @@
         <target>ステータス</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.ts</context>
-          <context context-type="linenumber">73</context>
+          <context context-type="linenumber">75</context>
         </context-group>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/rbd-trash-list/rbd-trash-list.component.ts</context>
@@ -3127,17 +3116,6 @@
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/rgw/rgw-multisite-sync-policy/rgw-multisite-sync-policy.component.ts</context>
           <context context-type="linenumber">71</context>
-        </context-group>
-      </trans-unit>
-      <trans-unit id="3107044384926915007" datatype="html">
-        <source>No groups available</source>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-gateway/nvmeof-gateway.component.ts</context>
-          <context context-type="linenumber">134</context>
-        </context-group>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.ts</context>
-          <context context-type="linenumber">148</context>
         </context-group>
       </trans-unit>
       <trans-unit id="4f7cdf99e53b74c843abea60b5ca07a6842c9135" datatype="html">
@@ -3396,10 +3374,6 @@
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-listeners-form/nvmeof-listeners-form.component.ts</context>
           <context context-type="linenumber">50</context>
         </context-group>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-listeners-list/nvmeof-listeners-list.component.ts</context>
-          <context context-type="linenumber">103</context>
-        </context-group>
       </trans-unit>
       <trans-unit id="6641024648411549335" datatype="html">
         <source>Host</source>
@@ -3438,13 +3412,6 @@
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/rgw/rgw-configuration-page/rgw-configuration-page.component.ts</context>
           <context context-type="linenumber">81</context>
-        </context-group>
-      </trans-unit>
-      <trans-unit id="5236029444167617860" datatype="html">
-        <source>listener</source>
-        <context-group purpose="location">
-          <context context-type="sourcefile">src/app/ceph/block/nvmeof-listeners-list/nvmeof-listeners-list.component.ts</context>
-          <context context-type="linenumber">106</context>
         </context-group>
       </trans-unit>
       <trans-unit id="e70fcca5a99575cffef3ff8cbd5e69f06ffd0f1c" datatype="html">
@@ -3895,28 +3862,28 @@
         <source> Subsystems <x id="START_TAG_CD_HELP_TEXT" ctype="x-cd_help_text" equiv-text="&lt;cd-help-text&gt;"/> A subsystem provides access control to which hosts can access the namespaces within the subsystem. <x id="CLOSE_TAG_CD_HELP_TEXT" ctype="x-cd_help_text" equiv-text="&lt;/cd-help-text&gt;"/></source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.html</context>
-          <context context-type="linenumber">19,23</context>
+          <context context-type="linenumber">18,22</context>
         </context-group>
       </trans-unit>
       <trans-unit id="7707701592702091951" datatype="html">
         <source>NQN</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.ts</context>
-          <context context-type="linenumber">59</context>
+          <context context-type="linenumber">61</context>
         </context-group>
       </trans-unit>
       <trans-unit id="4249456376242514671" datatype="html">
         <source># Namespaces</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.ts</context>
-          <context context-type="linenumber">63</context>
+          <context context-type="linenumber">65</context>
         </context-group>
       </trans-unit>
       <trans-unit id="8636681982233006716" datatype="html">
         <source># Maximum Allowed Namespaces</source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/block/nvmeof-subsystems/nvmeof-subsystems.component.ts</context>
-          <context context-type="linenumber">67</context>
+          <context context-type="linenumber">69</context>
         </context-group>
       </trans-unit>
       <trans-unit id="409b6a23ac5c8302cbe2868c58d14eb425d72ddd" datatype="html">
@@ -7800,7 +7767,7 @@
       </trans-unit>
       <trans-unit id="de0478286b8b5a939db54e9e5282405364ad2d61" datatype="html">
         <source>No log entries found. Please try to select different filter options.</source>
-        <target>ログエントリが見つかりません。別のフィルタオプションを選択してみてください。</target>
+        <target>ログ エントリが見つかりません。別のフィルタオプションを選択してみてください。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/logs/logs.component.html</context>
           <context context-type="linenumber">181</context>
@@ -8237,7 +8204,7 @@
       </trans-unit>
       <trans-unit id="464272c069fe56f6c50f41f426a25b2a42c95ba5" datatype="html">
         <source>Invalid SSL certificate.</source>
-        <target>SSL証明書が無効です。</target>
+        <target>無効なSSL証明書。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/multi-cluster/multi-cluster-form/multi-cluster-form.component.html</context>
           <context context-type="linenumber">214</context>
@@ -8556,7 +8523,7 @@
       </trans-unit>
       <trans-unit id="b87e181ab9e8393aa5ed759dd3d53836e32c8ffe" datatype="html">
         <source>DB devices can be used for storing BlueStore’s internal metadata. It is only helpful to provision a DB device if it is faster than the primary device (e.g. NVME devices or SSD).</source>
-        <target>DBデバイスは、BlueStoreの内部メタデータの保存に使用できます。DBデバイスのプロビジョニングは、プライマリデバイス(NVMEデバイスやSSDなど)より高速である場合にのみ役立ちます。</target>
+        <target>DBデバイスは、BlueStoreの内部メタデータを格納するために使用できます。DBデバイスをプロビジョニングするのは、プライマリデバイス(NVMEデバイスやSSDなど)より高速である場合にのみ役立ちます。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/osd/osd-devices-selection-groups/osd-devices-selection-groups.component.html</context>
           <context context-type="linenumber">12</context>
@@ -8744,7 +8711,7 @@
       </trans-unit>
       <trans-unit id="1798160169020638994" datatype="html">
         <source>OSDs will not automatically be marked out after the configured interval</source>
-        <target>OSDは、設定済みの間隔が経過した後に自動的にアウトとしてマークされません</target>
+        <target>OSDは、設定済みの間隔が経過した後に自動的にアウトとしてマークされます</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/osd/osd-flags-indiv-modal/osd-flags-indiv-modal.component.ts</context>
           <context context-type="linenumber">53</context>
@@ -9100,7 +9067,6 @@
       </trans-unit>
       <trans-unit id="19a2892320d36f6564eac566181f172a7b5e5095" datatype="html">
         <source>{VAR_SELECT, select, true {it} other {them}}</source>
-        <target>{VAR_SELECT, select, true {it} other {them}}</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/osd/osd-list/osd-list.component.html</context>
           <context context-type="linenumber">89</context>
@@ -11666,7 +11632,7 @@
         </context-group>
       </trans-unit>
       <trans-unit id="516206233d06e9835536cd886aeb1d0c95694cb6" datatype="html">
-        <source>Fetching registry informations <x id="START_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;i [ngClass]=&quot;[icons.spin, icons.spinner]&quot;&gt;"/><x id="CLOSE_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;/span&gt;   &lt;/d"/></source>
+        <source>Fetching registry information <x id="START_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;i [ngClass]=&quot;[icons.spin, icons.spinner]&quot;&gt;"/><x id="CLOSE_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;/span&gt;   &lt;/d"/></source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/upgrade/upgrade.component.html</context>
           <context context-type="linenumber">194,197</context>
@@ -11680,7 +11646,7 @@
         </context-group>
       </trans-unit>
       <trans-unit id="584342c52d131aaac16203e4b55a697d94fb4da5" datatype="html">
-        <source><x id="START_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;/i&gt;     Failed to fetch registry in"/><x id="CLOSE_ITALIC_TEXT" ctype="x-i" equiv-text="Failed to fet"/> Failed to fetch registry informations </source>
+        <source><x id="START_ITALIC_TEXT" ctype="x-i" equiv-text="&lt;/i&gt;     Failed to fetch registry in"/><x id="CLOSE_ITALIC_TEXT" ctype="x-i" equiv-text="Failed to fet"/> Failed to fetch registry information </source>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/cluster/upgrade/upgrade.component.html</context>
           <context context-type="linenumber">217,219</context>
@@ -13461,7 +13427,7 @@
       </trans-unit>
       <trans-unit id="c75b132bef7b29fa5171768303c4b96e34ccaf68" datatype="html">
         <source>It's not possible to create an RBD pool with '/' in the name. Please change the name or remove 'rbd' from the applications list.</source>
-        <target>名前に「/」が含まれたRBDプールを作成することはできません。名前を変更するか、アプリケーションリストから「rbd」を削除してください。</target>
+        <target>名前に「/」を含むRBDプールを作成することはできません。名前を変更するか、アプリケーションリストから「rbd」を削除してください。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/pool/pool-form/pool-form.component.html</context>
           <context context-type="linenumber">34,35</context>
@@ -13533,7 +13499,7 @@
       </trans-unit>
       <trans-unit id="fccbd60493df26705d957ed6c02a3c447894678f" datatype="html">
         <source>The current PGs settings were calculated for you, you should make sure the values suit your needs before submit.</source>
-        <target>現在の配置グループ設定は自動的に計算されたため、送信前に、これらの値がニーズに合っていることを確認してください。</target>
+        <target>現在の配置グループ設定は自動的に計算されたため、 送信前に、これらの値がニーズに合っていることを確認してください。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/pool/pool-form/pool-form.component.html</context>
           <context context-type="linenumber">116,117</context>
@@ -13573,7 +13539,7 @@
       </trans-unit>
       <trans-unit id="dda6196ffab88c1825f44a565c7b34e246e7e12f" datatype="html">
         <source>A size of 1 will not create a replication of the object. The 'Replicated size' includes the object itself.</source>
-        <target>1のサイズではオブジェクトのレプリケーションは作成されません。「複製されたサイズ」にはオブジェクト自体が含まれます。</target>
+        <target>1のサイズではオブジェクトのレプリケーションは 作成されません。「複製されたサイズ」にはオブジェクト自体が含まれます。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/pool/pool-form/pool-form.component.html</context>
           <context context-type="linenumber">148,149</context>
@@ -15089,7 +15055,7 @@
       </trans-unit>
       <trans-unit id="1925090152473969054" datatype="html">
         <source>Capacity Limit %</source>
-        <target>容量制限%</target>
+        <target>容量制限％</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/ceph/rgw/rgw-bucket-list/rgw-bucket-list.component.ts</context>
           <context context-type="linenumber">89</context>
@@ -19449,7 +19415,7 @@
       </trans-unit>
       <trans-unit id="d06ae77f9ec46a4cdd49e7e76c73a411aaf2ee38" datatype="html">
         <source>Please set a new password.</source>
-        <target>新しいパスワードを設定してください。</target>
+        <target>新しいパスワードを入力してください。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/core/auth/login-password-form/login-password-form.component.html</context>
           <context context-type="linenumber">2</context>
@@ -19766,7 +19732,7 @@
       </trans-unit>
       <trans-unit id="af4bf9fcb256853f14cf947eb1deb8d7f176d3f9" datatype="html">
         <source>If you continue, you will no longer be able to add or remove roles from any user.</source>
-        <target>続行した場合は、どのユーザの役割も追加または削除できなくなります。</target>
+        <target>続行した場合は、どのユーザの役割も追加および削除できなくなります。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/core/auth/user-form/user-form.component.html</context>
           <context context-type="linenumber">208</context>
@@ -19920,7 +19886,7 @@
       </trans-unit>
       <trans-unit id="c53062af97ebda2a03f905698f58e524ecf8b968" datatype="html">
         <source>Select Object Gateway</source>
-        <target>オブジェクトゲートウェイを選択</target>
+        <target>オブジェクトゲートウェイを選択します</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/core/context/context.component.html</context>
           <context context-type="linenumber">12</context>
@@ -20002,7 +19968,7 @@
       </trans-unit>
       <trans-unit id="143318366100741906" datatype="html">
         <source>Access Denied</source>
-        <target>アクセスが拒否されました</target>
+        <target>アクセス拒否</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/core/error/error.ts</context>
           <context context-type="linenumber">17</context>
@@ -20876,7 +20842,7 @@ jerasureの場合は「reed_sol_van」、「reed_sol_r6_op」、「cauchy_orig�
       </trans-unit>
       <trans-unit id="8721257977793603730" datatype="html">
         <source>Displaying previously cached data.</source>
-        <target>以前にキャッシュされたデータを表示しています。</target>
+        <target>以前にキャッシュされたデータを取得しています。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/shared/classes/table-status-view-cache.ts</context>
           <context context-type="linenumber">24</context>
@@ -20900,7 +20866,7 @@ jerasureの場合は「reed_sol_van」、「reed_sol_r6_op」、「cauchy_orig�
       </trans-unit>
       <trans-unit id="4836577225879717660" datatype="html">
         <source>Please check the cluster health.</source>
-        <target>クラスタヘルスを確認してください。</target>
+        <target> クラスタヘルスを確認してください。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/shared/classes/table-status-view-cache.ts</context>
           <context context-type="linenumber">33</context>
@@ -21412,7 +21378,7 @@ jerasureの場合は「reed_sol_van」、「reed_sol_r6_op」、「cauchy_orig�
       </trans-unit>
       <trans-unit id="b20e42ac4354d449f2718428b5390933eef0c1b9" datatype="html">
         <source>The feature is not supported in the current Orchestrator.</source>
-        <target>この機能は、現在のOrchestratorではサポートされていません。</target>
+        <target>この機能は、現在のOrchestrator.はサポートされていません。</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/shared/components/orchestrator-doc-panel/orchestrator-doc-panel.component.html</context>
           <context context-type="linenumber">3</context>
@@ -21514,7 +21480,7 @@ jerasureの場合は「reed_sol_van」、「reed_sol_r6_op」、「cauchy_orig�
       </trans-unit>
       <trans-unit id="8770134622386151776" datatype="html">
         <source>Telemetry activation reminder muted</source>
-        <target>テレメトリアクティベーションリマインダがミュートされました</target>
+        <target>テレメータアクティベーションリマインダがミュートされました</target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/shared/components/telemetry-notification/telemetry-notification.component.ts</context>
           <context context-type="linenumber">57</context>
@@ -22585,7 +22551,7 @@ jerasureの場合は「reed_sol_van」、「reed_sol_r6_op」、「cauchy_orig�
       </trans-unit>
       <trans-unit id="9118454901758656303" datatype="html">
         <source>%d hours</source>
-        <target>%d 時間</target>
+        <target>%d 時間 </target>
         <context-group purpose="location">
           <context context-type="sourcefile">src/app/shared/pipes/relative-date.pipe.ts</context>
           <context context-type="linenumber">15</context>

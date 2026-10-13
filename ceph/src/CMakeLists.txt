@@ -113,6 +113,10 @@ if(NOT MSVC)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-ignored-qualifiers>)
 endif()
 
+if (CMAKE_CXX_COMPILER_ID STREQUAL Clang)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wsign-compare>)
+endif()
+
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-ftemplate-depth-1024>)
 
 # Because Boost can't be bothered to not include its own deprecated headers
@@ -126,12 +130,13 @@ CHECK_CXX_COMPILER_FLAG("-Wredundant-move" COMPILER_SUPPORTS_REDUNDANT_MOVE)
 if(COMPILER_SUPPORTS_REDUNDANT_MOVE)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wredundant-move>)
 endif()
+CHECK_CXX_COMPILER_FLAG("-Werror=vla" COMPILER_SUPPORTS_VLA_ERROR)
 if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   if(WIN32)
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
       message(FATAL_ERROR "C++20 support for win32 requires a minimum GCC version of 10.")
     endif()
-  elseif(HAVE_SEASTAR)
+  elseif(WITH_CRIMSON)
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
       # see https://tracker.ceph.com/issues/64375 for details
       message(FATAL_ERROR "crimson/seastar require minimum GCC version of 13 for C++20 and coroutine support")
@@ -153,7 +158,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   # cmake does not add '-pie' for executables even if
   # CMAKE_POSITION_INDEPENDENT_CODE is TRUE.
   if(EXE_LINKER_USE_PIE)
-    if (NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT HAVE_SEASTAR)
+    if (NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT WITH_CRIMSON)
       string(APPEND CMAKE_EXE_LINKER_FLAGS " -pie")
     endif()
   endif()
@@ -168,6 +173,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL Clang)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-mismatched-tags>)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-private-field>)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-address-of-packed-member>)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-unknown-warning-option>)
   add_compile_options(
     -Wno-unused-function
     -Wno-unused-local-typedef
@@ -192,6 +198,10 @@ endif(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
 
 if(WITH_CEPH_DEBUG_MUTEX)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-DCEPH_DEBUG_MUTEX>)
+endif()
+
+if(WITH_CPUTRACE)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-DWITH_CPUTRACE>)
 endif()
 
 include(CheckCCompilerFlag)
@@ -229,21 +239,22 @@ if(HAVE_INTEL)
     check_nasm_support(${object_format}
       HAVE_NASM_X64
       HAVE_NASM_X64_AVX2
-      HAVE_NASM_X64_AVX512)
+      HAVE_NASM_X64_AVX512
+      HAVE_NASM_X64_AVX512_VPCLMUL)
   endif()
 endif()
 
 # Set WITH_EC_ISA_PLUGIN early so it's available when processing common/options
 # This must be set before add_subdirectory(common) is called
-if(HAVE_NASM_X64_AVX2 OR HAVE_ARMV8_SIMD)
+if(HAVE_NASM_X64_AVX2 OR HAVE_ARMV8_SIMD OR HAS_ALTIVEC OR HAVE_RISCV_RVV)
   set(WITH_EC_ISA_PLUGIN TRUE CACHE BOOL "")
 endif()
 
-# require c++20
-set(CMAKE_CXX_STANDARD 20)
+# require c++23
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 # we use `asm()` to inline assembly, so enable the GNU extension
 set(CMAKE_C_EXTENSIONS ON)
 set(C_STANDARD_REQUIRED ON)
@@ -288,10 +299,8 @@ endif()
 
 option(ENABLE_COVERAGE "Coverage is enabled" OFF)
 if(${ENABLE_COVERAGE})
-  find_program(HAVE_GCOV gcov)
-  if(NOT HAVE_GCOV)
-    message(FATAL_ERROR "Coverage Enabled but gcov Not Found")
-  endif()
+  find_program(HAVE_GCOV gcov
+    REQUIRED)
   add_compile_options(
     --coverage
     -O0)
@@ -322,6 +331,66 @@ endif()
 if (WITH_BLKIN)
   add_subdirectory(blkin/blkin-lib)
 endif(WITH_BLKIN)
+
+## breakpad
+if(WITH_BREAKPAD)
+  include(FindMake)
+  find_make("MAKE_EXECUTABLE" "make_cmd")
+
+  set(breakpad_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/breakpad)
+  set(lss_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/lss)
+
+  ExternalProject_Add(
+    breakpad_project
+    SOURCE_DIR "${breakpad_SOURCE_DIR}"
+    PATCH_COMMAND ${CMAKE_COMMAND} -E create_symlink ${lss_SOURCE_DIR} ${breakpad_SOURCE_DIR}/src/third_party/lss
+    # the minidump processor is used when processing the minidump, we only
+    # use the breakpad's client for generating the minidump at this moment.
+    #
+    # also cancel the -Werror used by breakpad, as new compilers are more
+    # picky, and might fail the build because of warnings.
+    CONFIGURE_COMMAND ${breakpad_SOURCE_DIR}/configure --disable-processor --disable-tools --prefix=<INSTALL_DIR>
+            "CC=${CMAKE_C_COMPILER}"
+            "CFLAGS=${CMAKE_C_FLAGS} -fPIC"
+            "CXX=${CMAKE_CXX_COMPILER}"
+            "CXXFLAGS=${CMAKE_CXX_FLAGS} -fPIC -Wno-error"
+    BUILD_COMMAND ${make_cmd}
+    # Install this library to ensure headers are included with proper prefixed paths
+    # (e.g., "breakpad/client/linux/handler/minidump_descriptor.h") rather than
+    # unprefixed paths (e.g., "client/linux/handler/minidump_descriptor.h").
+    # Prefixed paths make the library dependency explicit and avoid ambiguity.
+    #
+    # Note: DESTDIR is unset to prevent Debian packaging from overriding install
+    # paths, which would break header/library discovery during build. This is safe
+    # since breakpad artifacts are not redistributed in the final package.
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E env --unset=DESTDIR ${make_cmd} install
+    UPDATE_DISCONNECTED ON
+    BUILD_BYPRODUCTS "<INSTALL_DIR>/lib/libbreakpad_client.a")
+
+  ExternalProject_Get_Property(breakpad_project INSTALL_DIR)
+  # create the directory so cmake won't complain when looking at the imported
+  # target
+  file(MAKE_DIRECTORY ${INSTALL_DIR}/include/breakpad)
+
+  add_library(Breakpad::client STATIC IMPORTED GLOBAL)
+  add_dependencies(Breakpad::client breakpad_project)
+  set_target_properties(Breakpad::client PROPERTIES
+    # unfortunately, breakpad's public headers use internal include paths
+    # (e.g., "client/linux/..." rather than the installed include path
+    # (e.g., "breakpad/client/linux/..."), because the library's source
+    # structure differs between build time and install time. so we have to
+    # add ${INSTALL_DIR}/include/breakpad as well.
+    INTERFACE_INCLUDE_DIRECTORIES "${INSTALL_DIR}/include;${INSTALL_DIR}/include/breakpad"
+    IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
+    IMPORTED_LOCATION "${INSTALL_DIR}/lib/libbreakpad_client.a")
+
+  # for header-only library
+  add_library(Breakpad::breakpad INTERFACE IMPORTED GLOBAL)
+  add_dependencies(Breakpad::breakpad breakpad_project)
+  set_target_properties(Breakpad::breakpad PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${INSTALL_DIR}/include"
+    IMPORTED_LINK_INTERFACE_LANGUAGES "CXX")
+endif(WITH_BREAKPAD)
 
 if(WITH_JAEGER)
   find_package(thrift 0.13.0 REQUIRED)
@@ -402,8 +471,7 @@ if(WITH_CRIMSON)
     endif()
   endmacro ()
   set(Seastar_API_LEVEL "6" CACHE STRING "" FORCE)
-  set(Seastar_HWLOC OFF CACHE BOOL "" FORCE)
-  set(Seastar_IO_URING OFF CACHE BOOL "" FORCE)
+  set(Seastar_IO_URING ${HAVE_LIBURING} CACHE BOOL "" FORCE)
   set(Seastar_DEPRECATED_OSTREAM_FORMATTERS OFF CACHE BOOL "" FORCE)
   if(Seastar_DPDK)
     find_package(dpdk QUIET)
@@ -412,21 +480,38 @@ if(WITH_CRIMSON)
       build_dpdk(${CMAKE_BINARY_DIR}/src/dpdk)
     endif()
   endif()
-  list(APPEND Seastar_CXX_FLAGS
+  set(old_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+  if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # - Debug: shared seastar for faster development iteration
+    #   shared seastar is allowed for faster linking and smaller executables during
+    #   development.
+    #   Note: shared seastar won't be packaged, so this is for developers only
+    # - RelWithDebInfo/Release/MinSizeRel: static seastar for production packages
+    #   This ensures packages don't depend on libseastar.so, and avoids the performance penalty
+    #   of calling functions in shared library.
+    set(BUILD_SHARED_LIBS FALSE)
+  endif()
+  add_subdirectory(seastar)
+  set(BUILD_SHARED_LIBS ${old_BUILD_SHARED_LIBS})
+  unset(old_BUILD_SHARED_LIBS)
+
+  # create the directory so cmake won't complain when looking at the imported
+  # target: Seastar exports this directory created at build-time
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/include")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/src")
+  target_compile_options(seastar
+  PUBLIC
+    # required by any target that links to seastar
+    "-Wno-non-virtual-dtor"
+  PRIVATE
     "-DSEASTAR_NO_EXCEPTION_HACK"
     "-Wno-error"
     "-Wno-sign-compare"
     "-Wno-attributes"
     "-Wno-pessimizing-move"
-    "-Wno-address-of-packed-member"
-    "-Wno-non-virtual-dtor")
-  set(Seastar_CXX_FLAGS "${Seastar_CXX_FLAGS}" CACHE STRING "" FORCE)
-  add_subdirectory(seastar)
-  # create the directory so cmake won't complain when looking at the imported
-  # target: Seastar exports this directory created at build-time
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/include")
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/src")
+    "-Wno-address-of-packed-member")
   add_subdirectory(crimson)
+  add_dependencies(crimson-osd erasure_code)
 endif()
 
 include(CheckTypeSize)
@@ -439,6 +524,12 @@ set(libcommon_files
   ceph_ver.c
   global/global_context.cc
   xxHash/xxhash.c
+  include/filepath.cc
+  include/invoke_date.cc
+  include/object.cc
+  include/types.cc
+  include/utime.cc
+  include/uuid.cc
   common/error_code.cc
   common/frag.cc
   common/tracer.cc
@@ -448,7 +539,9 @@ set(libcommon_files
   mon/MonMap.cc
   mon/MonSub.cc
   mon/error_code.cc
+  mgr/DaemonHealthMetric.cc
   mgr/MgrClient.cc
+  mon/MgrMap.cc
   mon/PGMap.cc
   mgr/ServiceMap.cc
   osd/ECMsgTypes.cc
@@ -464,6 +557,7 @@ set(libcommon_files
   osdc/Striper.cc
   osdc/Objecter.cc
   osdc/error_code.cc
+  osdc/SplitOp.cc
   librbd/Features.cc
   librbd/io/IoOperations.cc
   ${mds_files})
@@ -498,12 +592,14 @@ set(ceph_common_objs
   $<TARGET_OBJECTS:compressor_objs>
   $<TARGET_OBJECTS:common-objs>
   $<TARGET_OBJECTS:common_mountcephfs_objs>
-  $<TARGET_OBJECTS:crush_objs>)
+  $<TARGET_OBJECTS:crush_objs>
+  $<TARGET_OBJECTS:json_spirit>
+  $<TARGET_OBJECTS:erasure_code>)
 set(ceph_common_deps
-  json_spirit erasure_code extblkdev arch crc32
+  common_utf8 extblkdev arch crc32
   ${LIB_RESOLV}
   Boost::thread
-  Boost::system
+  Boost::context
   Boost::random
   Boost::program_options
   Boost::date_time
@@ -569,6 +665,10 @@ if(WITH_BLUESTORE_PMEM OR WITH_RBD_RWL)
   endif()
 endif()
 
+if(WITH_BREAKPAD)
+  list(APPEND ceph_common_deps Breakpad::client)
+endif()
+
 add_library(common STATIC ${ceph_common_objs})
 target_link_libraries(common
   ${ceph_common_deps}
@@ -594,6 +694,10 @@ target_link_libraries(ceph-common legacy-option-headers)
 
 if(WITH_JAEGER)
 add_dependencies(ceph-common jaeger_base)
+endif()
+
+if(WITH_BREAKPAD)
+add_dependencies(ceph-common breakpad_project)
 endif()
 
 # appease dpkg-shlibdeps
@@ -687,12 +791,17 @@ if(NOT CEPH_BUILD_VIRTUALENV)
   set(CEPH_BUILD_VIRTUALENV ${CMAKE_BINARY_DIR})
 endif()
 
+option(WITH_CEPHADM "Flag to determine if cephadm should be built" ON)
+option(WITH_PYPKG "Build using PEP517 & PEP518 packaging when possible" OFF)
+
 if(NOT WIN32)
 add_subdirectory(pybind)
 add_subdirectory(ceph-volume)
 add_subdirectory(ceph-node-proxy)
 add_subdirectory(python-common)
-add_subdirectory(cephadm)
+  if(WITH_CEPHADM)
+    add_subdirectory(cephadm)
+  endif()
 endif(NOT WIN32)
 
 # Monitor
@@ -803,8 +912,6 @@ if(WITH_TESTS)
   add_subdirectory(test)
 endif()
 
-add_subdirectory(crypto)
-
 if(WITH_TESTS)
   install(PROGRAMS
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-debugpack
@@ -912,12 +1019,7 @@ if(WITH_FUSE)
 endif(WITH_FUSE)
 
 # NVMEOF GATEWAY MONITOR CLIENT
-# Supported on RPM-based platforms only, depends on grpc devel libraries/tools
-if(EXISTS "/etc/redhat-release" OR EXISTS "/etc/fedora-release")
-  option(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT "build nvmeof gateway monitor client" ON)
-else()
-  option(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT "build nvmeof gateway monitor client" OFF)
-endif()
+option(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT "build nvmeof gateway monitor client" ON)
 
 if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
 
@@ -928,20 +1030,37 @@ if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
 
   set(_REFLECTION grpc++_reflection)
   if(CMAKE_CROSSCOMPILING)
-    find_program(_PROTOBUF_PROTOC protoc)
+    find_program(_PROTOBUF_PROTOC protoc
+      REQUIRED)
   else()
     set(_PROTOBUF_PROTOC $<TARGET_FILE:protobuf::protoc>)
   endif()
 
-  # Find gRPC installation
-  # Looks for gRPCConfig.cmake file installed by gRPC's cmake installation.
-  find_package(gRPC CONFIG REQUIRED)
-  message(STATUS "Using gRPC ${gRPC_VERSION}")
-  set(_GRPC_GRPCPP gRPC::grpc++)
-  if(CMAKE_CROSSCOMPILING)
-    find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+  # Find gRPC - try cmake config first (gRPC >= 1.50 and RHEL/Rocky packages),
+  # fall back to pkg-config for distros without cmake config files (e.g. Ubuntu 22.04).
+  find_package(gRPC CONFIG QUIET)
+  if(gRPC_FOUND)
+    message(STATUS "Using gRPC ${gRPC_VERSION}")
+    set(_GRPC_GRPCPP gRPC::grpc++)
+    if(CMAKE_CROSSCOMPILING)
+      find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin REQUIRED)
+    else()
+      set(_GRPC_CPP_PLUGIN_EXECUTABLE $<TARGET_FILE:gRPC::grpc_cpp_plugin>)
+    endif()
+    # Modern gRPC links system absl; HAVE_ABSEIL makes opentelemetry-cpp do the
+    # same so their two absl inline namespaces don't collide in shared TUs.
+    set(_HAVE_ABSEIL ON)
   else()
-    set(_GRPC_CPP_PLUGIN_EXECUTABLE $<TARGET_FILE:gRPC::grpc_cpp_plugin>)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GRPCPP REQUIRED IMPORTED_TARGET grpc++)
+    message(STATUS "Using gRPC ${GRPCPP_VERSION} (via pkg-config)")
+    set(_GRPC_GRPCPP PkgConfig::GRPCPP)
+    find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin REQUIRED)
+    # Older gRPC (e.g. Jammy's 1.30.2) uses bundled absl; libabsl-dev not required.
+    set(_HAVE_ABSEIL OFF)
+    # grpc++.pc omits protobuf from Requires; add it so PkgConfig::GRPCPP
+    # carries the same transitive dependency as the cmake-config gRPC::grpc++.
+    target_link_libraries(PkgConfig::GRPCPP INTERFACE protobuf::libprotobuf)
   endif()
 
   # Gateway Proto file
@@ -1006,9 +1125,7 @@ if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
     nvmeof/NVMeofGwMonitorClient.cc)
   add_executable(ceph-nvmeof-monitor-client ${ceph_nvmeof_monitor_client_srcs})
   add_dependencies(ceph-nvmeof-monitor-client ceph-common)
-  # absl is installed as grpc build dependency on RPM based systems
-  # Also isolate this flag to specific targets which needs this package
-  if(EXISTS "/etc/redhat-release" OR EXISTS "/etc/fedora-release")
+  if(_HAVE_ABSEIL)
     target_compile_definitions(ceph-nvmeof-monitor-client PRIVATE HAVE_ABSEIL)
     target_compile_definitions(ceph-mon PRIVATE HAVE_ABSEIL)
   endif()
@@ -1052,15 +1169,11 @@ if(WITH_RBD)
 endif(WITH_RBD)
 
 # RadosGW
-if(WITH_KVS)
-  add_subdirectory(key_value_store)
-endif(WITH_KVS)
-
 if(WITH_RADOSGW)
   if(WITH_RADOSGW_SELECT_PARQUET OR WITH_RADOSGW_ARROW_FLIGHT)
     if(WITH_SYSTEM_ARROW)
-      find_package(Arrow 4 REQUIRED QUIET)
-      find_package(Parquet 4 REQUIRED QUIET)
+      find_package(Arrow 9 REQUIRED QUIET)
+      find_package(Parquet 9 REQUIRED QUIET)
     else()
       # find arrow's dependencies
       if (WITH_SYSTEM_UTF8PROC)
@@ -1076,6 +1189,7 @@ if(WITH_RADOSGW)
     endif(WITH_SYSTEM_ARROW)
   endif(WITH_RADOSGW_SELECT_PARQUET OR WITH_RADOSGW_ARROW_FLIGHT)
 
+  add_subdirectory(crypto)
   add_subdirectory(libkmip)
   add_subdirectory(rgw)
 endif(WITH_RADOSGW)
@@ -1186,7 +1300,6 @@ if(DOXYGEN_FOUND)
     include
     journal
     json_spirit
-    key_value_store
     kv
     librados
     libradosstriper

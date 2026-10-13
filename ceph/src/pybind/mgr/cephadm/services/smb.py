@@ -1,11 +1,27 @@
+import enum
 import errno
+import hashlib
 import ipaddress
 import logging
-from typing import Any, Dict, List, Tuple, cast, Optional, Iterable, Union
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    TYPE_CHECKING,
+    Tuple,
+    Union,
+    cast,
+)
 
 from mgr_module import HandleCommandResult
 
-from ceph.deployment.service_spec import ServiceSpec, SMBSpec
+from ceph.deployment.service_spec import (
+    SMBExternalCephCluster,
+    SMBSpec,
+    ServiceSpec,
+)
 from .service_registry import register_cephadm_service
 
 from orchestrator import DaemonDescription
@@ -16,6 +32,11 @@ from .cephadmservice import (
     simplified_keyring,
 )
 from ..schedule import DaemonPlacement
+from cephadm import utils
+from dataclasses import replace
+
+if TYPE_CHECKING:
+    from ..module import CephadmOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +50,10 @@ def _add_cfg(cfg_dict: Dict[str, Any], key: str, value: Any) -> None:
 class SMBService(CephService):
     TYPE = 'smb'
     smb_pool = '.smb'  # minor layering violation. try to clean up later.
+
+    @property
+    def needs_monitoring(self) -> bool:
+        return True
 
     def config(self, spec: ServiceSpec) -> None:
         assert self.TYPE == spec.service_type
@@ -175,10 +200,36 @@ class SMBService(CephService):
                 'remote_control.ca.crt',
                 self._cert_or_uri(smb_spec.remote_control_ca_cert),
             )
+        if 'keybridge' in smb_spec.features:
+            files = config_blobs.setdefault('files', {})
+            _add_cfg(
+                files,
+                'keybridge.ssl.crt',
+                self._cert_or_uri(smb_spec.keybridge_kmip_ssl_cert),
+            )
+            _add_cfg(
+                files,
+                'keybridge.ssl.key',
+                self._cert_or_uri(smb_spec.keybridge_kmip_ssl_key),
+            )
+            _add_cfg(
+                files,
+                'keybridge.ca.crt',
+                self._cert_or_uri(smb_spec.keybridge_kmip_ca_cert),
+            )
+        for ext_cluster in smb_spec.ceph_cluster_configs or []:
+            files = config_blobs.setdefault('files', {})
+            c_name = f'{ext_cluster.alias}.ceph.conf'
+            _add_cfg(files, c_name, _to_conf(ext_cluster))
+            k_name = f'{ext_cluster.alias}.ceph.keyring'
+            _add_cfg(files, k_name, _to_keyring(ext_cluster))
+        if smb_spec.tunables:
+            config_blobs['tunables'] = smb_spec.tunables
 
         logger.debug('smb generate_config: %r', config_blobs)
         self._configure_cluster_meta(smb_spec, daemon_spec)
-        return config_blobs, []
+        deps = sorted(self.get_dependencies(self.mgr, smb_spec))
+        return config_blobs, deps
 
     def _cert_or_uri(self, data: Optional[str]) -> Optional[str]:
         if data is None:
@@ -393,6 +444,45 @@ class SMBService(CephService):
             )
         return ip
 
+    @classmethod
+    def get_dependencies(
+        cls,
+        mgr: 'CephadmOrchestrator',
+        spec: Optional[ServiceSpec] = None,
+        daemon_type: Optional[str] = None,
+    ) -> List[str]:
+        if not spec:
+            return []
+        assert cls.TYPE == spec.service_type
+        smb_spec = cast(SMBSpec, spec)
+        # NOTE: to be very explicit and do a little future proofing our
+        # 'dependencies' that are not the names of other services will be
+        # "namespaced" using the Dep enum.
+        out = []
+        for ccc in smb_spec.ceph_cluster_configs or []:
+            value = _hash_ceph_cluster_config(ccc)
+            out.append(Dep.META(f'ceph_cluster_config.{ccc.alias}', value))
+        # Add features as a dependency
+        out.append(Dep.FIELD('features', ','.join(sorted(smb_spec.features or []))))
+        return out
+
+    def choose_next_action(
+        self,
+        scheduled_action: utils.Action,
+        daemon_type: Optional[str],
+        spec: Optional[ServiceSpec],
+        curr_deps: List[str],
+        last_deps: List[str],
+        daemon: Optional[DaemonDescription] = None,
+    ) -> utils.NextDaemonStep:
+        step = super().choose_next_action(
+            scheduled_action, daemon_type, spec, curr_deps, last_deps)
+        if step.action is utils.Action.RECONFIG:
+            sym_diff = set(curr_deps).symmetric_difference(last_deps)
+            if any(d.startswith(Dep.FIELD('features', '')) for d in sym_diff):
+                return replace(step, action=utils.Action.REDEPLOY)
+        return step
+
 
 Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
@@ -415,3 +505,40 @@ class AddressPool:
             for net in baddr.as_networks():
                 nets.add(net)
         return cls(nets)
+
+
+def _to_conf(ext_cluster: SMBExternalCephCluster) -> str:
+    return '\n'.join(
+        (
+            '[global]',
+            f'fsid = {ext_cluster.fsid}',
+            f'mon_host = {ext_cluster.mon_host}',
+            '',
+        )
+    )
+
+
+def _to_keyring(ext_cluster: SMBExternalCephCluster) -> str:
+    return '\n'.join(
+        [
+            f'[{ext_cluster.user}]',
+            f'key = {ext_cluster.key}',
+            '',
+        ]
+    )
+
+
+def _hash_ceph_cluster_config(spec: SMBExternalCephCluster) -> str:
+    _fields = ['alias', 'fsid', 'mon_host', 'user', 'key']
+    fdg = hashlib.sha256()
+    for field_name in _fields:
+        fdg.update(getattr(spec, field_name, '').encode())
+    return f'sha256:{fdg.hexdigest()}'
+
+
+class Dep(enum.Enum):
+    META = 'smb+meta'  # multiple fields as a digest
+    FIELD = 'smb+field'  # a single field and unmanged value
+
+    def __call__(self, key: str, value: str) -> str:
+        return f'{self.value}:{key}={value}'

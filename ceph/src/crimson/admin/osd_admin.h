@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #pragma once
 
 #include <memory>
@@ -22,6 +23,8 @@ class DumpInFlightOpsHook;
 class DumpHistoricOpsHook;
 class DumpSlowestHistoricOpsHook;
 class DumpRecoveryReservationsHook;
+class DumpReactorBackendHook;
+class StoreShardNumsHook;
 
 template<class Hook, class... Args>
 std::unique_ptr<AdminSocketHook> make_asok_hook(Args&&... args);

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -51,6 +52,7 @@
 #include "MonClient.h"
 #include "error_code.h"
 #include "MonMap.h"
+#include "mon_types.h" // for ceph::features::mon::*
 
 #include "auth/Auth.h"
 #include "auth/KeyRing.h"
@@ -1235,6 +1237,24 @@ int MonClient::wait_auth_rotating(double timeout)
 
 // ---------
 
+MonClient::MonCommand::MonCommand(MonClient& monc, uint64_t t, CommandCompletion&& onfinish)
+  : tid(t), onfinish(std::move(onfinish)) {
+  auto timeout =
+      monc.cct->_conf.get_val<std::chrono::seconds>("rados_mon_op_timeout");
+  if (timeout.count() > 0) {
+    cancel_timer.emplace(monc.service, timeout);
+    cancel_timer->async_wait(
+      [this, &monc](boost::system::error_code ec) {
+        if (ec)
+          return;
+        std::scoped_lock l(monc.monc_lock);
+        monc._cancel_mon_command(tid);
+      });
+  }
+}
+
+MonClient::MonCommand::~MonCommand() = default;
+
 void MonClient::_send_command(MonCommand *r)
 {
   if (r->is_tell()) {
@@ -1439,6 +1459,57 @@ void MonClient::handle_command_reply(MCommandReply *reply)
     : bs::error_code();
   _finish_command(r, ec, reply->rs, std::move(reply->get_data()));
   reply->put();
+}
+
+class MonClient::ContextVerter {
+  std::string* outs;
+  ceph::bufferlist* outbl;
+  Context* onfinish;
+
+public:
+  ContextVerter(std::string* outs, ceph::bufferlist* outbl, Context* onfinish)
+    : outs(outs), outbl(outbl), onfinish(onfinish) {}
+  ~ContextVerter() = default;
+  ContextVerter(const ContextVerter&) = default;
+  ContextVerter& operator =(const ContextVerter&) = default;
+  ContextVerter(ContextVerter&&) = default;
+  ContextVerter& operator =(ContextVerter&&) = default;
+
+  void operator()(boost::system::error_code e,
+		  std::string s,
+		  ceph::bufferlist bl) {
+    if (outs)
+      *outs = std::move(s);
+    if (outbl)
+      *outbl = std::move(bl);
+    if (onfinish)
+      onfinish->complete(ceph::from_error_code(e));
+  }
+};
+
+void MonClient::start_mon_command(std::vector<std::string>&& cmd, bufferlist&& inbl,
+				  bufferlist *outbl, std::string *outs,
+				  Context *onfinish)
+{
+  start_mon_command(std::move(cmd), std::move(inbl),
+		    ContextVerter(outs, outbl, onfinish));
+}
+
+void MonClient::start_mon_command(int mon_rank, std::vector<std::string>&& cmd,
+				  bufferlist&& inbl, bufferlist *outbl, std::string *outs,
+				  Context *onfinish)
+{
+  start_mon_command(mon_rank, std::move(cmd), std::move(inbl),
+		    ContextVerter(outs, outbl, onfinish));
+}
+
+void MonClient::start_mon_command(std::string&& mon_name,  ///< mon name, with mon. prefix
+				  std::vector<std::string>&& cmd, bufferlist&& inbl,
+				  bufferlist *outbl, std::string *outs,
+				  Context *onfinish)
+{
+  start_mon_command(std::move(mon_name), std::move(cmd), std::move(inbl),
+		    ContextVerter(outs, outbl, onfinish));
 }
 
 int MonClient::_cancel_mon_command(uint64_t tid)
@@ -1974,7 +2045,7 @@ int MonConnection::handle_auth_bad_method(
   auth_registry->get_supported_methods(con->get_peer_type(), &auth_supported);
   auto p = std::find(auth_supported.begin(), auth_supported.end(),
 		     old_auth_method);
-  assert(p != auth_supported.end());
+  ceph_assert(p != auth_supported.end());
   p = std::find_first_of(std::next(p), auth_supported.end(),
 			 allowed_methods.begin(), allowed_methods.end());
   if (p == auth_supported.end()) {

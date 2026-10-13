@@ -15,7 +15,7 @@ export class PoolPageHelper extends PageHelper {
 
   @PageHelper.restrictTo(pages.create.url)
   create(name: string, placement_groups: number, apps: string[], mirroring = false) {
-    cy.get('input[name=name]').clear().type(name);
+    cy.get('[data-testid="pool-name"]').clear().type(name);
 
     this.isPowerOf2(placement_groups);
 
@@ -29,18 +29,17 @@ export class PoolPageHelper extends PageHelper {
       cy.get('[data-testid="rbd-mirroring-check"] input[type="checkbox"]').check({ force: true });
     }
     cy.get('cd-submit-button').click();
-    this.navigateBack();
   }
 
   edit_pool_pg(name: string, new_pg: number, wait = true, mirroring = false) {
     this.isPowerOf2(new_pg);
-    this.navigateEdit(name);
+    this.navigateEdit(name, true, false);
 
     if (mirroring) {
       cy.get('[data-testid="rbd-mirroring-check"] input[type="checkbox"]').should('be.checked');
     }
 
-    cy.get('input[name=pgNum]').clear().type(`${new_pg}`);
+    cy.get('[data-testid="pgNum"]').clear().type(`${new_pg}`);
     cy.get('cd-submit-button').click();
     const str = `${new_pg} active+clean`;
     this.getTableRow(name);

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <cstdarg>
 #include "common/ceph_context.h"
@@ -55,7 +55,7 @@ int cls_register_method(cls_handle_t hclass, const char *method,
   return (hmethod != NULL);
 }
 
-int cls_register_cxx_method(cls_handle_t hclass, const char *method,
+int detail::cls_register_cxx_method_impl(cls_handle_t hclass, const char *method,
                             int flags,
 			    cls_method_cxx_call_t class_call, cls_method_handle_t *handle)
 {

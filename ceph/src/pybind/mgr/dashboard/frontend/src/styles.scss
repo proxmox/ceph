@@ -1,13 +1,9 @@
 /* You can add global styles to this file, and also import other style files */
 @use './src/styles/defaults' as *;
-@use '@carbon/colors';
 @use '@carbon/charts/styles.css' as *;
+@use '@carbon/colors';
 
 @import './src/styles/carbon-defaults.scss';
-
-// Fork-Awesome
-$fa-font-path: '~fork-awesome/fonts';
-$font-family-icon: 'ForkAwesome';
 
 $badge-font-size: 1rem;
 $form-feedback-font-size: 100%;
@@ -25,18 +21,14 @@ $grid-breakpoints: (
 );
 
 @import 'bootstrap/scss/bootstrap';
-@import 'fork-awesome/scss/fork-awesome';
-@import 'app/ceph/dashboard/info-card/info-card-popover.scss';
 @import 'app/ceph/rgw/rgw-overview-dashboard/rgw-overview-card-popover.scss';
 @import './src/styles/bootstrap-extends';
-
 @import './src/styles/ceph-custom/basics';
 @import './src/styles/ceph-custom/buttons';
 @import './src/styles/ceph-custom/dropdown';
 @import './src/styles/ceph-custom/forms';
 @import './src/styles/ceph-custom/grid';
 @import './src/styles/ceph-custom/icons';
-@import './src/styles/ceph-custom/navs';
 @import './src/styles/ceph-custom/toast';
 @import './src/styles/ceph-custom/spacings';
 
@@ -186,6 +178,7 @@ formly-form {
 
   .form-label {
     @extend .cd-col-form-label;
+
     text-align: start;
     white-space: nowrap;
     width: fit-content;
@@ -220,9 +213,29 @@ input:-webkit-autofill:active {
 .cds--progress-bar__bar {
   background-color: var(--cds-primary);
 }
-
+// Carbon borders
 .border-subtle {
   border: 1px solid var(--cds-border-subtle);
+}
+
+.border-subtle-bottom {
+  border-bottom: 1px solid var(--cds-border-subtle);
+}
+
+.border-subtle-top {
+  border-top: 1px solid var(--cds-border-subtle);
+}
+
+.border-subtle-right {
+  border-right: 1px solid var(--cds-border-subtle);
+}
+
+.border-subtle-block-end {
+  border-block-end: 1px solid var(--cds-border-subtle-01);
+}
+
+.border-subtle-inline-end {
+  border-inline-end: 1px solid var(--cds-border-subtle-01);
 }
 
 .popover {

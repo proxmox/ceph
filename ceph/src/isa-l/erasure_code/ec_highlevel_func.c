@@ -27,348 +27,675 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 #include <limits.h>
+#include <string.h>
+
 #include "erasure_code.h"
+#include "ec_base.h" /* for GF tables */
 
-#if __x86_64__  || __i386__ || _M_X64 || _M_IX86
-void ec_encode_data_sse(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
-			unsigned char **coding)
+#if __x86_64__ || __i386__ || _M_X64 || _M_IX86
+// Forward declarations for SSE functions
+extern void
+gf_vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                     unsigned char *dest);
+extern void
+gf_2vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_3vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_4vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_5vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_6vect_dot_prod_sse(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+
+// Forward declarations for AVX functions
+extern void
+gf_vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                     unsigned char *dest);
+extern void
+gf_2vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_3vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_4vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_5vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+extern void
+gf_6vect_dot_prod_avx(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char **dest);
+
+// Forward declarations for AVX2 functions
+extern void
+gf_vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                      unsigned char *dest);
+extern void
+gf_2vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                       unsigned char **dest);
+extern void
+gf_3vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                       unsigned char **dest);
+extern void
+gf_4vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                       unsigned char **dest);
+extern void
+gf_5vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                       unsigned char **dest);
+extern void
+gf_6vect_dot_prod_avx2(int len, int vects, unsigned char *gftbls, unsigned char **data,
+                       unsigned char **dest);
+
+// Forward declarations for SSE MAD (multiply-add) functions
+extern void
+gf_vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                unsigned char *dest);
+extern void
+gf_2vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_3vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_4vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_5vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_6vect_mad_sse(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+
+// Forward declarations for AVX MAD (multiply-add) functions
+extern void
+gf_vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                unsigned char *dest);
+extern void
+gf_2vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_3vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_4vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_5vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+extern void
+gf_6vect_mad_avx(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char **dest);
+
+// Forward declarations for AVX2 MAD (multiply-add) functions
+extern void
+gf_vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                 unsigned char *dest);
+extern void
+gf_2vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                  unsigned char **dest);
+extern void
+gf_3vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                  unsigned char **dest);
+extern void
+gf_4vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                  unsigned char **dest);
+extern void
+gf_5vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                  unsigned char **dest);
+extern void
+gf_6vect_mad_avx2(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                  unsigned char **dest);
+
+extern int
+gf_vect_mul_avx2_gfni(int len, unsigned char *gftbl, void *src, void *dest);
+
+void
+ec_encode_data_sse(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                   unsigned char **coding)
 {
 
-	if (len < 16) {
-		ec_encode_data_base(len, k, rows, g_tbls, data, coding);
-		return;
-	}
+        if (len < 16) {
+                ec_encode_data_base(len, k, rows, g_tbls, data, coding);
+                return;
+        }
 
-	while (rows >= 6) {
-		gf_6vect_dot_prod_sse(len, k, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 5:
-		gf_5vect_dot_prod_sse(len, k, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_dot_prod_sse(len, k, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_dot_prod_sse(len, k, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_dot_prod_sse(len, k, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_dot_prod_sse(len, k, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
+        while (rows >= 6) {
+                gf_6vect_dot_prod_sse(len, k, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_dot_prod_sse(len, k, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_dot_prod_sse(len, k, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_dot_prod_sse(len, k, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_dot_prod_sse(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_sse(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-void ec_encode_data_avx(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
-			unsigned char **coding)
+void
+ec_encode_data_avx(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                   unsigned char **coding)
 {
-	if (len < 16) {
-		ec_encode_data_base(len, k, rows, g_tbls, data, coding);
-		return;
-	}
+        if (len < 16) {
+                ec_encode_data_base(len, k, rows, g_tbls, data, coding);
+                return;
+        }
 
-	while (rows >= 6) {
-		gf_6vect_dot_prod_avx(len, k, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 5:
-		gf_5vect_dot_prod_avx(len, k, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_dot_prod_avx(len, k, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_dot_prod_avx(len, k, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_dot_prod_avx(len, k, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_dot_prod_avx(len, k, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
+        while (rows >= 6) {
+                gf_6vect_dot_prod_avx(len, k, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_dot_prod_avx(len, k, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_dot_prod_avx(len, k, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_dot_prod_avx(len, k, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_dot_prod_avx(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_avx(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-void ec_encode_data_avx2(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
-			 unsigned char **coding)
-{
-
-	if (len < 32) {
-		ec_encode_data_base(len, k, rows, g_tbls, data, coding);
-		return;
-	}
-
-	while (rows >= 6) {
-		gf_6vect_dot_prod_avx2(len, k, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 5:
-		gf_5vect_dot_prod_avx2(len, k, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_dot_prod_avx2(len, k, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_dot_prod_avx2(len, k, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_dot_prod_avx2(len, k, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_dot_prod_avx2(len, k, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
-}
-
-#ifdef HAVE_AS_KNOWS_AVX512
-
-extern int gf_vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
-				   unsigned char *dest);
-extern int gf_2vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls,
-				    unsigned char **data, unsigned char **coding);
-extern int gf_3vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls,
-				    unsigned char **data, unsigned char **coding);
-extern int gf_4vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls,
-				    unsigned char **data, unsigned char **coding);
-extern int gf_5vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls,
-				    unsigned char **data, unsigned char **coding);
-extern int gf_6vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls,
-				    unsigned char **data, unsigned char **coding);
-extern void gf_vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-			       unsigned char *src, unsigned char *dest);
-extern void gf_2vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-				unsigned char *src, unsigned char **dest);
-extern void gf_3vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-				unsigned char *src, unsigned char **dest);
-extern void gf_4vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-				unsigned char *src, unsigned char **dest);
-extern void gf_5vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-				unsigned char *src, unsigned char **dest);
-extern void gf_6vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls,
-				unsigned char *src, unsigned char **dest);
-
-void ec_encode_data_avx512(int len, int k, int rows, unsigned char *g_tbls,
-			   unsigned char **data, unsigned char **coding)
+void
+ec_encode_data_avx2(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                    unsigned char **coding)
 {
 
-	if (len < 64) {
-		ec_encode_data_base(len, k, rows, g_tbls, data, coding);
-		return;
-	}
+        if (len < 32) {
+                ec_encode_data_base(len, k, rows, g_tbls, data, coding);
+                return;
+        }
 
-	while (rows >= 6) {
-		gf_6vect_dot_prod_avx512(len, k, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 5:
-		gf_5vect_dot_prod_avx512(len, k, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_dot_prod_avx512(len, k, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_dot_prod_avx512(len, k, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_dot_prod_avx512(len, k, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_dot_prod_avx512(len, k, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
+        while (rows >= 6) {
+                gf_6vect_dot_prod_avx2(len, k, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_dot_prod_avx2(len, k, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_dot_prod_avx2(len, k, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_dot_prod_avx2(len, k, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_dot_prod_avx2(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_avx2(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-void ec_encode_data_update_avx512(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
-				  unsigned char *data, unsigned char **coding)
+extern int
+gf_vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                        unsigned char *dest);
+extern int
+gf_2vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding);
+extern int
+gf_3vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding);
+extern int
+gf_4vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding);
+extern int
+gf_5vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding);
+extern int
+gf_6vect_dot_prod_avx512(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding);
+extern void
+gf_vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                   unsigned char *dest);
+extern void
+gf_2vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                    unsigned char **dest);
+extern void
+gf_3vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                    unsigned char **dest);
+extern void
+gf_4vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                    unsigned char **dest);
+extern void
+gf_5vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                    unsigned char **dest);
+extern void
+gf_6vect_mad_avx512(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                    unsigned char **dest);
+
+void
+ec_encode_data_avx512(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                      unsigned char **coding)
 {
-	if (len < 64) {
-		ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
-		return;
-	}
 
-	while (rows >= 6) {
-		gf_6vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 5:
-		gf_5vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_mad_avx512(len, k, vec_i, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
+        if (len < 64) {
+                ec_encode_data_base(len, k, rows, g_tbls, data, coding);
+                return;
+        }
+
+        while (rows >= 6) {
+                gf_6vect_dot_prod_avx512(len, k, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_dot_prod_avx512(len, k, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_dot_prod_avx512(len, k, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_dot_prod_avx512(len, k, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_dot_prod_avx512(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_avx512(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-#endif // HAVE_AS_KNOWS_AVX512
+void
+ec_encode_data_update_avx512(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                             unsigned char *data, unsigned char **coding)
+{
+        if (len < 64) {
+                ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
+                return;
+        }
+
+        while (rows >= 6) {
+                gf_6vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_avx512(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_avx512(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
+}
+
+extern void
+gf_vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                             unsigned char *dest);
+extern void
+gf_2vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                              unsigned char **coding);
+extern void
+gf_3vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                              unsigned char **coding);
+extern void
+gf_4vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                              unsigned char **coding);
+extern void
+gf_5vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                              unsigned char **coding);
+extern void
+gf_6vect_dot_prod_avx512_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                              unsigned char **coding);
+
+extern void
+gf_vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                        unsigned char *dest);
+extern void
+gf_2vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                         unsigned char **dest);
+extern void
+gf_3vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                         unsigned char **dest);
+extern void
+gf_4vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                         unsigned char **dest);
+extern void
+gf_5vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                         unsigned char **dest);
+extern void
+gf_6vect_mad_avx512_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                         unsigned char **dest);
+
+extern void
+gf_vect_dot_prod_avx2_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                           unsigned char *dest);
+extern void
+gf_2vect_dot_prod_avx2_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                            unsigned char **coding);
+extern void
+gf_3vect_dot_prod_avx2_gfni(int len, int k, unsigned char *g_tbls, unsigned char **data,
+                            unsigned char **coding);
+extern void
+gf_vect_mad_avx2_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                      unsigned char *dest);
+extern void
+gf_2vect_mad_avx2_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                       unsigned char **dest);
+extern void
+gf_3vect_mad_avx2_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                       unsigned char **dest);
+extern void
+gf_4vect_mad_avx2_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                       unsigned char **dest);
+extern void
+gf_5vect_mad_avx2_gfni(int len, int vec, int vec_i, unsigned char *gftbls, unsigned char *src,
+                       unsigned char **dest);
+
+// Calculates 32-byte const table gftbl in GF(2^8) from single input A,
+// to be used with GFNI-based internal implementations, such as gf_vect_mul_avx2_gfni
+void
+gf_vect_mul_init_gfni(unsigned char c, unsigned char *tbl)
+{
+        const uint64_t val = gf_table_gfni[c];
+        const uint64_t tmp[4] = { val, val, val, val };
+
+        memcpy(tbl, tmp, 32);
+}
+
+void
+ec_init_tables_gfni(int k, int rows, unsigned char *a, unsigned char *g_tbls)
+{
+        int i, j;
+
+        for (i = 0; i < rows; i++) {
+                for (j = 0; j < k; j++) {
+                        gf_vect_mul_init_gfni(*a++, g_tbls);
+                        g_tbls += 32;
+                }
+        }
+}
+
+void
+ec_encode_data_avx512_gfni(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                           unsigned char **coding)
+{
+
+        while (rows >= 6) {
+                gf_6vect_dot_prod_avx512_gfni(len, k, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_dot_prod_avx512_gfni(len, k, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_dot_prod_avx512_gfni(len, k, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_dot_prod_avx512_gfni(len, k, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_dot_prod_avx512_gfni(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_avx512_gfni(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+        default:
+                break;
+        }
+}
+
+void
+ec_encode_data_avx2_gfni(int len, int k, int rows, unsigned char *g_tbls, unsigned char **data,
+                         unsigned char **coding)
+{
+        while (rows >= 3) {
+                gf_3vect_dot_prod_avx2_gfni(len, k, g_tbls, data, coding);
+                g_tbls += 3 * k * 32;
+                coding += 3;
+                rows -= 3;
+        }
+        switch (rows) {
+        case 2:
+                gf_2vect_dot_prod_avx2_gfni(len, k, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_dot_prod_avx2_gfni(len, k, g_tbls, data, *coding);
+                break;
+        case 0:
+        default:
+                break;
+        }
+}
+
+void
+ec_encode_data_update_avx512_gfni(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                                  unsigned char *data, unsigned char **coding)
+{
+        while (rows >= 6) {
+                gf_6vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 5:
+                gf_5vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_avx512_gfni(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+        default:
+                break;
+        }
+}
+
+void
+ec_encode_data_update_avx2_gfni(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                                unsigned char *data, unsigned char **coding)
+{
+        while (rows >= 5) {
+                gf_5vect_mad_avx2_gfni(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 5 * k * 32;
+                coding += 5;
+                rows -= 5;
+        }
+        switch (rows) {
+        case 4:
+                gf_4vect_mad_avx2_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_avx2_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_avx2_gfni(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_avx2_gfni(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+        default:
+                break;
+        }
+}
 
 #if __WORDSIZE == 64 || _WIN64 || __x86_64__
 
-void ec_encode_data_update_sse(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
-			       unsigned char *data, unsigned char **coding)
+void
+ec_encode_data_update_sse(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                          unsigned char *data, unsigned char **coding)
 {
-	if (len < 16) {
-		ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
-		return;
-	}
+        if (len < 16) {
+                ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
+                return;
+        }
 
-	while (rows > 6) {
-		gf_6vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 6:
-		gf_6vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 5:
-		gf_5vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_mad_sse(len, k, vec_i, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
+        while (rows > 6) {
+                gf_6vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 6:
+                gf_6vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 5:
+                gf_5vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_sse(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_sse(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-void ec_encode_data_update_avx(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
-			       unsigned char *data, unsigned char **coding)
+void
+ec_encode_data_update_avx(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                          unsigned char *data, unsigned char **coding)
 {
-	if (len < 16) {
-		ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
-		return;
-	}
-	while (rows > 6) {
-		gf_6vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 6:
-		gf_6vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 5:
-		gf_5vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_mad_avx(len, k, vec_i, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
+        if (len < 16) {
+                ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
+                return;
+        }
+        while (rows > 6) {
+                gf_6vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 6:
+                gf_6vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 5:
+                gf_5vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_avx(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_avx(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
-void ec_encode_data_update_avx2(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
-				unsigned char *data, unsigned char **coding)
+void
+ec_encode_data_update_avx2(int len, int k, int rows, int vec_i, unsigned char *g_tbls,
+                           unsigned char *data, unsigned char **coding)
 {
-	if (len < 32) {
-		ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
-		return;
-	}
-	while (rows > 6) {
-		gf_6vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		g_tbls += 6 * k * 32;
-		coding += 6;
-		rows -= 6;
-	}
-	switch (rows) {
-	case 6:
-		gf_6vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 5:
-		gf_5vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 4:
-		gf_4vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 3:
-		gf_3vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 2:
-		gf_2vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
-		break;
-	case 1:
-		gf_vect_mad_avx2(len, k, vec_i, g_tbls, data, *coding);
-		break;
-	case 0:
-		break;
-	}
-
+        if (len < 32) {
+                ec_encode_data_update_base(len, k, rows, vec_i, g_tbls, data, coding);
+                return;
+        }
+        while (rows > 6) {
+                gf_6vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                g_tbls += 6 * k * 32;
+                coding += 6;
+                rows -= 6;
+        }
+        switch (rows) {
+        case 6:
+                gf_6vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 5:
+                gf_5vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 4:
+                gf_4vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 3:
+                gf_3vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 2:
+                gf_2vect_mad_avx2(len, k, vec_i, g_tbls, data, coding);
+                break;
+        case 1:
+                gf_vect_mad_avx2(len, k, vec_i, g_tbls, data, *coding);
+                break;
+        case 0:
+                break;
+        }
 }
 
 #endif //__WORDSIZE == 64 || _WIN64 || __x86_64__
 #endif //__x86_64__  || __i386__ || _M_X64 || _M_IX86
-
-struct slver {
-	unsigned short snum;
-	unsigned char ver;
-	unsigned char core;
-};
-
-// Version info
-struct slver ec_init_tables_slver_00010068;
-struct slver ec_init_tables_slver = { 0x0068, 0x01, 0x00 };
-
-struct slver ec_encode_data_sse_slver_00020069;
-struct slver ec_encode_data_sse_slver = { 0x0069, 0x02, 0x00 };

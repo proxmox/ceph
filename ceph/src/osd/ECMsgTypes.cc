@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -124,23 +125,25 @@ void ECSubWrite::dump(Formatter *f) const
   f->dump_bool("backfill_or_async_recovery", backfill_or_async_recovery);
 }
 
-void ECSubWrite::generate_test_instances(list<ECSubWrite*> &o)
+list<ECSubWrite> ECSubWrite::generate_test_instances()
 {
-  o.push_back(new ECSubWrite());
-  o.back()->tid = 1;
-  o.back()->at_version = eversion_t(2, 100);
-  o.back()->trim_to = eversion_t(1, 40);
-  o.push_back(new ECSubWrite());
-  o.back()->tid = 4;
-  o.back()->reqid = osd_reqid_t(entity_name_t::CLIENT(123), 1, 45678);
-  o.back()->at_version = eversion_t(10, 300);
-  o.back()->trim_to = eversion_t(5, 42);
-  o.push_back(new ECSubWrite());
-  o.back()->tid = 9;
-  o.back()->reqid = osd_reqid_t(entity_name_t::CLIENT(123), 1, 45678);
-  o.back()->at_version = eversion_t(10, 300);
-  o.back()->trim_to = eversion_t(5, 42);
-  o.back()->pg_committed_to = eversion_t(8, 250);
+  list<ECSubWrite> o;
+  o.emplace_back();
+  o.back().tid = 1;
+  o.back().at_version = eversion_t(2, 100);
+  o.back().trim_to = eversion_t(1, 40);
+  o.emplace_back();
+  o.back().tid = 4;
+  o.back().reqid = osd_reqid_t(entity_name_t::CLIENT(123), 1, 45678);
+  o.back().at_version = eversion_t(10, 300);
+  o.back().trim_to = eversion_t(5, 42);
+  o.emplace_back();
+  o.back().tid = 9;
+  o.back().reqid = osd_reqid_t(entity_name_t::CLIENT(123), 1, 45678);
+  o.back().at_version = eversion_t(10, 300);
+  o.back().trim_to = eversion_t(5, 42);
+  o.back().pg_committed_to = eversion_t(8, 250);
+  return o;
 }
 
 void ECSubWriteReply::encode(bufferlist &bl) const
@@ -183,16 +186,18 @@ void ECSubWriteReply::dump(Formatter *f) const
   f->dump_bool("applied", applied);
 }
 
-void ECSubWriteReply::generate_test_instances(list<ECSubWriteReply*>& o)
+list<ECSubWriteReply> ECSubWriteReply::generate_test_instances()
 {
-  o.push_back(new ECSubWriteReply());
-  o.back()->tid = 20;
-  o.back()->last_complete = eversion_t(100, 2000);
-  o.back()->committed = true;
-  o.push_back(new ECSubWriteReply());
-  o.back()->tid = 80;
-  o.back()->last_complete = eversion_t(50, 200);
-  o.back()->applied = true;
+  list<ECSubWriteReply> o;
+  o.push_back(ECSubWriteReply());
+  o.back().tid = 20;
+  o.back().last_complete = eversion_t(100, 2000);
+  o.back().committed = true;
+  o.push_back(ECSubWriteReply());
+  o.back().tid = 80;
+  o.back().last_complete = eversion_t(50, 200);
+  o.back().applied = true;
+  return o;
 }
 
 void ECSubRead::encode(bufferlist &bl, uint64_t features) const
@@ -216,18 +221,20 @@ void ECSubRead::encode(bufferlist &bl, uint64_t features) const
     return;
   }
 
-  ENCODE_START(3, 2, bl);
+  ENCODE_START(4, 2, bl);
   encode(from, bl);
   encode(tid, bl);
   encode(to_read, bl);
   encode(attrs_to_read, bl);
   encode(subchunks, bl);
+  encode(omap_read_from, bl);
+  encode(omap_headers_to_read, bl);
   ENCODE_FINISH(bl);
 }
 
 void ECSubRead::decode(bufferlist::const_iterator &bl)
 {
-  DECODE_START(3, bl);
+  DECODE_START(4, bl);
   decode(from, bl);
   decode(tid, bl);
   if (struct_v == 1) {
@@ -250,6 +257,13 @@ void ECSubRead::decode(bufferlist::const_iterator &bl)
     for (auto &i : to_read) {
       subchunks[i.first].push_back(make_pair(0, 1));
     }
+  }
+  if (struct_v >= 4) {
+    decode(omap_read_from, bl);
+    decode(omap_headers_to_read, bl);
+  } else {
+    omap_read_from.clear();
+    omap_headers_to_read.clear();
   }
   DECODE_FINISH(bl);
 }
@@ -321,7 +335,10 @@ std::ostream &operator<<(
     << "ECSubRead(tid=" << rhs.tid
     << ", to_read=" << rhs.to_read
     << ", subchunks=" << rhs.subchunks
-    << ", attrs_to_read=" << rhs.attrs_to_read << ")";
+    << ", attrs_to_read=" << rhs.attrs_to_read
+    << ", omap_headers_to_read=" << rhs.omap_headers_to_read
+    << ", omap_read_from=" << rhs.omap_read_from
+    << ")";
 }
 
 void ECSubRead::dump(Formatter *f) const
@@ -348,26 +365,42 @@ void ECSubRead::dump(Formatter *f) const
   f->with_obj_array_section(
       "object_attrs_requested"sv, attrs_to_read,
       [](Formatter& f, const hobject_t& oid) { f.dump_stream("oid") << oid; });
+
+  // 'object_omap_headers_requested': 'headers_to_read' (set<hobject_t>)
+  f->with_obj_array_section(
+      "object_omap_headers_requested"sv, omap_headers_to_read,
+      [](Formatter& f, const hobject_t& oid) { f.dump_stream("oid") << oid; });
+
+  // 'omap_read_from' (map<hobject_t, string>)
+  f->with_obj_array_section(
+      "object"sv, omap_read_from,
+      [](Formatter& f, const hobject_t& oid, const std::pair<std::string, uint64_t>& read_from) {
+	f.dump_stream("oid") << oid;
+	f.dump_string("start_after", read_from.first);
+        f.dump_unsigned("max_bytes", read_from.second);
+      });
 }
 
-void ECSubRead::generate_test_instances(list<ECSubRead*>& o)
+list<ECSubRead> ECSubRead::generate_test_instances()
 {
+  list<ECSubRead> o;
   hobject_t hoid1(sobject_t("asdf", 1));
   hobject_t hoid2(sobject_t("asdf2", CEPH_NOSNAP));
-  o.push_back(new ECSubRead());
-  o.back()->from = pg_shard_t(2, shard_id_t(-1));
-  o.back()->tid = 1;
-  o.back()->to_read[hoid1].push_back(boost::make_tuple(100, 200, 0));
-  o.back()->to_read[hoid1].push_back(boost::make_tuple(400, 600, 0));
-  o.back()->to_read[hoid2].push_back(boost::make_tuple(400, 600, 0));
-  o.back()->attrs_to_read.insert(hoid1);
-  o.push_back(new ECSubRead());
-  o.back()->from = pg_shard_t(2, shard_id_t(-1));
-  o.back()->tid = 300;
-  o.back()->to_read[hoid1].push_back(boost::make_tuple(300, 200, 0));
-  o.back()->to_read[hoid2].push_back(boost::make_tuple(400, 600, 0));
-  o.back()->to_read[hoid2].push_back(boost::make_tuple(2000, 600, 0));
-  o.back()->attrs_to_read.insert(hoid2);
+  o.push_back(ECSubRead());
+  o.back().from = pg_shard_t(2, shard_id_t(-1));
+  o.back().tid = 1;
+  o.back().to_read[hoid1].push_back(boost::make_tuple(100, 200, 0));
+  o.back().to_read[hoid1].push_back(boost::make_tuple(400, 600, 0));
+  o.back().to_read[hoid2].push_back(boost::make_tuple(400, 600, 0));
+  o.back().attrs_to_read.insert(hoid1);
+  o.push_back(ECSubRead());
+  o.back().from = pg_shard_t(2, shard_id_t(-1));
+  o.back().tid = 300;
+  o.back().to_read[hoid1].push_back(boost::make_tuple(300, 200, 0));
+  o.back().to_read[hoid2].push_back(boost::make_tuple(400, 600, 0));
+  o.back().to_read[hoid2].push_back(boost::make_tuple(2000, 600, 0));
+  o.back().attrs_to_read.insert(hoid2);
+  return o;
 }
 
 void ECSubReadReply::encode(bufferlist &bl) const
@@ -379,8 +412,9 @@ void ECSubReadReply::encode(bufferlist &p_bl,
 			    bufferlist &d_bl,
 			    uint64_t features) const
 {
-  uint8_t ver = HAVE_FEATURE(features, SERVER_TENTACLE) ? 2 : 1;
-  ENCODE_START(ver, ver, p_bl);
+  uint8_t ver = HAVE_FEATURE(features, SERVER_TENTACLE) ? 3 : 1;
+  uint8_t compat_ver = HAVE_FEATURE(features, SERVER_TENTACLE) ? 2 : 1;
+  ENCODE_START(ver, compat_ver, p_bl);
   encode(from, p_bl);
   encode(tid, p_bl);
   if (ver >= 2) {
@@ -404,6 +438,11 @@ void ECSubReadReply::encode(bufferlist &p_bl,
   }
   encode(attrs_read, p_bl);
   encode(errors, p_bl);
+  if (ver >= 3) {
+    encode(omap_headers_read, p_bl);
+    encode(omap_entries_read, p_bl);
+    encode(omaps_complete, p_bl);
+  }
   ENCODE_FINISH(p_bl);
 }
 
@@ -415,7 +454,7 @@ void ECSubReadReply::decode(bufferlist::const_iterator &bl)
 void ECSubReadReply::decode(bufferlist::const_iterator &p_bl,
 			    bufferlist::const_iterator &d_bl)
 {
-  DECODE_START(2, p_bl);
+  DECODE_START(3, p_bl);
   decode(from, p_bl);
   decode(tid, p_bl);
   if (struct_v < 2) {
@@ -447,16 +486,41 @@ void ECSubReadReply::decode(bufferlist::const_iterator &p_bl,
   }
   decode(attrs_read, p_bl);
   decode(errors, p_bl);
+  if (struct_v >= 3) {
+    decode(omap_headers_read, p_bl);
+    decode(omap_entries_read, p_bl);
+    decode(omaps_complete, p_bl);
+  } else {
+    omap_headers_read.clear();
+    omap_entries_read.clear();
+    omaps_complete.clear();
+  }
+
   DECODE_FINISH(p_bl);
 }
 
 std::ostream &operator<<(
   std::ostream &lhs, const ECSubReadReply &rhs)
 {
-  return lhs
-    << "ECSubReadReply(tid=" << rhs.tid
-    << ", attrs_read=" << rhs.attrs_read.size()
-    << ")";
+  lhs << "ECSubReadReply(tid=" << rhs.tid
+      << ", attrs_read=" << rhs.attrs_read.size()
+      << ", omap_headers_read=" << rhs.omap_headers_read.size()
+      << ", omap_entries_read=" << rhs.omap_entries_read.size()
+      << ", omaps_complete=[";
+
+  bool first = true;
+  for (const auto & [hoid, complete] : rhs.omaps_complete) {
+    if (complete) {
+      if (!first) {
+        lhs << ", ";
+      }
+      lhs << hoid;
+      first = false;
+    }
+  }
+
+  lhs << "])";
+  return lhs;
 }
 
 
@@ -504,29 +568,62 @@ void ECSubReadReply::dump(Formatter* f) const
 	f.dump_stream("oid") << oid;
         f.dump_int("error", err);
       });
+
+  // "omap_headers_returned": map<hobject_t, bl>
+  f->with_obj_array_section(
+      "object_omap_headers"sv, omap_headers_read,
+      [](Formatter& f, const hobject_t& oid, const ceph::buffer::list& bl) {
+	f.dump_stream("oid") << oid;
+        f.dump_unsigned("header_len", bl.length());
+      });
+
+  // "omap_entries_returned" (mapping hobject_t to a <string to bl> table)
+  f->with_obj_array_section(
+      "object_omap_entries"sv, omap_entries_read,
+      [](Formatter& f, const hobject_t& oid,
+	 const std::map<std::string, ceph::buffer::list>& m) {
+	f.dump_stream("oid") << oid;
+	f.with_obj_array_section(
+	    "omap_entry", m,
+	    [](Formatter& f, const std::string& key,
+	       const ceph::buffer::list& bl) {
+	      f.dump_string("omap_key", key);
+	      f.dump_unsigned("val_len", bl.length());
+	    });
+      });
+
+  // "omap_complete": map<hobject_t, bool>
+  f->with_obj_array_section(
+      "object_omaps_complete"sv, omaps_complete,
+      [](Formatter& f, const hobject_t& oid, const bool complete) {
+	f.dump_stream("oid") << oid;
+        f.dump_unsigned("omap_complete", complete);
+      });
 }
 
-void ECSubReadReply::generate_test_instances(list<ECSubReadReply*>& o)
+list<ECSubReadReply> ECSubReadReply::generate_test_instances()
 {
+  list<ECSubReadReply> o;
   hobject_t hoid1(sobject_t("asdf", 1));
   hobject_t hoid2(sobject_t("asdf2", CEPH_NOSNAP));
   bufferlist bl;
   bl.append_zero(100);
   bufferlist bl2;
   bl2.append_zero(200);
-  o.push_back(new ECSubReadReply());
-  o.back()->from = pg_shard_t(2, shard_id_t(-1));
-  o.back()->tid = 1;
-  o.back()->buffers_read[hoid1].push_back(make_pair(20, bl));
-  o.back()->buffers_read[hoid1].push_back(make_pair(2000, bl2));
-  o.back()->buffers_read[hoid2].push_back(make_pair(0, bl));
-  o.back()->attrs_read[hoid1]["foo"] = bl;
-  o.back()->attrs_read[hoid1]["_"] = bl2;
-  o.push_back(new ECSubReadReply());
-  o.back()->from = pg_shard_t(2, shard_id_t(-1));
-  o.back()->tid = 300;
-  o.back()->buffers_read[hoid2].push_back(make_pair(0, bl2));
-  o.back()->attrs_read[hoid2]["foo"] = bl;
-  o.back()->attrs_read[hoid2]["_"] = bl2;
-  o.back()->errors[hoid1] = -2;
+  o.push_back(ECSubReadReply());
+  o.back().from = pg_shard_t(2, shard_id_t(-1));
+  o.back().tid = 1;
+  o.back().buffers_read[hoid1].push_back(make_pair(20, bl));
+  o.back().buffers_read[hoid1].push_back(make_pair(2000, bl2));
+  o.back().buffers_read[hoid2].push_back(make_pair(0, bl));
+  o.back().attrs_read[hoid1]["foo"] = bl;
+  o.back().attrs_read[hoid1]["_"] = bl2;
+  o.push_back(ECSubReadReply());
+  o.back().from = pg_shard_t(2, shard_id_t(-1));
+  o.back().tid = 300;
+  o.back().buffers_read[hoid2].push_back(make_pair(0, bl2));
+  o.back().attrs_read[hoid2]["foo"] = bl;
+  o.back().attrs_read[hoid2]["_"] = bl2;
+  o.back().errors[hoid1] = -2;
+  return o;
 }

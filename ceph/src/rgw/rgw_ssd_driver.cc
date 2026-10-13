@@ -1,3 +1,7 @@
+#include <boost/asio/system_executor.hpp>
+
+#include <boost/container/small_vector.hpp>
+
 #include "common/async/completion.h"
 #include "common/errno.h"
 #include "common/async/blocked_completion.h"
@@ -116,59 +120,61 @@ int SSDDriver::initialize(const DoutPrefixProvider* dpp)
       partition_info.location += "/";
     }
 
-    try {
-        if (efs::exists(partition_info.location)) {
-            if (dpp->get_cct()->_conf->rgw_d4n_l1_evict_cache_on_start) {
-                ldpp_dout(dpp, 5) << "initialize: evicting the persistent storage directory on start" << dendl;
+    if (!admin) { // Only initialize or evict cache if radosgw-admin is not responsible for call 
+      try {
+	  if (efs::exists(partition_info.location)) {
+	      if (dpp->get_cct()->_conf->rgw_d4n_l1_evict_cache_on_start) {
+		  ldpp_dout(dpp, 5) << "initialize: evicting the persistent storage directory on start" << dendl;
 
-		uid_t uid = dpp->get_cct()->get_set_uid();
-		gid_t gid = dpp->get_cct()->get_set_gid();
+		  uid_t uid = dpp->get_cct()->get_set_uid();
+		  gid_t gid = dpp->get_cct()->get_set_gid();
 
-		ldpp_dout(dpp, 5) << "initialize:: uid is " << uid << " and gid is " << gid << dendl;
-		ldpp_dout(dpp, 5) << "initialize:: changing permissions for datacache directory." << dendl;
+		  ldpp_dout(dpp, 5) << "initialize:: uid is " << uid << " and gid is " << gid << dendl;
+		  ldpp_dout(dpp, 5) << "initialize:: changing permissions for datacache directory." << dendl;
 
-		if (uid) { 
-                  if (chown(partition_info.location.c_str(), uid, gid) == -1) {
-		    ldpp_dout(dpp, 5) << "initialize: chown return error: " << strerror(errno) << dendl;
-                  }
+		  if (uid) { 
+		    if (chown(partition_info.location.c_str(), uid, gid) == -1) {
+		      ldpp_dout(dpp, 5) << "initialize: chown return error: " << strerror(errno) << dendl;
+		    }
 
-                  if (chmod(partition_info.location.c_str(), S_IRWXU|S_IRWXG|S_IRWXO) == -1) {
-		    ldpp_dout(dpp, 5) << "initialize: chmod return error: " << strerror(errno) << dendl;
-                  }
-		}
+		    if (chmod(partition_info.location.c_str(), S_IRWXU|S_IRWXG|S_IRWXO) == -1) {
+		      ldpp_dout(dpp, 5) << "initialize: chmod return error: " << strerror(errno) << dendl;
+		    }
+		  }
 
-                for (auto& p : efs::directory_iterator(partition_info.location)) {
-                    efs::remove_all(p.path());
-                }
-            }
-        } else {
-            ldpp_dout(dpp, 5) << "initialize:: creating the persistent storage directory on start: " << partition_info.location << dendl;
-            std::error_code ec;
-            if (!efs::create_directories(partition_info.location, ec)) {
-                ldpp_dout(dpp, 0) << "initialize::: ERROR initializing the cache storage directory: '" << partition_info.location <<
-                                "' : " << ec.value() << dendl;
-            } else {
-		uid_t uid = dpp->get_cct()->get_set_uid();
-		gid_t gid = dpp->get_cct()->get_set_gid();
+		  for (auto& p : efs::directory_iterator(partition_info.location)) {
+		      efs::remove_all(p.path());
+		  }
+	      }
+	  } else {
+	      ldpp_dout(dpp, 5) << "initialize:: creating the persistent storage directory on start: " << partition_info.location << dendl;
+	      std::error_code ec;
+	      if (!efs::create_directories(partition_info.location, ec)) {
+		  ldpp_dout(dpp, 0) << "initialize::: ERROR initializing the cache storage directory: '" << partition_info.location <<
+				  "' : " << ec.value() << dendl;
+	      } else {
+		  uid_t uid = dpp->get_cct()->get_set_uid();
+		  gid_t gid = dpp->get_cct()->get_set_gid();
 
-		ldpp_dout(dpp, 5) << "initialize:: uid is " << uid << " and gid is " << gid << dendl;
-		ldpp_dout(dpp, 5) << "initialize:: changing permissions for datacache directory." << dendl;
-		
-		if (uid) { 
-                  if (chown(partition_info.location.c_str(), uid, gid) == -1) {
-		    ldpp_dout(dpp, 5) << "initialize: chown return error: " << strerror(errno) << dendl;
-                  }
+		  ldpp_dout(dpp, 5) << "initialize:: uid is " << uid << " and gid is " << gid << dendl;
+		  ldpp_dout(dpp, 5) << "initialize:: changing permissions for datacache directory." << dendl;
+		  
+		  if (uid) { 
+		    if (chown(partition_info.location.c_str(), uid, gid) == -1) {
+		      ldpp_dout(dpp, 5) << "initialize: chown return error: " << strerror(errno) << dendl;
+		    }
 
-                  if (chmod(partition_info.location.c_str(), S_IRWXU|S_IRWXG|S_IRWXO) == -1) {
-		    ldpp_dout(dpp, 5) << "initialize: chmod return error: " << strerror(errno) << dendl;
-                  }
-		}
-            }
-        }
-    } catch (const efs::filesystem_error& e) {
-        ldpp_dout(dpp, 0) << "initialize::: ERROR initializing the cache storage directory '" << partition_info.location <<
-                                "' : " << e.what() << dendl;
-        //return -EINVAL; Should return error from here?
+		    if (chmod(partition_info.location.c_str(), S_IRWXU|S_IRWXG|S_IRWXO) == -1) {
+		      ldpp_dout(dpp, 5) << "initialize: chmod return error: " << strerror(errno) << dendl;
+		    }
+		  }
+	      }
+	  }
+      } catch (const efs::filesystem_error& e) {
+	  ldpp_dout(dpp, 0) << "initialize::: ERROR initializing the cache storage directory '" << partition_info.location <<
+				  "' : " << e.what() << dendl;
+	  //return -EINVAL; Should return error from here?
+      }
     }
 
     #if defined(HAVE_LIBAIO) && defined(__GLIBC__)
@@ -295,9 +301,7 @@ int SSDDriver::restore_blocks_objects(const DoutPrefixProvider* dpp, ObjectDataC
 					    obj_key.name = object_name;
 					    if (attrs.find(RGW_CACHE_ATTR_VERSION_ID) != attrs.end()) {
 						std::string instance = attrs[RGW_CACHE_ATTR_VERSION_ID].to_str();
-						if (instance != "null") {
-						    obj_key.instance = instance;
-						}
+                            obj_key.instance = instance;
 					    }
 					    if (attrs.find(RGW_CACHE_ATTR_OBJECT_NS) != attrs.end()) {
 						obj_key.ns = attrs[RGW_CACHE_ATTR_OBJECT_NS].to_str();
@@ -357,7 +361,7 @@ int SSDDriver::restore_blocks_objects(const DoutPrefixProvider* dpp, ObjectDataC
                             }
                         }//end - try
                         catch(...) {
-                            ldpp_dout(dpp, 20) << "SSDCache: " << __func__ << "(): Execption while parsing entry: " << file_entry.path() << dendl;
+                            ldpp_dout(dpp, 20) << "SSDCache: " << __func__ << "(): Exception while parsing entry: " << file_entry.path() << dendl;
                             continue;
                         }
                     }
@@ -369,10 +373,10 @@ int SSDDriver::restore_blocks_objects(const DoutPrefixProvider* dpp, ObjectDataC
     return 0;
 }
 
-uint64_t SSDDriver::get_free_space(const DoutPrefixProvider* dpp)
+uint64_t SSDDriver::get_free_space(const DoutPrefixProvider* dpp, optional_yield y)
 {
     efs::space_info space = efs::space(partition_info.location);
-    return space.available;
+    return (space.available < partition_info.reserve_size) ? 0 : (space.available - partition_info.reserve_size);
 }
 
 void SSDDriver::set_free_space(const DoutPrefixProvider* dpp, uint64_t free_space)
@@ -402,7 +406,7 @@ int SSDDriver::put(const DoutPrefixProvider* dpp, const std::string& key, const 
 
 int SSDDriver::get(const DoutPrefixProvider* dpp, const std::string& key, off_t offset, uint64_t len, bufferlist& bl, rgw::sal::Attrs& attrs, optional_yield y)
 {
-    char buffer[len];
+    boost::container::small_vector<char, 1024> buffer(len);
     std::string location = create_dirs_get_filepath_from_key(dpp, partition_info.location, key);
     ldpp_dout(dpp, 20) << __func__ << "(): location=" << location << dendl;
     FILE *cache_file = nullptr;
@@ -417,7 +421,7 @@ int SSDDriver::get(const DoutPrefixProvider* dpp, const std::string& key, off_t 
 
     fseek(cache_file, offset, SEEK_SET);
 
-    nbytes = fread(buffer, 1, len, cache_file);
+    nbytes = fread(buffer.data(), 1, len, cache_file);
     if (nbytes != len) {
         fclose(cache_file);
         ldpp_dout(dpp, 0) << "ERROR: get::io_read: fread has returned error: nbytes!=len, nbytes=" << nbytes << ", len=" << len << dendl;
@@ -430,7 +434,7 @@ int SSDDriver::get(const DoutPrefixProvider* dpp, const std::string& key, off_t 
         return -errno;
     }
 
-    bl.append(buffer, len);
+    bl.append(buffer.data(), len);
 
     r = get_attrs(dpp, key, attrs, y);
     if (r < 0) {
@@ -514,6 +518,7 @@ auto SSDDriver::get_async(const DoutPrefixProvider *dpp, const Executor& ex, con
         auto ec = boost::system::error_code{-ret, boost::system::system_category()};
         ceph::async::post(std::move(p), ec, bufferlist{});
     } else {
+        // coverity[leaked_storage:SUPPRESS]
         (void)p.release();
     }
   }, token, dpp, ex, key, read_ofs, read_len);

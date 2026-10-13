@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -36,7 +37,7 @@ namespace rados {
         op.entries.push_back(config);
         bufferlist in;
         encode(op, in);
-        rados_op->exec("otp", "otp_set", in);
+        rados_op->exec(method::set, in);
       }
 
       void OTP::set(librados::ObjectWriteOperation *rados_op,
@@ -45,7 +46,7 @@ namespace rados {
         op.entries = entries;
         bufferlist in;
         encode(op, in);
-        rados_op->exec("otp", "otp_set", in);
+        rados_op->exec(method::set, in);
       }
 
       void OTP::remove(librados::ObjectWriteOperation *rados_op,
@@ -54,7 +55,7 @@ namespace rados {
         op.ids.push_back(id);
         bufferlist in;
         encode(op, in);
-        rados_op->exec("otp", "otp_remove", in);
+        rados_op->exec(method::remove, in);
       }
 
       int OTP::check(CephContext *cct, librados::IoCtx& ioctx, const string& oid,
@@ -69,7 +70,7 @@ namespace rados {
         bufferlist out;
         encode(op, in);
         librados::ObjectWriteOperation wop;
-        wop.exec("otp", "otp_check", in);
+        wop.exec(method::check, in);
         int r = ioctx.operate(oid, &wop);
         if (r < 0) {
           return r;
@@ -80,7 +81,7 @@ namespace rados {
         bufferlist in2;
         bufferlist out2;
         encode(op2, in2);
-        r = ioctx.exec(oid, "otp", "otp_get_result", in, out);
+        r = ioctx.exec(oid, method::get_result, in, out);
         if (r < 0) {
           return r;
         }
@@ -114,7 +115,7 @@ namespace rados {
         bufferlist out;
         int op_ret;
         encode(op, in);
-        rop->exec("otp", "otp_get", in, &out, &op_ret);
+        rop->exec(method::get, in, &out, &op_ret);
         int r = ioctx.operate(oid, rop, nullptr);
         if (r < 0) {
           return r;
@@ -167,7 +168,7 @@ namespace rados {
         int op_ret;
         encode(op, in);
         ObjectReadOperation rop;
-        rop.exec("otp", "get_current_time", in, &out, &op_ret);
+        rop.exec(method::get_current_time, in, &out, &op_ret);
         int r = ioctx.operate(oid, &rop, nullptr);
         if (r < 0) {
           return r;

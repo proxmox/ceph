@@ -1,5 +1,5 @@
 /**********************************************************************
-  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
+  Copyright(c) 2011-2023 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -27,12 +27,10 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
-
 /**
  *  @file  crc64.h
  *  @brief CRC64 functions.
  */
-
 
 #ifndef _CRC64_H_
 #define _CRC64_H_
@@ -42,7 +40,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 /* Multi-binary functions */
 
@@ -54,11 +51,11 @@ extern "C" {
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_ecma_refl(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_refl(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                const unsigned char *buf, //!< buffer to calculate CRC on
+                uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ECMA-182 standard in normal format, runs
@@ -68,11 +65,11 @@ uint64_t crc64_ecma_refl(
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_ecma_norm(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_norm(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                const unsigned char *buf, //!< buffer to calculate CRC on
+                uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in reflected format, runs
@@ -82,11 +79,11 @@ uint64_t crc64_ecma_norm(
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_iso_refl(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_refl(uint64_t init_crc,        //!< initial CRC value, 64 bits
+               const unsigned char *buf, //!< buffer to calculate CRC on
+               uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in normal format, runs
@@ -96,11 +93,11 @@ uint64_t crc64_iso_refl(
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_iso_norm(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_norm(uint64_t init_crc,        //!< initial CRC value, 64 bits
+               const unsigned char *buf, //!< buffer to calculate CRC on
+               uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in reflected format, runs
@@ -110,11 +107,11 @@ uint64_t crc64_iso_norm(
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_jones_refl(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_refl(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                 const unsigned char *buf, //!< buffer to calculate CRC on
+                 uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in normal format, runs
@@ -124,11 +121,39 @@ uint64_t crc64_jones_refl(
  * selects the appropriate version at runtime.
  * @returns 64 bit CRC
  */
-uint64_t crc64_jones_norm(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_norm(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                 const unsigned char *buf, //!< buffer to calculate CRC on
+                 uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in reflected format, runs
+ * appropriate version.
+ *
+ * This function determines what instruction sets are enabled and
+ * selects the appropriate version at runtime.
+ * @returns 64 bit CRC
+ */
+uint64_t
+crc64_rocksoft_refl(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in normal format, runs
+ * appropriate version.
+ *
+ * This function determines what instruction sets are enabled and
+ * selects the appropriate version at runtime.
+ * @returns 64 bit CRC
+ */
+uint64_t
+crc64_rocksoft_norm(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /* Arch specific versions */
 
@@ -139,11 +164,11 @@ uint64_t crc64_jones_norm(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_ecma_refl_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_refl_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ECMA-182 standard in normal format.
@@ -152,31 +177,31 @@ uint64_t crc64_ecma_refl_by8(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_ecma_norm_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_norm_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ECMA-182 standard in reflected format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_ecma_refl_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_refl_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                     const unsigned char *buf, //!< buffer to calculate CRC on
+                     uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ECMA-182 standard in normal format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_ecma_norm_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_ecma_norm_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                     const unsigned char *buf, //!< buffer to calculate CRC on
+                     uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in reflected format.
@@ -185,11 +210,11 @@ uint64_t crc64_ecma_norm_base(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_iso_refl_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_refl_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                   const unsigned char *buf, //!< buffer to calculate CRC on
+                   uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in normal format.
@@ -198,31 +223,31 @@ uint64_t crc64_iso_refl_by8(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_iso_norm_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_norm_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                   const unsigned char *buf, //!< buffer to calculate CRC on
+                   uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in reflected format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_iso_refl_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_refl_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from ISO standard in normal format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_iso_norm_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_iso_norm_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                    const unsigned char *buf, //!< buffer to calculate CRC on
+                    uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in reflected format.
@@ -231,11 +256,11 @@ uint64_t crc64_iso_norm_base(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_jones_refl_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_refl_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                     const unsigned char *buf, //!< buffer to calculate CRC on
+                     uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in normal format.
@@ -244,31 +269,77 @@ uint64_t crc64_jones_refl_by8(
  * @returns 64 bit CRC
  */
 
-uint64_t crc64_jones_norm_by8(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_norm_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                     const unsigned char *buf, //!< buffer to calculate CRC on
+                     uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in reflected format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_jones_refl_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_refl_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                      const unsigned char *buf, //!< buffer to calculate CRC on
+                      uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 /**
  * @brief Generate CRC from "Jones" coefficients in normal format, runs baseline version
  * @returns 64 bit CRC
  */
-uint64_t crc64_jones_norm_base(
-	uint64_t init_crc,        //!< initial CRC value, 64 bits
-	const unsigned char *buf, //!< buffer to calculate CRC on
-	uint64_t len              //!< buffer length in bytes (64-bit data)
-	);
+uint64_t
+crc64_jones_norm_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                      const unsigned char *buf, //!< buffer to calculate CRC on
+                      uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in reflected format.
+ * @requires SSE3, CLMUL
+ *
+ * @returns 64 bit CRC
+ */
+
+uint64_t
+crc64_rocksoft_refl_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                        const unsigned char *buf, //!< buffer to calculate CRC on
+                        uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in reflected format, runs baseline version
+ * @returns 64 bit CRC
+ */
+uint64_t
+crc64_rocksoft_refl_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                         const unsigned char *buf, //!< buffer to calculate CRC on
+                         uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in normal format.
+ * @requires SSE3, CLMUL
+ *
+ * @returns 64 bit CRC
+ */
+
+uint64_t
+crc64_rocksoft_norm_by8(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                        const unsigned char *buf, //!< buffer to calculate CRC on
+                        uint64_t len              //!< buffer length in bytes (64-bit data)
+);
+
+/**
+ * @brief Generate CRC from "Rocksoft" coefficients in normal format, runs baseline version
+ * @returns 64 bit CRC
+ */
+uint64_t
+crc64_rocksoft_norm_base(uint64_t init_crc,        //!< initial CRC value, 64 bits
+                         const unsigned char *buf, //!< buffer to calculate CRC on
+                         uint64_t len              //!< buffer length in bytes (64-bit data)
+);
 
 #ifdef __cplusplus
 }

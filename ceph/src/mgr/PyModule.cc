@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -21,6 +22,7 @@
 
 #include "include/stringify.h"
 #include "common/BackTrace.h"
+#include "common/JSONFormatter.h"
 #include "common/split.h"
 #include "global/signal_handler.h"
 
@@ -108,7 +110,7 @@ std::string handle_pyerror(
   }
   formatted = str("").join(formatted_list);
 
-  if (!module.empty()) {
+  if (crash_dump && !module.empty()) {
     std::list<std::string> bt_strings;
     std::map<std::string, std::string> extra;
     
@@ -284,6 +286,10 @@ std::pair<int, std::string> PyModuleConfig::set_config(
     return {set_cmd.r, set_cmd.outs};
   }
 }
+
+  PyModule::PyModule(const std::string &module_name_)
+    : module_name(module_name_)
+  { }
 
 PyObject* PyModule::init_ceph_logger()
 {
@@ -515,8 +521,16 @@ int PyModule::load_notify_types()
 {
   PyObject *ls = PyObject_GetAttrString(pClass, "NOTIFY_TYPES");
   if (ls == nullptr) {
-    dout(10) << "Module " << get_name() << " has no NOTIFY_TYPES member" << dendl;
-    return 0;
+    // NOTIFY_TYPES is optional - clear expected AttributeError
+    if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
+      PyErr_Clear();
+      dout(10) << "Module " << get_name() << " has no NOTIFY_TYPES member" << dendl;
+      return 0;
+    }
+    // Unexpected error - report it
+    derr << "Error getting NOTIFY_TYPES from " << get_name() << ": "
+         << handle_pyerror(true, module_name, "load_notify_types") << dendl;
+    return -EINVAL;
   }
   if (!PyObject_TypeCheck(ls, &PyList_Type)) {
     // Relatively easy mistake for human to make, e.g. defining COMMANDS
@@ -733,6 +747,7 @@ int PyModule::load_subclass_of(const char* base_class, PyObject** py_class)
     error_string = peek_pyerror();
     derr << "Module not found: '" << module_name << "'" << dendl;
     derr << handle_pyerror(true, module_name, "PyModule::load_subclass_of") << dendl;
+    Py_DECREF(mgr_module_type);
     return -ENOENT;
   }
   auto locals = PyModule_GetDict(plugin_module);
@@ -777,6 +792,22 @@ PyModule::~PyModule()
     if (use_main_interpreter) {
       Py_EndInterpreter(pMyThreadState.ts);
     }
+    pMyThreadState.ts = nullptr;
   }
 }
 
+int PyModule::perf_counter_build(CephContext *cct) {
+  ceph_assert(perfcounter == nullptr);
+  PerfCountersBuilder pcb(cct, "mgr_module_" + get_name(), l_pym_first, l_pym_last);
+  pcb.add_u64_avg(l_pym_notify_avg_usec, "notify_avg_usec", "Average time spent in notify calls", "nsec", 0);
+  pcb.add_u64_avg(l_pym_cmd_avg_usec, "cmd_avg_usec", "Average time spent in command calls", "csec", 0);
+  pcb.add_u64(l_pym_alive, "alive", "Is the module alive?", "aliv", 0, uint64_t(1));
+  pcb.add_u64(l_pym_cpu_usage, "cpu_usage", "CPU usage in percent", "cpu", 0, uint64_t(100));
+  pcb.add_u64(l_pym_mem_rss_change, "mem_rss_change", "Memory RSS change in bytes", "", 0);
+  pcb.add_u64(l_pym_mem_rss_current, "mem_rss_current", "Memory RSS current in bytes", "", 0);
+  pcb.add_u64(l_pym_serve_cpu_usage, "serve_cpu_usage", "Serve thread CPU usage in percent", "cpu", 0, uint64_t(100));
+  perfcounter = std::unique_ptr<PerfCounters>(pcb.create_perf_counters());
+  cct->get_perfcounters_collection()->add(perfcounter.get());
+
+  return 0;
+}

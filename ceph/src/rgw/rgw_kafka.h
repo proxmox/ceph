@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -32,6 +32,7 @@ struct connection_id_t {
   std::string ssl_key;
   std::string ssl_key_password;
   bool ssl = false;
+  bool verify_ssl = true;
   connection_id_t() = default;
   connection_id_t(const std::string& _broker,
                   const std::string& _user,
@@ -39,6 +40,7 @@ struct connection_id_t {
                   const boost::optional<const std::string&>& _ca_location,
                   const boost::optional<const std::string&>& _mechanism,
                   bool _ssl,
+                  bool _verify_ssl,
                   const boost::optional<const std::string&>& _ssl_certificate,
                   const boost::optional<const std::string&>& _ssl_key,
                   const boost::optional<const std::string&>& _ssl_key_password);

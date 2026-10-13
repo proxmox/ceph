@@ -30,129 +30,171 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "erasure_code.h"
+#include "test.h"
 
-#define TEST_SIZE (128*1024)
+#define TEST_SIZE (128 * 1024)
 
 typedef unsigned char u8;
 
-int main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
-	int i;
-	u8 *buff1, *buff2, *buff3, gf_const_tbl[64], a = 2;
-	int tsize;
-	int align, size;
-	unsigned char *efence_buff1;
-	unsigned char *efence_buff2;
-	unsigned char *efence_buff3;
+        int i, ret = -1;
+        u8 *buff1 = NULL, *buff2 = NULL, *buff3 = NULL, gf_const_tbl[64], gf_const_tbl_base[64],
+           a = 2;
+        int tsize;
+        int align, size;
+        unsigned char *efence_buff1;
+        unsigned char *efence_buff2;
+        unsigned char *efence_buff3;
 
-	printf("gf_vect_mul_test: ");
+        printf("gf_vect_mul_test: ");
 
-	gf_vect_mul_init(a, gf_const_tbl);
+        gf_vect_mul_init(a, gf_const_tbl);
 
-	buff1 = (u8 *) malloc(TEST_SIZE);
-	buff2 = (u8 *) malloc(TEST_SIZE);
-	buff3 = (u8 *) malloc(TEST_SIZE);
+        if (posix_memalign((void **) &buff1, 32, TEST_SIZE) ||
+            posix_memalign((void **) &buff2, 32, TEST_SIZE) ||
+            posix_memalign((void **) &buff3, 32, TEST_SIZE)) {
+                printf("buffer alloc error\n");
+                goto exit;
+        }
+        // Fill with rand data
+        for (i = 0; i < TEST_SIZE; i++)
+                buff1[i] = rand();
 
-	if (NULL == buff1 || NULL == buff2 || NULL == buff3) {
-		printf("buffer alloc error\n");
-		return -1;
-	}
-	// Fill with rand data
-	for (i = 0; i < TEST_SIZE; i++)
-		buff1[i] = rand();
+        if (gf_vect_mul(TEST_SIZE, gf_const_tbl, buff1, buff2) != 0) {
+                printf("fail creating buff2\n");
+                goto exit;
+        }
 
-	gf_vect_mul(TEST_SIZE, gf_const_tbl, buff1, buff2);
+        for (i = 0; i < TEST_SIZE; i++) {
+                if (gf_mul(a, buff1[i]) != buff2[i]) {
+                        printf("fail at %d, 0x%x x 2 = 0x%x (0x%x)\n", i, buff1[i], buff2[i],
+                               gf_mul(2, buff1[i]));
+                        goto exit;
+                }
+        }
 
-	for (i = 0; i < TEST_SIZE; i++) {
-		if (gf_mul(a, buff1[i]) != buff2[i]) {
-			printf("fail at %d, 0x%x x 2 = 0x%x (0x%x)\n", i,
-			       buff1[i], buff2[i], gf_mul(2, buff1[i]));
-			return -1;
-		}
-	}
+        gf_vect_mul_init_base(a, gf_const_tbl_base);
 
-	gf_vect_mul_base(TEST_SIZE, gf_const_tbl, buff1, buff3);
+        if (gf_vect_mul_base(TEST_SIZE, gf_const_tbl_base, buff1, buff3) != 0) {
+                printf("fail fill with rand data\n");
+                goto exit;
+        }
+        // Check reference function
+        for (i = 0; i < TEST_SIZE; i++) {
+                if (buff2[i] != buff3[i]) {
+                        printf("fail at %d, 0x%x x 0x%d = 0x%x (0x%x)\n", i, a, buff1[i], buff2[i],
+                               gf_mul(a, buff1[i]));
+                        goto exit;
+                }
+        }
 
-	// Check reference function
-	for (i = 0; i < TEST_SIZE; i++) {
-		if (buff2[i] != buff3[i]) {
-			printf("fail at %d, 0x%x x 0x%d = 0x%x (0x%x)\n",
-			       i, a, buff1[i], buff2[i], gf_mul(a, buff1[i]));
-			return -1;
-		}
-	}
+        for (i = 0; i < TEST_SIZE; i++)
+                buff1[i] = rand();
 
-	for (i = 0; i < TEST_SIZE; i++)
-		buff1[i] = rand();
+        // Check each possible constant
+        for (a = 0; a != 255; a++) {
+                gf_vect_mul_init(a, gf_const_tbl);
+                if (gf_vect_mul(TEST_SIZE, gf_const_tbl, buff1, buff2) != 0) {
+                        printf("fail creating buff2\n");
+                        goto exit;
+                }
 
-	// Check each possible constant
-	for (a = 0; a != 255; a++) {
-		gf_vect_mul_init(a, gf_const_tbl);
-		gf_vect_mul(TEST_SIZE, gf_const_tbl, buff1, buff2);
+                for (i = 0; i < TEST_SIZE; i++)
+                        if (gf_mul(a, buff1[i]) != buff2[i]) {
+                                printf("fail at %d, 0x%x x %d = 0x%x (0x%x)\n", i, a, buff1[i],
+                                       buff2[i], gf_mul(a, buff1[i]));
+                                goto exit;
+                        }
+#ifdef TEST_VERBOSE
+                putchar('.');
+#endif
+        }
 
-		for (i = 0; i < TEST_SIZE; i++)
-			if (gf_mul(a, buff1[i]) != buff2[i]) {
-				printf("fail at %d, 0x%x x %d = 0x%x (0x%x)\n",
-				       i, a, buff1[i], buff2[i], gf_mul(2, buff1[i]));
-				return -1;
-			}
-		putchar('.');
-	}
+        // Check buffer len
+        for (tsize = TEST_SIZE; tsize > 0; tsize -= 32) {
+                a = rand();
+                gf_vect_mul_init(a, gf_const_tbl);
+                if (gf_vect_mul(tsize, gf_const_tbl, buff1, buff2) != 0) {
+                        printf("fail creating buff2 (len %d)\n", tsize);
+                        goto exit;
+                }
 
-	// Check buffer len
-	for (tsize = TEST_SIZE; tsize > 0; tsize -= 32) {
-		a = rand();
-		gf_vect_mul_init(a, gf_const_tbl);
-		gf_vect_mul(tsize, gf_const_tbl, buff1, buff2);
+                for (i = 0; i < tsize; i++)
+                        if (gf_mul(a, buff1[i]) != buff2[i]) {
+                                printf("fail at %d, 0x%x x %d = 0x%x (0x%x)\n", i, a, buff1[i],
+                                       buff2[i], gf_mul(2, buff1[i]));
+                                goto exit;
+                        }
+#ifdef TEST_VERBOSE
+                if (0 == tsize % (32 * 8)) {
+                        putchar('.');
+                        fflush(0);
+                }
+#endif
+        }
 
-		for (i = 0; i < tsize; i++)
-			if (gf_mul(a, buff1[i]) != buff2[i]) {
-				printf("fail at %d, 0x%x x %d = 0x%x (0x%x)\n",
-				       i, a, buff1[i], buff2[i], gf_mul(2, buff1[i]));
-				return -1;
-			}
-		if (0 == tsize % (32 * 8)) {
-			putchar('.');
-			fflush(0);
-		}
-	}
+        // Run tests at end of buffer for Electric Fence
+        align = 32;
+        a = 2;
 
-	// Run tests at end of buffer for Electric Fence
-	align = 32;
-	a = 2;
+        gf_vect_mul_init(a, gf_const_tbl);
+        gf_vect_mul_init_base(a, gf_const_tbl_base);
+        for (size = 0; size < TEST_SIZE; size += align) {
+                // Line up TEST_SIZE from end
+                efence_buff1 = buff1 + size;
+                efence_buff2 = buff2 + size;
+                efence_buff3 = buff3 + size;
 
-	gf_vect_mul_init(a, gf_const_tbl);
-	for (size = 0; size < TEST_SIZE; size += align) {
-		// Line up TEST_SIZE from end
-		efence_buff1 = buff1 + size;
-		efence_buff2 = buff2 + size;
-		efence_buff3 = buff3 + size;
+                if (gf_vect_mul(TEST_SIZE - size, gf_const_tbl, efence_buff1, efence_buff2) != 0) {
+                        printf("fail creating efence_buff2 (len %d)\n", tsize);
+                        goto exit;
+                }
 
-		gf_vect_mul(TEST_SIZE - size, gf_const_tbl, efence_buff1, efence_buff2);
+                for (i = 0; i < TEST_SIZE - size; i++)
+                        if (gf_mul(a, efence_buff1[i]) != efence_buff2[i]) {
+                                printf("fail at %d, 0x%x x 2 = 0x%x (0x%x)\n", i, efence_buff1[i],
+                                       efence_buff2[i], gf_mul(2, efence_buff1[i]));
+                                goto exit;
+                        }
 
-		for (i = 0; i < TEST_SIZE - size; i++)
-			if (gf_mul(a, efence_buff1[i]) != efence_buff2[i]) {
-				printf("fail at %d, 0x%x x 2 = 0x%x (0x%x)\n",
-				       i, efence_buff1[i], efence_buff2[i],
-				       gf_mul(2, efence_buff1[i]));
-				return 1;
-			}
+                if (gf_vect_mul_base(TEST_SIZE - size, gf_const_tbl_base, efence_buff1,
+                                     efence_buff3) != 0) {
+                        printf("fail line up TEST_SIZE from end\n");
+                        goto exit;
+                }
+                // Check reference function
+                for (i = 0; i < TEST_SIZE - size; i++)
+                        if (efence_buff2[i] != efence_buff3[i]) {
+                                printf("fail at %d, 0x%x x 0x%d = 0x%x (0x%x)\n", i, a,
+                                       efence_buff2[i], efence_buff3[i],
+                                       gf_mul(2, efence_buff1[i]));
+                                goto exit;
+                        }
+#ifdef TEST_VERBOSE
+                putchar('.');
+#endif
+        }
 
-		gf_vect_mul_base(TEST_SIZE - size, gf_const_tbl, efence_buff1, efence_buff3);
+        // Test all unsupported sizes up to TEST_SIZE
+        for (size = 0; size < TEST_SIZE; size++) {
+                if (size % align != 0 && gf_vect_mul(size, gf_const_tbl, buff1, buff2) == 0) {
+                        printf("fail expecting nonzero return code for unaligned size param (%d)\n",
+                               size);
+                        goto exit;
+                }
+        }
 
-		// Check reference function
-		for (i = 0; i < TEST_SIZE - size; i++)
-			if (efence_buff2[i] != efence_buff3[i]) {
-				printf("fail at %d, 0x%x x 0x%d = 0x%x (0x%x)\n",
-				       i, a, efence_buff2[i], efence_buff3[i],
-				       gf_mul(2, efence_buff1[i]));
-				return 1;
-			}
+        printf(" done: Pass\n");
+        fflush(0);
 
-		putchar('.');
-	}
+        ret = 0;
+exit:
 
-	printf(" done: Pass\n");
-	fflush(0);
-	return 0;
+        aligned_free(buff1);
+        aligned_free(buff2);
+        aligned_free(buff3);
+
+        return ret;
 }

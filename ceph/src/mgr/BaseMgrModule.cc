@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -24,6 +25,7 @@
 
 #include "mon/MonClient.h"
 #include "common/errno.h"
+#include "common/JSONFormatter.h"
 #include "common/version.h"
 #include "mgr/Types.h"
 
@@ -179,7 +181,7 @@ ceph_send_command(BaseMgrModule *self, PyObject *args, PyObject *kwargs)
     self->py_modules->get_monc().start_mon_command(
         name,
         {cmd_json},
-        inbuf,
+        std::move(inbuf),
         &command_c->outbl,
         &command_c->outs,
         new C_OnFinisher(c, &self->py_modules->cmd_finisher));
@@ -199,7 +201,7 @@ ceph_send_command(BaseMgrModule *self, PyObject *args, PyObject *kwargs)
     self->py_modules->get_objecter().osd_command(
         osd_id,
         {cmd_json},
-        inbuf,
+        std::move(inbuf),
         &tid,
 	[command_c, f = &self->py_modules->cmd_finisher]
 	(boost::system::error_code ec, std::string s, ceph::buffer::list bl) {
@@ -228,7 +230,7 @@ ceph_send_command(BaseMgrModule *self, PyObject *args, PyObject *kwargs)
     self->py_modules->get_objecter().pg_command(
         pgid,
         {cmd_json},
-        inbuf,
+        std::move(inbuf),
         &tid,
 	[command_c, f = &self->py_modules->cmd_finisher]
 	(boost::system::error_code ec, std::string s, ceph::buffer::list bl) {
@@ -382,11 +384,31 @@ static PyObject*
 ceph_state_get(BaseMgrModule *self, PyObject *args)
 {
   char *what = NULL;
-  if (!PyArg_ParseTuple(args, "s:ceph_state_get", &what)) {
+  int get_mutable = 0; // Default to False
+  dout(10) << __func__ << " called" << dendl;
+  if (!PyArg_ParseTuple(args, "s|i:ceph_state_get", &what, &get_mutable)) {
+    derr << __func__ << " Invalid args!" << dendl;
     return NULL;
   }
+  dout(10) << __func__ << " what: " << what << " mutable: " << get_mutable << dendl;
+  return self->py_modules->cacheable_get_python(what, (bool)get_mutable);
+}
 
-  return self->py_modules->cacheable_get_python(what);
+static PyObject*
+ceph_cache_map_erase(BaseMgrModule *self, PyObject *args)
+{
+  char *what = NULL;
+  dout(10) << __func__ << " called" << dendl;
+  if (!PyArg_ParseTuple(args, "s:ceph_cache_map_erase", &what)) {
+    derr << __func__ << " Invalid args!" << dendl;
+    Py_RETURN_FALSE;
+  }
+  dout(10) << __func__ << " what: " << what << dendl;
+  if (self->py_modules->ceph_cache_map_erase(what) < 0) {
+    dout(10) << __func__ << " failed to erase cache map entry: " << what << dendl;
+    Py_RETURN_FALSE;
+  }
+  Py_RETURN_TRUE;
 }
 
 
@@ -849,11 +871,7 @@ ceph_dispatch_remote(BaseMgrModule *self, PyObject *args)
   }
 
   auto pmodule = self->this_module->py_module->pPickleModule;
-  auto pickled_args = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("dumps"),
-    remote_args,
-    nullptr);
+  auto pickled_args = PyObject_CallMethod(pmodule, "dumps", "(O)", remote_args);
   if (pickled_args == nullptr) {
     std::string caller = "ceph_dispatch_remote "s + " " + method;
     std::string err = handle_pyerror(true, other_module, caller);
@@ -863,11 +881,7 @@ ceph_dispatch_remote(BaseMgrModule *self, PyObject *args)
   }
   std::span<std::byte const> pickled_args_span = py_bytes_as_span(pickled_args);
 
-  auto pickled_kwargs = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("dumps"),
-    remote_kwargs,
-    nullptr);
+  auto pickled_kwargs = PyObject_CallMethod(pmodule, "dumps", "(O)", remote_kwargs);
   if (pickled_kwargs == nullptr) {
     std::string caller = "ceph_dispatch_remote "s + " " + method;
     std::string err = handle_pyerror(true, other_module, caller);
@@ -894,13 +908,15 @@ ceph_dispatch_remote(BaseMgrModule *self, PyObject *args)
   }
 
   std::string err;
+  bool crash_dump = true;
   std::optional<std::vector<std::byte>> maybe_pickled_ret =
     self->py_modules->dispatch_remote(
       other_module,
       method,
       pickled_args_span,
       pickled_kwargs_span,
-      &err);
+      &err,
+      &crash_dump);
 
   PyEval_RestoreThread(tstate);
 
@@ -913,16 +929,19 @@ ceph_dispatch_remote(BaseMgrModule *self, PyObject *args)
     std::stringstream ss;
     ss << "Remote method threw exception: " << err;
     PyErr_SetString(PyExc_RuntimeError, ss.str().c_str());
-    derr << ss.str() << dendl;
+    // NotImplementedError is the documented way for a module to signal
+    // that it doesn't implement an optional method (see dispatch_remote()
+    // in ActivePyModule.cc); it isn't a fault, so don't log it as one.
+    if (crash_dump) {
+      derr << ss.str() << dendl;
+    } else {
+      dout(10) << ss.str() << dendl;
+    }
     return nullptr;
   }
 
   auto pickled_ret_bytes = py_bytes_from_vec(*maybe_pickled_ret);
-  auto ret = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("loads"),
-    pickled_ret_bytes,
-    nullptr);
+  auto ret = PyObject_CallMethod(pmodule, "loads", "(O)", pickled_ret_bytes);
   if (ret == nullptr) {
     std::string caller = "ceph_dispatch_remote "s + " " + method;
     std::string err = handle_pyerror(true, other_module, caller);
@@ -1211,6 +1230,7 @@ ceph_add_mds_perf_query(BaseMgrModule *self, PyObject *args)
   static const std::map<std::string, MDSPerfMetricSubKeyType> sub_key_types = {
     {"mds_rank", MDSPerfMetricSubKeyType::MDS_RANK},
     {"client_id", MDSPerfMetricSubKeyType::CLIENT_ID},
+    {"subvolume_path", MDSPerfMetricSubKeyType::SUBVOLUME_PATH},
   };
   static const std::map<std::string, MDSPerformanceCounterType> counter_types = {
     {"cap_hit", MDSPerformanceCounterType::CAP_HIT_METRIC},
@@ -1229,6 +1249,14 @@ ceph_add_mds_perf_query(BaseMgrModule *self, PyObject *args)
     {"stdev_write_latency", MDSPerformanceCounterType::STDEV_WRITE_LATENCY_METRIC},
     {"avg_metadata_latency", MDSPerformanceCounterType::AVG_METADATA_LATENCY_METRIC},
     {"stdev_metadata_latency", MDSPerformanceCounterType::STDEV_METADATA_LATENCY_METRIC},
+    {"subv_read_iops", MDSPerformanceCounterType::SUBV_READ_IOPS_METRIC},
+    {"subv_write_iops", MDSPerformanceCounterType::SUBV_WRITE_IOPS_METRIC},
+    {"subv_read_throughput", MDSPerformanceCounterType::SUBV_READ_THROUGHPUT_METRIC},
+    {"subv_write_throughput", MDSPerformanceCounterType::SUBV_WRITE_THROUGHPUT_METRIC},
+    {"subv_avg_read_latency", MDSPerformanceCounterType::SUBV_AVG_READ_LATENCY_METRIC},
+    {"subv_avg_write_latency", MDSPerformanceCounterType::SUBV_AVG_WRITE_LATENCY_METRIC},
+    {"subv_quota_bytes", MDSPerformanceCounterType::SUBV_QUOTA_BYTES_METRIC},
+    {"subv_used_bytes", MDSPerformanceCounterType::SUBV_USED_BYTES_METRIC},
   };
 
   PyObject *py_query = nullptr;
@@ -1576,6 +1604,9 @@ PyMethodDef BaseMgrModule_methods[] = {
 
   {"_ceph_get", (PyCFunction)ceph_state_get, METH_VARARGS,
    "Get a cluster object"},
+
+  {"_ceph_erase", (PyCFunction)ceph_cache_map_erase, METH_VARARGS,
+   "Erase a cached python map"},
 
   {"_ceph_notify_all", (PyCFunction)ceph_notify_all, METH_VARARGS,
    "notify all modules"},

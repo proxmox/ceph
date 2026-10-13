@@ -19,9 +19,6 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <sys/socket.h>
 #include <chrono>
@@ -35,9 +32,6 @@ module;
 #include <iostream>
 #include <unordered_map>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/seastar.hh>
 #include <seastar/core/scollectd_api.hh>
 #include <seastar/core/metrics_api.hh>
@@ -46,10 +40,11 @@ module seastar;
 #include <seastar/core/shared_ptr.hh>
 
 #include "core/scollectd-impl.hh"
-#endif
 #include <seastar/util/assert.hh>
 
 namespace seastar {
+
+using seastar::metrics::impl::labels_type;
 
 void scollectd::type_instance_id::truncate(sstring& field, const char* field_desc) {
     if (field.size() > max_collectd_field_text_len) {
@@ -184,7 +179,7 @@ struct cpwriter {
         sstring res = name;
         for (auto i : labels) {
             if (i.first != seastar::metrics::shard_label.name()) {
-                res += "-" + i.second;
+                res += "-" + i.second.value();
             }
         }
         return res;
@@ -202,8 +197,8 @@ struct cpwriter {
         }
         return *this;
     }
-    template<typename T>
-    std::enable_if_t<std::is_integral_v<T>, cpwriter &> write(
+    template<std::integral T>
+    cpwriter& write(
             const T & t) {
         T tmp = net::hton(t);
         auto * p = reinterpret_cast<const uint8_t *>(&tmp);
@@ -211,8 +206,8 @@ struct cpwriter {
         write(p, e);
         return *this;
     }
-    template<typename T>
-    std::enable_if_t<std::is_integral_v<T>, cpwriter &> write_le(const T & t) {
+    template<std::integral T>
+    cpwriter& write_le(const T & t) {
         T tmp = cpu_to_le(t);
         auto * p = reinterpret_cast<const uint8_t *>(&tmp);
         auto * e = p + sizeof(T);
@@ -254,8 +249,8 @@ struct cpwriter {
         }
         return *this;
     }
-    template<typename T>
-    std::enable_if_t<std::is_integral_v<T>, cpwriter &> put(
+    template<std::integral T>
+    cpwriter& put(
             part_type type, T t) {
         write(uint16_t(type));
         write(uint16_t(4 + sizeof(t)));
@@ -301,7 +296,7 @@ struct cpwriter {
         // Use lo-res ts for now, it is probably quite sufficient.
         put_cached(part_type::Plugin, group_name);
         // Optional
-        auto instance_id = labels.at(metrics::shard_label.name());
+        sstring instance_id = labels.at(metrics::shard_label.name());
         put_cached(part_type::PluginInst,
                 instance_id == per_cpu_plugin_instance ?
                         to_sstring(this_shard_id()) : instance_id);
@@ -359,7 +354,8 @@ future<> impl::send_metric(const type_instance_id & id,
     }
     cpwriter out;
     out.put(_host, duration(), id, values);
-    return _chan.send(_addr, net::packet(out.data(), out.size()));
+    temporary_buffer<char> buf(out.data(), out.size());
+    return _chan.send(_addr, std::span(&buf, 1));
 }
 
 future<> impl::send_notification(const type_instance_id & id,
@@ -368,7 +364,8 @@ future<> impl::send_notification(const type_instance_id & id,
     auto mid = to_metrics_id(id);
     out.put(_host, mid.group_name(), mid.name(), mid.labels(), id.type());
     out.put(part_type::Message, msg);
-    return _chan.send(_addr, net::packet(out.data(), out.size()));
+    temporary_buffer<char> buf(out.data(), out.size());
+    return _chan.send(_addr, std::span(&buf, 1));
 }
 
 // initiates actual value polling -> send to target "loop"
@@ -484,7 +481,8 @@ void impl::run() {
         if (out.empty()) {
             return make_ready_future();
         }
-        return _chan.send(_addr, net::packet(out.data(), out.size())).then([start, ctxt, this]() {
+        temporary_buffer<char> buf(out.data(), out.size());
+        return _chan.send(_addr, std::span(&buf, 1)).then([start, ctxt, this]() {
                     auto & out = std::get<cpwriter>(*ctxt);
                     auto now = steady_clock_type::now();
                     // dogfood stats

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -308,7 +309,8 @@ int run_rgw_admin(string& cmd, string& resp) {
     /* child */
     list<string> l;
     get_str_list(cmd, " \t", l);
-    char *argv[l.size()];
+    // One extra for argv[0] and one for the NULL.
+    std::vector<char*> argv(l.size() + 2);
     unsigned loop = 1;
 
     argv[0] = (char *)"radosgw-admin";
@@ -320,7 +322,7 @@ int run_rgw_admin(string& cmd, string& resp) {
     if (!freopen(RGW_ADMIN_RESP_PATH, "w+", stdout)) {
       cout << "Unable to open stdout file" << std::endl;
     }
-    execv((g_test->get_rgw_admin_path()).c_str(), argv); 
+    execv((g_test->get_rgw_admin_path()).c_str(), argv.data());
   } else if (pid > 0) {
     int status;
     waitpid(pid, &status, 0);

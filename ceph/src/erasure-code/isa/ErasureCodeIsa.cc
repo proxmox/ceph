@@ -461,28 +461,51 @@ ErasureCodeIsaDefault::isa_decode(int *erasures,
 
   int decode_index[k];
 
-  std::string erasure_signature; // describes a matrix configuration for caching
+  // ---------------------------------------------
+  // Construct cache signature including k,m parameters
+  //
+  // CRITICAL: The decoding table size depends on both (k,m) and the erasure
+  // pattern. The cache key MUST include k,m to prevent collisions where
+  // different (k,m) configurations with similar erasure patterns would
+  // retrieve incorrectly-sized cached buffers, causing buffer overflows
+  // or data corruption.
+  //
+  // Signature format: "k<k>m<m>a<avail_chunks>e<erased_chunks>"
+  // Example: "k3m2a+0+2+3e-1-4" means k=3, m=2, available chunks 0,2,3,
+  //          and erased chunks 1,4
+  // ---------------------------------------------
+  char sig_buf[512];
+  int offset = snprintf(sig_buf, sizeof(sig_buf), "k%dm%da", k, m);
 
   // ---------------------------------------------
-  // Construct b by removing error rows
+  // Add available chunk indices to signature
   // ---------------------------------------------
-
   for (i = 0, r = 0; i < k; i++, r++) {
-    char id[128];
     while (erasure_contains(erasures, r))
       r++;
 
     decode_index[i] = r;
 
-    snprintf(id, sizeof (id), "+%d", r);
-    erasure_signature += id;
+    offset += snprintf(sig_buf + offset, sizeof(sig_buf) - offset, "+%d", r);
+    if (offset >= (int)sizeof(sig_buf)) {
+      dout(0) << "isa_decode: signature buffer overflow" << dendl;
+      return -1;
+    }
   }
 
+  // ---------------------------------------------
+  // Add erased chunk indices to signature
+  // ---------------------------------------------
+  offset += snprintf(sig_buf + offset, sizeof(sig_buf) - offset, "e");
   for (int p = 0; p < nerrs; p++) {
-    char id[128];
-    snprintf(id, sizeof (id), "-%d", erasures[p]);
-    erasure_signature += id;
+    offset += snprintf(sig_buf + offset, sizeof(sig_buf) - offset, "-%d", erasures[p]);
+    if (offset >= (int)sizeof(sig_buf)) {
+      dout(0) << "isa_decode: signature buffer overflow" << dendl;
+      return -1;
+    }
   }
+
+  std::string erasure_signature(sig_buf);
 
   // ---------------------------------------------
   // Try to get an already computed matrix
@@ -577,7 +600,7 @@ int ErasureCodeIsaDefault::parse(ErasureCodeProfile &profile,
     // benchmarktool and 10*(combinatoric for maximum loss) random
     // full erasures
     if (k > MAX_K) {
-      *ss << "Vandermonde: m=" << m
+      *ss << "Vandermonde: k=" << k
         << " should be less/equal than " << MAX_K
         << " : revert to k=" << MAX_K << std::endl;
       k = MAX_K;
@@ -587,18 +610,19 @@ int ErasureCodeIsaDefault::parse(ErasureCodeProfile &profile,
     if (m > 4) {
       *ss << "Vandermonde: m=" << m
         << " should be less than 5 to guarantee an MDS codec:"
-        << " revert to m=4" << std::endl;
-      m = 4;
-      err = -EINVAL;
+        << " switching to Cauchy technique" << std::endl;
+      matrixtype = kCauchy;
+      profile["technique"] = "cauchy"sv;
     }
     switch (m) {
     case 4:
       if (k > 21) {
         *ss << "Vandermonde: k=" << k
           << " should be less than 22 to guarantee an MDS"
-          << " codec with m=4: revert to k=21" << std::endl;
-        k = 21;
-        err = -EINVAL;
+          << " codec with m=4: switching"
+          << " to Cauchy technique" << std::endl;
+        matrixtype = kCauchy;
+        profile["technique"] = "cauchy"sv;
       }
       break;
     default:
@@ -616,9 +640,11 @@ ErasureCodeIsaDefault::prepare()
   // setup shared encoding table and coefficients
   unsigned char** p_enc_table =
     tcache.getEncodingTable(matrixtype, k, m);
+  ceph_assert(p_enc_table);
 
   unsigned char** p_enc_coeff =
     tcache.getEncodingCoefficient(matrixtype, k, m);
+  ceph_assert(p_enc_coeff);
 
   if (!*p_enc_coeff) {
     dout(10) << "[ cache tables ] creating coeff for k=" <<
@@ -641,6 +667,7 @@ ErasureCodeIsaDefault::prepare()
   } else {
     encode_coeff = *p_enc_coeff;
   }
+  ceph_assert(encode_coeff);
 
   if (!*p_enc_table) {
     dout(10) << "[ cache tables ] creating tables for k=" <<
@@ -656,6 +683,7 @@ ErasureCodeIsaDefault::prepare()
   } else {
     encode_tbls = *p_enc_table;
   }
+  ceph_assert(encode_tbls);
 
   unsigned memory_lru_cache =
     k * (m + k) * 32 * tcache.decoding_tables_lru_length;

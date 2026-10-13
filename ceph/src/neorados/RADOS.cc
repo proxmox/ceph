@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -502,29 +503,26 @@ void Op::cmp_omap(const std::vector<cmp_assertion>& assertions) {
   reinterpret_cast<OpImpl*>(&impl)->op.omap_cmp(std::move(bl), nullptr);
 }
 
-void Op::exec(std::string_view cls, std::string_view method,
-	      const bufferlist& inbl,
-	      cb::list* out,
-	      bs::error_code* ec) {
+void Op::exec_impl(std::string_view cls, std::string_view method,
+              const bufferlist& inbl,
+              cb::list* out,
+              bs::error_code* ec) {
   reinterpret_cast<OpImpl*>(&impl)->op.call(cls, method, inbl, ec, out);
 }
-
-void Op::exec(std::string_view cls, std::string_view method,
-	      const bufferlist& inbl,
-	      fu2::unique_function<void(bs::error_code,
-					const cb::list&) &&> f) {
+void Op::exec_impl(std::string_view cls, std::string_view method,
+              const bufferlist& inbl,
+              fu2::unique_function<void(bs::error_code,
+                                        const cb::list&) &&> f) {
   reinterpret_cast<OpImpl*>(&impl)->op.call(cls, method, inbl, std::move(f));
 }
-
-void Op::exec(std::string_view cls, std::string_view method,
-	      const bufferlist& inbl,
-	      fu2::unique_function<void(bs::error_code, int,
-					const cb::list&) &&> f) {
+void Op::exec_impl(std::string_view cls, std::string_view method,
+              const bufferlist& inbl,
+              fu2::unique_function<void(bs::error_code, int,
+                                        const cb::list&) &&> f) {
   reinterpret_cast<OpImpl*>(&impl)->op.call(cls, method, inbl, std::move(f));
 }
-
-void Op::exec(std::string_view cls, std::string_view method,
-	      const bufferlist& inbl, bs::error_code* ec) {
+void Op::exec_impl(std::string_view cls, std::string_view method,
+              const bufferlist& inbl, bs::error_code* ec) {
   reinterpret_cast<OpImpl*>(&impl)->op.call(cls, method, inbl, ec);
 }
 
@@ -1918,8 +1916,8 @@ void RADOS::enumerate_objects_(IOContext _ioc, Cursor begin, Cursor end,
     });
 }
 
-void RADOS::osd_command_(int osd, std::vector<std::string> cmd,
-			 ceph::bufferlist in, CommandComp c) {
+void RADOS::osd_command_(int osd, std::vector<std::string>&& cmd,
+			 ceph::bufferlist&& in, CommandComp c) {
   impl->objecter->osd_command(
     osd, std::move(cmd), std::move(in), nullptr,
     [c = std::move(c)]
@@ -1929,8 +1927,8 @@ void RADOS::osd_command_(int osd, std::vector<std::string> cmd,
     });
 }
 
-void RADOS::pg_command_(PG pg, std::vector<std::string> cmd,
-			ceph::bufferlist in, CommandComp c) {
+void RADOS::pg_command_(PG pg, std::vector<std::string>&& cmd,
+			ceph::bufferlist&& in, CommandComp c) {
   impl->objecter->pg_command(
     pg_t{pg.seed, pg.pool}, std::move(cmd), std::move(in), nullptr,
     [c = std::move(c)]
@@ -2000,12 +1998,12 @@ void RADOS::wait_for_latest_osd_map_(SimpleOpComp c) {
   impl->objecter->wait_for_latest_osdmap(std::move(c));
 }
 
-void RADOS::mon_command_(std::vector<std::string> command,
-			 cb::list bl, std::string* outs, cb::list* outbl,
+void RADOS::mon_command_(std::vector<std::string>&& command,
+			 cb::list&& bl, std::string* outs, cb::list* outbl,
 			 SimpleOpComp c) {
 
   impl->monclient.start_mon_command(
-    command, bl,
+    std::move(command), std::move(bl),
     [c = std::move(c), outs, outbl](bs::error_code e,
 				    std::string s, cb::list bl) mutable {
       if (outs)

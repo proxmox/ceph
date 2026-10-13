@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -17,6 +18,7 @@
 #include <iostream>
 #include "include/encoding.h"
 #include "include/utime.h"
+#include "common/debug.h"
 #include "common/Formatter.h"
 #include "common/ceph_releases.h"
 #include "common/version.h"
@@ -111,7 +113,7 @@ public:
   int process_gw_map_gw_down(
     const NvmeGwId &gw_id, const NvmeGroupKey& group_key,
     bool &propose_pending);
-  int process_gw_map_gw_no_subsys_no_listeners(
+  int process_gw_map_gw_pass_to_created(
     const NvmeGwId &gw_id, const NvmeGroupKey& group_key,
     bool &propose_pending);
   void update_active_timers(bool &propose_pending);
@@ -163,6 +165,9 @@ private:
   void fsm_handle_to_expired(
     const NvmeGwId &gw_id, const NvmeGroupKey& group_key,
     NvmeAnaGrpId grpid,  bool &map_modified);
+  void fsm_handle_failback_and_relocation(const NvmeGwId &owner_gw_id,
+     const NvmeGwId &failover_gw_id, const NvmeGroupKey& group_key,
+     NvmeAnaGrpId grpid, bool &map_modified);
   void find_failover_candidate(
     const NvmeGwId &gw_id, const NvmeGroupKey& group_key,
     NvmeAnaGrpId grpid, bool &propose_pending);

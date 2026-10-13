@@ -585,7 +585,8 @@ def ceph_clients(ctx, config):
 @contextlib.contextmanager
 def watchdog_setup(ctx, config):
     ctx.ceph[config['cluster']].thrashers = []
-    ctx.ceph[config['cluster']].watchdog = DaemonWatchdog(ctx, config, ctx.ceph[config['cluster']].thrashers)
+    ctx.ceph[config['cluster']].watched_processes = []
+    ctx.ceph[config['cluster']].watchdog = DaemonWatchdog(ctx, config)
     ctx.ceph[config['cluster']].watchdog.start()
     yield
 
@@ -724,9 +725,7 @@ def create_simple_monmap(ctx, remote, conf, mons, monmaptool_extra_args,
 
 
 def is_crimson(config):
-    return config.get('flavor', 'default') == 'crimson-debug' or \
-        config.get('flavor', 'default') == 'crimson-release'
-
+    return config.get('crimson_compat', False)
 
 def maybe_redirect_stderr(config, type_, args, log_path):
     if type_ == 'osd' and is_crimson(config):
@@ -1108,6 +1107,10 @@ def cluster(ctx, config):
                 ctx.disk_config.remote_to_roles_to_dev_fstype[remote][role] = fs
                 devs_to_clean[remote].append(mnt_point)
 
+        overrides = ctx.config.get('overrides', {})
+        ceph_overrides = overrides.get('ceph', {})
+        mkfs_args = ceph_overrides.get('osd-mkfs-args', [])
+        log.info("OSD mkfs args = %s", mkfs_args)
         for role in teuthology.cluster_roles_of_type(roles_for_host, 'osd', cluster_name):
             _, _, id_ = teuthology.split_role(role)
 
@@ -1133,6 +1136,8 @@ def cluster(ctx, config):
                         '--mkfs',
                         '-i', id_,
                         '--monmap', monmap_path]
+                if mkfs_args:
+                    args.extend(mkfs_args)
                 log_path = f'/var/log/ceph/{cluster_name}-osd.{id_}.log'
                 create_log_cmd, args = \
                     maybe_redirect_stderr(config, 'osd', args, log_path)
@@ -1725,8 +1730,6 @@ def key_prune(ctx, config):
     elif isinstance(config, list):
         config = {'keys': config}
 
-    testdir = teuthology.get_testdir(ctx)
-
     cluster_name = config.setdefault('cluster', 'ceph')
     manager = ctx.managers[cluster_name]
 
@@ -1789,7 +1792,6 @@ def key_rotate(ctx, config):
     ]
 
     daemons = ctx.daemons.resolve_role_list(config.get('daemons', None), CEPH_ROLE_TYPES, True)
-    clusters = set()
 
     new_mon_key = None
     for role in daemons:
@@ -1831,7 +1833,6 @@ def key_rotate(ctx, config):
         daemon.restart()
 
     clients = config.get('clients', [])
-    firstmon = teuthology.get_first_mon(ctx, config, cluster_name)
     keyring = ctx.ceph[cluster_name].keyring
     for client in clients:
         if client == 'all':
@@ -2153,7 +2154,7 @@ def task(ctx, config):
 
     By default, the cluster log is checked for errors and warnings,
     and the run marked failed if any appear. You can ignore log
-    entries by giving a list of egrep compatible regexes, i.e.:
+    entries by giving a list of grep -E compatible regexes, i.e.:
 
         tasks:
         - ceph:
@@ -2272,7 +2273,6 @@ def task(ctx, config):
 
             # stop logging health to clog during shutdown, or else we generate
             # a bunch of scary messages unrelated to our actual run.
-            firstmon = teuthology.get_first_mon(ctx, config, cluster_name)
             ctx.ceph[cluster_name].admin.run(
                 args=[
                     'sudo',

@@ -1,9 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
-#include "rgw_obj_manifest.h"
+#include "driver/rados/rgw_obj_manifest.h"
 
-#include "rgw_rados.h" // RGW_OBJ_NS_SHADOW and RGW_OBJ_NS_MULTIPART
+#include "rgw_bucket.h" // RGW_OBJ_NS_SHADOW and RGW_OBJ_NS_MULTIPART
 
 using namespace std;
 
@@ -207,7 +207,7 @@ void RGWObjManifest::obj_iterator::update_location()
 }
 
 void RGWObjManifest::get_implicit_location(uint64_t cur_part_id, uint64_t cur_stripe,
-                                           uint64_t ofs, string *override_prefix, rgw_obj_select *location) const
+                                           uint64_t ofs, const string *override_prefix, rgw_obj_select *location) const
 {
   rgw_obj loc;
 

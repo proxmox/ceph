@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -102,7 +102,7 @@ struct rgw_data_change {
 
   void dump(ceph::Formatter* f) const;
   void decode_json(JSONObj* obj);
-  static void generate_test_instances(std::list<rgw_data_change *>& l);
+  static std::list<rgw_data_change> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(rgw_data_change)
 inline std::ostream& operator <<(std::ostream& m,
@@ -218,12 +218,7 @@ class DataLogBackends final
 			  shards), datalog(datalog) {}
 public:
 
-  boost::intrusive_ptr<RGWDataChangesBE> head() {
-    std::unique_lock l(m);
-    auto i = end();
-    --i;
-    return i->second;
-  }
+  boost::intrusive_ptr<RGWDataChangesBE> head();
   asio::awaitable<std::tuple<std::span<rgw_data_change_log_entry>,
 			     std::string>>
   list(const DoutPrefixProvider *dpp, int shard,

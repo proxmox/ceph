@@ -1,8 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_fixture.h"
 #include "test/librbd/test_support.h"
+#include "common/Cond.h"
 #include "librbd/internal.h"
 #include "librbd/Journal.h"
 #include "librbd/api/Io.h"

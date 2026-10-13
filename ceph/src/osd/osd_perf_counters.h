@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -91,6 +91,8 @@ enum osd_counter_idx_t {
   l_osd_map,
   l_osd_mape,
   l_osd_mape_dup,
+  l_osd_full_map_received,
+  l_osd_inc_map_received,
 
   l_osd_waiting_for_map,
 
@@ -255,10 +257,13 @@ enum {
   rs_getmissing_latency,
   rs_waitupthru_latency,
   rs_notrecovering_latency,
-  rs_stats_invalidated,
+  rs_process_log_stats_invalidated,
+  rs_pg_split_parent_stats_invalidated,
+  rs_pg_split_child_stats_invalidated,
+  rs_update_stats_invalidated,
+  rs_append_log_stats_invalidated,
+  rs_merge_log_stats_invalidated,
   rs_pg_rebuild_duration,
-  rs_pg_rebuild_max_secs,
-  rs_pg_rebuild_min_secs,
   rs_last,
 };
 
@@ -278,8 +283,6 @@ enum {
   scrbcnt_chunks_busy,
   /// # waiting on object events
   scrbcnt_blocked,
-  /// # write blocked by the scrub
-  scrbcnt_write_blocked,
 
   scrbcnt_last,
 };

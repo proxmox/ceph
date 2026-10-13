@@ -1,5 +1,5 @@
 ===========================
- Rados Gateway Data Layout
+ RADOS Gateway Data Layout
 ===========================
 
 Although the source code is the ultimate guide, this document helps
@@ -9,10 +9,10 @@ new developers get up to speed with the implementation details.
 Introduction
 ------------
 
-Swift offers something called a *container*, which we use interchangeably with
-the S3 term *bucket*, so we say that RGW's buckets implement Swift containers.
+Swift collects user objects into *containers*, which we use interchangeably with
+the S3 term *buckets*, so we say that RGW's buckets implement Swift containers.
 
-This document does not consider how RGW _operates_ on these structures,
+This document does not consider how RGW *operates* on these structures,
 e.g. the use of ``encode()`` and ``decode()`` methods for serialization.
 
 Conceptual View
@@ -57,15 +57,16 @@ Use commands of the following forms to inspect metadata entries:
    radosgw-admin metadata get bucket.instance:<bucket>:<bucket_id>
    radosgw-admin metadata get user:<user>   # get or set
     
-Some variables have been used in above commands, they are:
+Variables are used in above command examples; when issuing commands you must
+substitute your specific values:
 
-- _user_: Holds user information
-- _bucket_: Holds a mapping between bucket name and bucket instance id
-- _bucket.instance_: Holds bucket instance information[2]
+- ``user``: Holds user information
+- ``bucket``: Holds a mapping between bucket name and bucket instance id
+- ``bucket.instance``: Holds bucket instance information[2]
 
 Each metadata entry is kept on a single RADOS object. See below for implementation details.
 
-Note that the metadata is not indexed. When listing a metadata section we do a
+Note that this metadata is not indexed. When listing a metadata section we do a
 RADOS ``pgls`` operation on the containing pool.
 
 Bucket Index
@@ -117,7 +118,7 @@ causes no ambiguity. For the same reason, slashes are permitted in object
 names (keys).
 
 It is possible to create multiple data pools and make it so that
-different users\` buckets will be created in different RADOS pools by default,
+different users' buckets will be created in different RADOS pools by default,
 thus providing the necessary scaling. The layout and naming of these pools
 is controlled by a 'policy' setting.[3]
 
@@ -125,7 +126,7 @@ An RGW object may comprise multiple RADOS objects, the first of which
 is the ``HEAD`` that contains metadata including manifest, ACLs, content type,
 ETag, and user-defined metadata. The metadata is stored in xattrs.
 The ``HEAD`` object may also inline up to :confval:`rgw_max_chunk_size` of object data, for efficiency
-and atomicity.  This enables a convenenient tiering strategy:  index pools
+and atomicity.  This enables a convenient tiering strategy:  index pools
 are necessarily replicated (cannot be EC) and should be placed on fast SSD
 OSDs.  With a mix of small/hot RGW objects and larger, warm/cold RGW
 objects like video files, the larger objects will automatically be placed

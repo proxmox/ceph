@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -84,7 +85,7 @@ struct osd_info_t {
   void dump(ceph::Formatter *f) const;
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& bl);
-  static void generate_test_instances(std::list<osd_info_t*>& o);
+  static std::list<osd_info_t> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(osd_info_t)
 
@@ -105,7 +106,7 @@ struct osd_xinfo_t {
   void dump(ceph::Formatter *f) const;
   void encode(ceph::buffer::list& bl, uint64_t features) const;
   void decode(ceph::buffer::list::const_iterator& bl);
-  static void generate_test_instances(std::list<osd_xinfo_t*>& o);
+  static std::list<osd_xinfo_t> generate_test_instances();
 };
 WRITE_CLASS_ENCODER_FEATURES(osd_xinfo_t)
 
@@ -346,11 +347,13 @@ struct PGTempMap {
       f->close_section();
     }
   }
-  static void generate_test_instances(std::list<PGTempMap*>& o) {
-    o.push_back(new PGTempMap);
-    o.push_back(new PGTempMap);
-    o.back()->set(pg_t(1, 2), { 3, 4 });
-    o.back()->set(pg_t(2, 3), { 4, 5 });
+  static std::list<PGTempMap> generate_test_instances() {
+    std::list<PGTempMap> o;
+    o.emplace_back();
+    o.emplace_back();
+    o.back().set(pg_t(1, 2), { 3, 4 });
+    o.back().set(pg_t(2, 3), { 4, 5 });
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(PGTempMap)
@@ -453,7 +456,7 @@ public:
     void decode_classic(ceph::buffer::list::const_iterator &p);
     void decode(ceph::buffer::list::const_iterator &bl);
     void dump(ceph::Formatter *f) const;
-    static void generate_test_instances(std::list<Incremental*>& o);
+    static std::list<Incremental> generate_test_instances();
 
     explicit Incremental(epoch_t e=0) :
       encode_features(0),
@@ -576,7 +579,8 @@ private:
     CEPH_FEATUREMASK_SERVER_NAUTILUS |
     CEPH_FEATUREMASK_SERVER_OCTOPUS |
     CEPH_FEATUREMASK_SERVER_REEF |
-    CEPH_FEATUREMASK_SERVER_TENTACLE;
+    CEPH_FEATUREMASK_SERVER_TENTACLE |
+    CEPH_FEATUREMASK_SERVER_UMBRELLA;
 
   struct addrs_s {
     mempool::osdmap::vector<std::shared_ptr<entity_addrvec_t> > client_addrs;
@@ -893,7 +897,7 @@ public:
   }
 
   bool exists(int osd) const {
-    //assert(osd >= 0);
+    //ceph_assert(osd >= 0);
     return osd >= 0 && osd < max_osd && (osd_state[osd] & CEPH_OSD_EXISTS);
   }
 
@@ -1595,7 +1599,7 @@ private: // Bunch of internal functions used only by calc_pg_upmaps (result of c
     float pgs_per_weight,
     std::map<int,float>& osd_deviation,
     std::multimap<float,int>& deviation_osd,
-    float& stddev
+    double& bal_score
   );  // return current max deviation
 
   void fill_overfull_underfull (
@@ -1628,7 +1632,8 @@ private: // Bunch of internal functions used only by calc_pg_upmaps (result of c
     int osd,
     std::map<int,std::set<pg_t>>& temp_pgs_by_osd,
     std::set<pg_t>& to_unmap,
-    std::map<pg_t, mempool::osdmap::vector<std::pair<int32_t,int32_t>>>& to_upmap
+    std::map<pg_t, mempool::osdmap::vector<std::pair<int32_t,int32_t>>>& to_upmap,
+    const std::map<int,float>& osd_deviation
   );
 
 typedef std::vector<std::pair<pg_t, mempool::osdmap::vector<std::pair<int, int>>>>
@@ -1760,7 +1765,7 @@ public:
 
   bool have_pg_upmaps(pg_t pg) const {
     return pg_upmap.count(pg) ||
-      pg_upmap_items.count(pg);
+      pg_upmap_items.count(pg) || pg_upmap_primaries.count(pg);
   }
 
   bool check_full(const std::set<pg_shard_t> &missing_on) const {
@@ -1857,7 +1862,7 @@ public:
   void dump_osds(ceph::Formatter *f) const;
   void dump_pool(CephContext *cct, int64_t pid, const pg_pool_t &pdata, ceph::Formatter *f) const;
   void dump_read_balance_score(CephContext *cct, int64_t pid, const pg_pool_t &pdata, ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<OSDMap*>& o);
+  static std::list<OSDMap> generate_test_instances();
   bool check_new_blocklist_entries() const { return new_blocklist_entries; }
 
   void check_health(CephContext *cct, health_check_map_t *checks) const;

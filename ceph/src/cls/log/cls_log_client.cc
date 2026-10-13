@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #include <errno.h>
 
 #include "cls/log/cls_log_ops.h"
@@ -13,7 +14,7 @@ using std::string;
 using ceph::bufferlist;
 
 using namespace librados;
-
+using namespace cls::log;
 
 
 void cls_log_add(librados::ObjectWriteOperation& op, vector<cls::log::entry>& entries, bool monotonic_inc)
@@ -22,7 +23,7 @@ void cls_log_add(librados::ObjectWriteOperation& op, vector<cls::log::entry>& en
   cls::log::ops::add_op call;
   call.entries = entries;
   encode(call, in);
-  op.exec("log", "add", in);
+  op.exec(method::add, in);
 }
 
 void cls_log_add(librados::ObjectWriteOperation& op, cls::log::entry& entry)
@@ -31,7 +32,7 @@ void cls_log_add(librados::ObjectWriteOperation& op, cls::log::entry& entry)
   cls::log::ops::add_op call;
   call.entries.push_back(entry);
   encode(call, in);
-  op.exec("log", "add", in);
+  op.exec(method::add, in);
 }
 
 void cls_log_add_prepare_entry(cls::log::entry& entry, ceph::real_time timestamp,
@@ -62,7 +63,7 @@ void cls_log_trim(librados::ObjectWriteOperation& op, ceph::real_time from_time,
   call.from_marker = from_marker;
   call.to_marker = to_marker;
   encode(call, in);
-  op.exec("log", "trim", in);
+  op.exec(method::trim, in);
 }
 
 int cls_log_trim(librados::IoCtx& io_ctx, const string& oid,
@@ -128,7 +129,7 @@ void cls_log_list(librados::ObjectReadOperation& op, ceph::real_time from,
 
   encode(call, inbl);
 
-  op.exec("log", "list", inbl, new LogListCtx(&entries, out_marker, truncated));
+  op.exec(method::list, inbl, new LogListCtx(&entries, out_marker, truncated));
 }
 
 class LogInfoCtx : public ObjectOperationCompletion {
@@ -157,5 +158,5 @@ void cls_log_info(librados::ObjectReadOperation& op, cls::log::header *header)
 
   encode(call, inbl);
 
-  op.exec("log", "info", inbl, new LogInfoCtx(header));
+  op.exec(method::info, inbl, new LogInfoCtx(header));
 }

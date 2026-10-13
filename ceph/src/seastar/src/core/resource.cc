@@ -20,9 +20,6 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
@@ -37,14 +34,9 @@ module;
 #include <unordered_map>
 #include <fmt/core.h>
 #include <seastar/util/assert.hh>
-#if SEASTAR_HAVE_HWLOC
-#include <hwloc/glibc-sched.h>
-#endif
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/resource.hh>
+#include <seastar/core/memory.hh>
 #include <seastar/core/align.hh>
 #include <seastar/core/print.hh>
 #include <seastar/util/defer.hh>
@@ -54,6 +46,9 @@ module seastar;
 #include <seastar/core/print.hh>
 #include "cgroup.hh"
 
+#if SEASTAR_HAVE_HWLOC
+#include <hwloc.h>
+#include <hwloc/glibc-sched.h>
 #endif
 
 namespace seastar {
@@ -297,18 +292,7 @@ io_queue_topology::io_queue_topology(io_queue_topology&& o)
 
 namespace seastar {
 
-cpu_set_t cpuid_to_cpuset(unsigned cpuid) {
-    cpu_set_t cs;
-    CPU_ZERO(&cs);
-    CPU_SET(cpuid, &cs);
-    return cs;
-}
-
 namespace resource {
-
-size_t div_roundup(size_t num, size_t denom) {
-    return (num + denom - 1) / denom;
-}
 
 static hwloc_uint64_t get_memory_from_hwloc_obj(hwloc_obj_t obj) {
 #if HWLOC_API_VERSION >= 0x00020000
@@ -335,6 +319,7 @@ static size_t alloc_from_node(cpu& this_cpu, hwloc_obj_t node, std::unordered_ma
         auto node_id = hwloc_bitmap_first(node->nodeset);
         SEASTAR_ASSERT(node_id != -1);
         this_cpu.mem.push_back({taken, unsigned(node_id)});
+        seastar_logger.debug("CPU{} allocated {} bytes from NODE{}", this_cpu.cpu_id, taken, node_id);
     }
     return taken;
 }
@@ -400,8 +385,7 @@ struct distribute_objects {
 };
 
 static io_queue_topology
-allocate_io_queues(hwloc_topology_t topology, std::vector<cpu> cpus, std::unordered_map<unsigned, hwloc_obj_t>& cpu_to_node,
-        unsigned num_io_groups, unsigned& last_node_idx) {
+allocate_io_queues(hwloc_topology_t topology, const std::vector<cpu>& cpus, const std::unordered_map<unsigned, hwloc_obj_t>& cpu_to_node, unsigned num_io_groups, unsigned& last_node_idx) {
     auto node_of_shard = [&cpus, &cpu_to_node] (unsigned shard) {
         auto node = cpu_to_node.at(cpus[shard].cpu_id);
         return hwloc_bitmap_first(node->nodeset);
@@ -582,27 +566,50 @@ resources allocate(configuration& c) {
     }
     unsigned procs = c.cpus;
     if (unsigned available_procs = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
-        procs > available_procs) {
+        !c.overcommit && procs > available_procs) {
         throw std::runtime_error(format("insufficient processing units: needed {} available {}", procs, available_procs));
     }
     if (procs == 0) {
         throw std::runtime_error("number of processing units must be positive");
     }
-    auto machine_depth = hwloc_get_type_depth(topology, HWLOC_OBJ_MACHINE);
-    SEASTAR_ASSERT(hwloc_get_nbobjs_by_depth(topology, machine_depth) == 1);
-    auto machine = hwloc_get_obj_by_depth(topology, machine_depth, 0);
-    auto available_memory = get_memory_from_hwloc_obj(machine);
+
+    size_t available_memory = 0;
+
+    // Get the list of NUMA nodes available
+    std::vector<hwloc_obj_t> nodes;
+
+    hwloc_obj_t tmp = NULL;
+    auto num_nodes = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NUMANODE);
+    SEASTAR_ASSERT(num_nodes > 0);
+    auto nodes_depth = hwloc_get_type_or_above_depth(topology, HWLOC_OBJ_NUMANODE);
+    while ((tmp = hwloc_get_next_obj_by_depth(topology, nodes_depth, tmp)) != NULL) {
+        available_memory += get_memory_from_hwloc_obj(tmp);
+        nodes.push_back(tmp);
+    }
+
     if (!available_memory) {
-        available_memory = get_machine_memory_from_sysconf();
-        set_memory_to_hwloc_obj(machine, available_memory);
-        seastar_logger.warn("hwloc failed to detect machine-wide memory size, using memory size fetched from sysconf");
+        auto machine_depth = hwloc_get_type_depth(topology, HWLOC_OBJ_MACHINE);
+        SEASTAR_ASSERT(hwloc_get_nbobjs_by_depth(topology, machine_depth) == 1);
+        auto machine = hwloc_get_obj_by_depth(topology, machine_depth, 0);
+        available_memory = get_memory_from_hwloc_obj(machine);
+        if (!available_memory) {
+            available_memory = get_machine_memory_from_sysconf();
+            set_memory_to_hwloc_obj(machine, available_memory);
+            seastar_logger.warn("hwloc failed to detect machine-wide memory size, using memory size fetched from sysconf");
+        }
+
+        auto one_node_mem = available_memory / num_nodes;
+        auto one_node_mem_remainder = available_memory % num_nodes;
+        for (auto& node : nodes) {
+            set_memory_to_hwloc_obj(node, one_node_mem + one_node_mem_remainder);
+            one_node_mem_remainder = 0;
+        }
     }
 
     size_t mem = calculate_memory(c, std::min(available_memory,
                                               cgroup::memory_limit()));
-    // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
-    constexpr size_t max_mem_per_proc = 1UL << 36;
-    auto mem_per_proc = std::min(align_down<size_t>(mem / procs, 2 << 20), max_mem_per_proc);
+    seastar::memory::internal::global_setup(procs);
+    auto mem_per_proc = seastar::memory::internal::per_shard_memory(mem, procs);
 
     resources ret;
     std::unordered_map<unsigned, hwloc_obj_t> cpu_to_node;
@@ -611,7 +618,6 @@ resources allocate(configuration& c) {
     std::vector<std::pair<cpu, size_t>> remains;
 
     auto cpu_sets = distribute_objects(topology, procs);
-    auto num_nodes = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NUMANODE);
 
     for (auto&& cs : cpu_sets()) {
         auto cpu_id = hwloc_bitmap_first(cs);
@@ -621,16 +627,6 @@ resources allocate(configuration& c) {
         if (node == nullptr) {
             orphan_pus.push_back(cpu_id);
         } else {
-            if (!get_memory_from_hwloc_obj(node)) {
-                // If hwloc fails to detect the hardware topology, it falls back to treating
-                // the system as a single-node configuration. While this code supports
-                // multi-node setups, the fallback behavior is safe and will function
-                // correctly in this case.
-                SEASTAR_ASSERT(num_nodes == 1);
-                auto local_memory = get_machine_memory_from_sysconf();
-                set_memory_to_hwloc_obj(node, local_memory);
-                seastar_logger.warn("hwloc failed to detect NUMA node memory size, using memory size fetched from sysfs");
-            }
             cpu_to_node[cpu_id] = node;
             seastar_logger.debug("Assign CPU{} to NUMA{}", cpu_id, node->os_index);
         }
@@ -644,15 +640,6 @@ resources allocate(configuration& c) {
         }
 
         seastar_logger.warn("Assigning some CPUs to remote NUMA nodes");
-
-        // Get the list of NUMA nodes available
-        std::vector<hwloc_obj_t> nodes;
-
-        hwloc_obj_t tmp = NULL;
-        auto depth = hwloc_get_type_or_above_depth(topology, HWLOC_OBJ_NUMANODE);
-        while ((tmp = hwloc_get_next_obj_by_depth(topology, depth, tmp)) != NULL) {
-            nodes.push_back(tmp);
-        }
 
         // Group orphan CPUs by ... some sane enough feature
         std::unordered_map<hwloc_obj_t, std::vector<unsigned>> grouped;
@@ -697,7 +684,6 @@ resources allocate(configuration& c) {
     }
 
     // Divide the rest of the memory
-    auto depth = hwloc_get_type_or_above_depth(topology, HWLOC_OBJ_NUMANODE);
     for (auto&& [this_cpu, remain] : remains) {
         auto node = cpu_to_node.at(this_cpu.cpu_id);
         auto obj = node;
@@ -705,7 +691,7 @@ resources allocate(configuration& c) {
         while (remain) {
             remain -= alloc_from_node(this_cpu, obj, topo_used_mem, remain);
             do {
-                obj = hwloc_get_next_obj_by_depth(topology, depth, obj);
+                obj = hwloc_get_next_obj_by_depth(topology, nodes_depth, obj);
             } while (!obj);
             if (obj == node)
                 break;
@@ -715,8 +701,8 @@ resources allocate(configuration& c) {
     }
 
     unsigned last_node_idx = 0;
-    for (auto devid : c.devices) {
-        ret.ioq_topology.emplace(devid, allocate_io_queues(topology, ret.cpus, cpu_to_node, c.num_io_groups, last_node_idx));
+    for (auto q : c.io_queues) {
+        ret.ioq_topology.emplace(q, allocate_io_queues(topology, ret.cpus, cpu_to_node, c.num_io_groups, last_node_idx));
     }
 
     ret.numa_node_id_to_cpuset = numa_node_id_to_cpuset(topology);
@@ -764,9 +750,8 @@ resources allocate(configuration& c) {
     auto mem = calculate_memory(c, available_memory);
     auto procs = c.cpus;
     ret.cpus.reserve(procs);
-    // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
-    constexpr size_t max_mem_per_proc = 1UL << 36;
-    auto mem_per_proc = std::min(mem / procs, max_mem_per_proc);
+    seastar::memory::internal::global_setup(procs);
+    auto mem_per_proc = seastar::memory::internal::per_shard_memory(mem, procs);
     for (auto cpuid : c.cpu_set) {
         ret.cpus.push_back(cpu{cpuid, {{mem_per_proc, 0}}});
     }

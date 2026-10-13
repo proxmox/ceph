@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -36,6 +37,8 @@
 #include "test/neorados/common_tests.h"
 
 #include "gtest/gtest.h"
+
+#include "cls/rbd/cls_rbd_ops.h"
 
 namespace asio = boost::asio;
 namespace ctnr = boost::container;
@@ -87,8 +90,9 @@ protected:
 
 CORO_TEST_F(NeoRadosReadOps, SetOpFlags, ReadOpTest) {
   sys::error_code ec;
+  bufferlist bl;
   co_await execute(oid, ReadOp{}
-		   .exec("rbd"sv, "get_id"sv, {}, nullptr, &ec)
+		   .exec(::cls::rbd::method::get_id, std::move(bl), nullptr, &ec)
                    .set_failok());
   EXPECT_EQ(sys::errc::io_error, ec);
   co_return;
@@ -306,10 +310,10 @@ CORO_TEST_F(NeoRadosReadOps, ShortRead, ReadOpTest) {
 }
 
 CORO_TEST_F(NeoRadosReadOps, Exec, ReadOpTest) {
-  buffer::list bl;
+  buffer::list bl, inbl;
   sys::error_code ec;
   co_await execute(oid,
-		   ReadOp{}.exec("rbd"sv, "get_all_features"sv, {}, &bl, &ec));
+		   ReadOp{}.exec(::cls::rbd::method::get_all_features, std::move(inbl), &bl, &ec));
   EXPECT_FALSE(ec);
   std::uint64_t features;
   EXPECT_EQ(sizeof(features), bl.length());

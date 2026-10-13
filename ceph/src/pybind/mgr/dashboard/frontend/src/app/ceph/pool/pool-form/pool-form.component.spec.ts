@@ -8,7 +8,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbActiveModal, NgbModalModule, NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
-import { ToastrModule } from 'ngx-toastr';
+
 import { Observable, of } from 'rxjs';
 
 import { DashboardNotFoundError } from '~/app/core/error/error';
@@ -135,7 +135,6 @@ describe('PoolFormComponent', () => {
       BrowserAnimationsModule,
       HttpClientTestingModule,
       RouterTestingModule.withRoutes(routes),
-      ToastrModule.forRoot(),
       NgbNavModule,
       PoolModule,
       SharedModule,
@@ -249,18 +248,13 @@ describe('PoolFormComponent', () => {
     });
 
     it('validates poolType', () => {
-      // Default is replicated; the control is not empty, so there is no required error.
-      formHelper.expectValid('poolType');
-      expect(form.getValue('poolType')).toBe(PoolType.REPLICATED);
+      // Default is 'replicated' now, so just verify switching remains valid
       formHelper.expectValidChange('poolType', 'erasure');
       formHelper.expectValidChange('poolType', 'replicated');
     });
 
     it('validates that pgNum is required creation mode', () => {
-      // After getInfo(), pgCalc() fills pgNum automatically; clear and mark dirty so
-      // auto-calc does not overwrite empty (see poolTypeChange / pgCalc guards).
-      formHelper.setValue('pgNum', '', true);
-      fixture.detectChanges();
+      formHelper.setValue('pgNum', '');
       formHelper.expectError(form.get('pgNum'), 'required');
     });
 
@@ -1504,15 +1498,9 @@ describe('PoolFormComponent', () => {
           form.get(controlName).markAsPristine();
 
         beforeEach(() => {
-          [
-            'algorithm',
-            'maxBlobSize',
-            'minBlobSize',
-            'mode',
-            'pgNum',
-            'ratio',
-            'name'
-          ].forEach((name) => markControlAsPreviouslySet(name));
+          ['algorithm', 'maxBlobSize', 'minBlobSize', 'mode', 'pgNum', 'ratio', 'name'].forEach(
+            (name) => markControlAsPreviouslySet(name)
+          );
           fixture.detectChanges();
         });
 

@@ -4,7 +4,7 @@ Client Configuration
 Updating Client Configuration
 -----------------------------
 
-Certain client configurations can be applied at runtime. To check if a configuration option can be applied (taken into affect by a client) at runtime, use the `config help` command::
+Certain client configurations can be applied at runtime. To check if a configuration option can be applied (taken into effect by a client) at runtime, use the `config help` command::
 
    ceph config help debug_client
     debug_client - Debug level for client
@@ -38,6 +38,8 @@ Client Config Reference
 .. confval:: client_caps_release_delay
 .. confval:: client_debug_force_sync_read
 .. confval:: client_dirsize_rbytes
+.. confval:: client_fscrypt_as
+.. confval:: client_fscrypt_dummy_encryption
 .. confval:: client_max_inline_size
 .. confval:: client_metadata
 .. confval:: client_mount_gid
@@ -56,6 +58,7 @@ Client Config Reference
 .. confval:: client_readahead_max_periods
 .. confval:: client_readahead_min
 .. confval:: client_reconnect_stale
+.. confval:: client_respect_subvolume_snapshot_visibility
 .. confval:: client_snapdir
 .. confval:: client_tick_interval
 .. confval:: client_use_random_mds

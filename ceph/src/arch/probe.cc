@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "arch/probe.h"
 
@@ -7,6 +7,7 @@
 #include "arch/arm.h"
 #include "arch/ppc.h"
 #include "arch/s390x.h"
+#include "arch/riscv.h"
 
 int ceph_arch_probe(void)
 {
@@ -18,6 +19,8 @@ int ceph_arch_probe(void)
   ceph_arch_arm_probe();
 #elif defined(__powerpc__) || defined(__ppc__)
   ceph_arch_ppc_probe();
+#elif defined(__riscv)
+  ceph_arch_riscv_probe();
 #elif defined(__s390__)
   ceph_arch_s390x_probe();
 #endif

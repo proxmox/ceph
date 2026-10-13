@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -10,11 +10,14 @@
 #include <system_error>
 #include <utility>
 
+#include <fmt/ostream.h>
+
 #include "include/expected.hpp"
 #include "include/function2.hpp"
 
 #include "rgw_common.h"
 #include "rgw_web_idp.h"
+#include "rgw_keystone_scope.h"
 
 #define RGW_USER_ANON_ID "anonymous"
 
@@ -86,6 +89,9 @@ public:
 
   /* Identity Type: RGW/ LDAP/ Keystone */
   virtual uint32_t get_identity_type() const = 0;
+
+  /* Identity ARN */
+  virtual std::optional<rgw::ARN> get_caller_identity() const = 0;
 
   /* Name of Account */
   virtual std::string get_acct_name() const = 0;
@@ -504,6 +510,10 @@ public:
     return TYPE_WEB;
   }
 
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    return std::nullopt;
+  }
+
   std::string get_acct_name() const override {
     return this->user_name;
   }
@@ -590,6 +600,10 @@ public:
     const uint32_t acct_type;
     const std::string access_key_id;
     const std::string subuser;
+    const std::string keystone_user;
+    const std::optional<rgw::keystone::ScopeInfo> keystone_scope;
+    const std::vector<std::string> keystone_roles;
+    const std::string keystone_user_id;
 
   public:
     enum class acct_privilege_t {
@@ -599,6 +613,7 @@ public:
 
     static const std::string NO_SUBUSER;
     static const std::string NO_ACCESS_KEY;
+    static const std::string NO_KEYSTONE_USER;
 
     AuthInfo(const rgw_user& acct_user,
              const std::string& acct_name,
@@ -606,14 +621,23 @@ public:
              const acct_privilege_t level,
              const std::string access_key_id,
              const std::string subuser,
-             const uint32_t acct_type=TYPE_NONE)
+             const std::string keystone_user,
+             const uint32_t acct_type=TYPE_NONE,
+             std::optional<rgw::keystone::ScopeInfo> keystone_scope=std::nullopt,
+             std::vector<std::string> keystone_roles = {},
+             const std::string keystone_user_id = {}
+            )
     : acct_user(acct_user),
       acct_name(acct_name),
       perm_mask(perm_mask),
       is_admin(acct_privilege_t::IS_ADMIN_ACCT == level),
       acct_type(acct_type),
       access_key_id(access_key_id),
-      subuser(subuser) {
+      subuser(subuser),
+      keystone_user(keystone_user),
+      keystone_scope(std::move(keystone_scope)),
+      keystone_roles(std::move(keystone_roles)),
+      keystone_user_id(keystone_user_id) {
     }
   };
 
@@ -675,6 +699,9 @@ public:
   void modify_request_state(const DoutPrefixProvider* dpp, req_state* s) const override;
   void write_ops_log_entry(rgw_log_entry& entry) const override;
   uint32_t get_identity_type() const override { return info.acct_type; }
+
+  std::optional<rgw::ARN> get_caller_identity() const override;
+
   std::string get_acct_name() const override { return info.acct_name; }
   std::string get_subuser() const override { return {}; }
   const std::string& get_tenant() const override {
@@ -745,6 +772,19 @@ public:
   auto load_acct_info(const DoutPrefixProvider* dpp) const -> std::unique_ptr<rgw::sal::User> override; /* out */
   void modify_request_state(const DoutPrefixProvider* dpp, req_state* s) const override;
   uint32_t get_identity_type() const override { return user_info.type; }
+
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    bool has_account_id = !user_info.account_id.empty();
+    std::string acct = has_account_id ? user_info.account_id : user_info.user_id.tenant;
+    if(user_info.type == TYPE_ROOT) {
+      return rgw::ARN("", "root", acct, true);
+    }
+
+    std::string username = has_account_id ? user_info.display_name : user_info.user_id.id;
+    std::string path = user_info.path.empty() ? "/" : user_info.path;
+    return rgw::ARN(string_cat_reserve(path, username), "user", acct, true);
+  }
+
   std::string get_acct_name() const override { return {}; }
   std::string get_subuser() const override { return subuser; }
   const std::string& get_tenant() const override {
@@ -824,6 +864,21 @@ public:
   void to_str(std::ostream& out) const override;
   auto load_acct_info(const DoutPrefixProvider* dpp) const -> std::unique_ptr<rgw::sal::User> override; /* out */
   uint32_t get_identity_type() const override { return TYPE_ROLE; }
+
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    rgw::Partition partition = rgw::Partition::aws;
+    rgw::Service service = rgw::Service::sts;
+    std::string acct;
+    if (role.account && !role.account->id.empty()) {
+      acct = role.account->id;
+    } else {
+      acct = role.tenant;
+    }
+    std::string resource = "assumed-role" + role.path + role.name + "/" + token_attrs.role_session_name;
+
+    return rgw::ARN(partition, service, "", acct, resource);
+  }
+
   std::string get_acct_name() const override { return {}; }
   std::string get_subuser() const override { return {}; }
   const std::string& get_tenant() const override { return role.tenant; }
@@ -882,6 +937,10 @@ public:
     return TYPE_RGW;
   }
 
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    return std::nullopt;
+  }
+
   std::string get_acct_name() const override {
     return {};
   }
@@ -929,9 +988,47 @@ protected:
   }
 };
 
+// A Principal-only identity disconnected from any backends for use in
+// testing and utilities.
+class PrincipalIdentity : public Identity {
+  const Principal id;
+public:
+
+  explicit PrincipalIdentity(Principal&& id) : id(std::move(id)) {}
+
+  // These exist to meet the interface requirement but are
+  // unimplemented and will `abort()`.
+  ACLOwner get_aclowner() const override;
+  uint32_t get_perms_from_aclspec(const DoutPrefixProvider* dpp, const aclspec_t& aclspec) const override;
+  bool is_admin() const override;
+  bool is_owner_of(const rgw_owner& owner) const override;
+  bool is_root() const override;
+  uint32_t get_perm_mask() const override;
+  std::string get_acct_name() const override;
+  std::string get_subuser() const override;
+  const std::string& get_tenant() const override;
+  const std::optional<RGWAccountInfo>& get_account() const override;
+  void to_str(std::ostream& out) const override;
+
+  // Predict whether the server would consider this identity to match a
+  // policy principal `p`, mirroring the structural matching in
+  // rgw::auth::LocalApplier::is_identity (users) and
+  // RoleApplier::is_identity (roles and assumed-role sessions) as far as
+  // the tool's Principal-only identity model allows.
+  bool is_identity(const Principal& p) const override;
+
+  // A role or an assumed-role session evaluates trust policies
+  // through the TYPE_ROLE branch of Statement::eval_principal;
+  // reflect that so rather than always reporting TYPE_RGW.
+  uint32_t get_identity_type() const override;
+  std::optional<rgw::ARN> get_caller_identity() const override;
+};
+
+
 } /* namespace auth */
 } /* namespace rgw */
 
+template <> struct fmt::formatter<rgw::auth::Identity> : ostream_formatter {};
 
 uint32_t rgw_perms_from_aclspec_default_strategy(
   const std::string& uid,

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -19,6 +20,7 @@
 #include "messages/MMonCommand.h"
 
 #include "include/stringify.h"
+#include "include/util.h" // for dump_services()
 #include "mgr/MgrContext.h"
 #include "mgr/mgr_commands.h"
 #include "OSDMonitor.h"
@@ -27,6 +29,8 @@
 #include "Monitor.h"
 #include "Paxos.h"
 
+#include "common/debug.h"
+#include "common/errno.h"
 #include "common/TextTable.h"
 #include "include/stringify.h"
 
@@ -97,6 +101,7 @@ static const std::map<uint32_t, std::set<std::string>>& always_on_modules() {
     { CEPH_RELEASE_REEF, octopus_modules },
     { CEPH_RELEASE_SQUID, octopus_modules },
     { CEPH_RELEASE_TENTACLE, octopus_modules },
+    { CEPH_RELEASE_UMBRELLA, octopus_modules },
   };
   return always_on_modules_map;
 };
@@ -726,7 +731,7 @@ void MgrMonitor::on_active()
     return;
   }
   mon.clog->debug() << "mgrmap e" << map.epoch << ": " << map;
-  assert(HAVE_FEATURE(mon.get_quorum_con_features(), SERVER_NAUTILUS));
+  ceph_assert(HAVE_FEATURE(mon.get_quorum_con_features(), SERVER_NAUTILUS));
   if (pending_map.always_on_modules == always_on_modules()) {
     return;
   }

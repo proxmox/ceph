@@ -60,7 +60,8 @@ interface MonitorResponse {
 @Component({
   selector: 'cd-pool-form',
   templateUrl: './pool-form.component.html',
-  styleUrls: ['./pool-form.component.scss']
+  styleUrls: ['./pool-form.component.scss'],
+  standalone: false
 })
 export class PoolFormComponent extends CdForm implements OnInit {
   private static readonly DEFAULT_RULE_NAME = 'replicated_rule';
@@ -382,11 +383,13 @@ export class PoolFormComponent extends CdForm implements OnInit {
     this.data.pgs = this.form.getValue('pgNum');
     this.data.applications.selected = pool.application_metadata;
     this.setAvailableApps(this.data.applications.default.concat(pool.application_metadata));
-    this.rbdMirroringService
-      .getPool(pool.pool_name)
-      .subscribe((resp: PoolEditModeResponseModel) => {
-        this.form.get('rbdMirroring').setValue(resp.mirror_mode === 'pool');
-      });
+    if (this.permissions?.rbdMirroring?.read) {
+      this.rbdMirroringService
+        .getPool(pool.pool_name)
+        .subscribe((resp: PoolEditModeResponseModel) => {
+          this.form.get('rbdMirroring').setValue(resp.mirror_mode === 'pool');
+        });
+    }
   }
 
   private setAvailableApps(apps: string[] = this.data.applications.default) {
@@ -944,7 +947,16 @@ export class PoolFormComponent extends CdForm implements OnInit {
         formControlName: 'ecOverwrites',
         replaceFn: () => (this.isErasure ? ['ec_overwrites'] : undefined)
       });
-
+      if (this.editing) {
+        this.assignFormFields(pool, [
+          {
+            externalFieldName: 'srcpool',
+            formControlName: 'name',
+            editable: true,
+            replaceFn: () => this.data.pool.pool_name
+          }
+        ]);
+      }
       if (this.form.getValue('mode') !== 'none') {
         this.assignFormFields(pool, [
           {
@@ -992,12 +1004,6 @@ export class PoolFormComponent extends CdForm implements OnInit {
             formControlName: 'mode',
             editable: true,
             replaceFn: () => 'unset' // Is used if no compression is set
-          },
-          {
-            externalFieldName: 'srcpool',
-            formControlName: 'name',
-            editable: true,
-            replaceFn: () => this.data.pool.pool_name
           }
         ]);
       }

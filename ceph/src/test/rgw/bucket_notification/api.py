@@ -10,6 +10,7 @@ from urllib import parse as urlparse
 from time import gmtime, strftime
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 import os
 import subprocess
 import json
@@ -210,19 +211,28 @@ class S3Connection:
         self.endpoint_url = f'{protocol}://{host}:{port}'
 
         # Create boto3 client and resource
+        # Use path-style addressing to match the old boto OrdinaryCallingFormat
         self._s3_client = boto3.client(
             's3',
             endpoint_url=self.endpoint_url,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
-            config=boto3.session.Config(retries={'max_attempts': self.num_retries})
+            config=Config(
+                retries={'max_attempts': self.num_retries},
+                s3={'addressing_style': 'path'},
+                max_pool_connections=50
+            )
         )
 
         self._s3_resource = boto3.resource(
             's3',
             endpoint_url=self.endpoint_url,
             aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key
+            aws_secret_access_key=aws_secret_access_key,
+            config=Config(
+                s3={'addressing_style': 'path'},
+                max_pool_connections=50
+            )
         )
 
         # For SSL connections
@@ -230,9 +240,8 @@ class S3Connection:
 
     def create_bucket(self, bucket_name, **kwargs):
         """Create a bucket"""
-        acl = kwargs.get('ACL', 'private')
         try:
-            self._s3_client.create_bucket(Bucket=bucket_name, ACL=acl)
+            self._s3_client.create_bucket(Bucket=bucket_name)
         except ClientError as e:
             # Bucket might already exist
             if e.response['Error']['Code'] != 'BucketAlreadyOwnedByYou':
@@ -255,7 +264,8 @@ def put_object_tagging(conn, bucket_name, key, tags):
     client = boto3.client('s3',
             endpoint_url='http://'+conn.host+':'+str(conn.port),
             aws_access_key_id=conn.aws_access_key_id,
-            aws_secret_access_key=conn.aws_secret_access_key)
+            aws_secret_access_key=conn.aws_secret_access_key,
+            config=Config(s3={'addressing_style': 'path'}))
     return client.put_object(Body='aaaaaaaaaaa', Bucket=bucket_name, Key=key, Tagging=tags)
 
 def make_request(conn, method, resource, parameters=None, sign_parameters=False, extra_parameters=None):
@@ -295,7 +305,8 @@ def delete_all_objects(conn, bucket_name):
     client = boto3.client('s3',
                       endpoint_url='http://'+conn.host+':'+str(conn.port),
                       aws_access_key_id=conn.aws_access_key_id,
-                      aws_secret_access_key=conn.aws_secret_access_key)
+                      aws_secret_access_key=conn.aws_secret_access_key,
+                      config=Config(s3={'addressing_style': 'path'}))
 
     objects = []
     for key in client.list_objects(Bucket=bucket_name)['Contents']:
@@ -315,7 +326,6 @@ class PSTopicS3:
     def __init__(self, conn, topic_name, region, endpoint_args=None, opaque_data=None, policy_text=None):
         self.conn = conn
         self.topic_name = topic_name.strip()
-        assert self.topic_name
         self.topic_arn = ''
         self.attributes = {}
         if endpoint_args is not None:
@@ -426,7 +436,8 @@ class PSNotificationS3:
         self.client = boto3.client('s3',
                                    endpoint_url='http://'+conn.host+':'+str(conn.port),
                                    aws_access_key_id=conn.aws_access_key_id,
-                                   aws_secret_access_key=conn.aws_secret_access_key)
+                                   aws_secret_access_key=conn.aws_secret_access_key,
+                                   config=Config(s3={'addressing_style': 'path'}))
 
     def send_request(self, method, parameters=None):
         """send request to radosgw"""
@@ -475,18 +486,33 @@ def admin(args, cluster='noname', **kwargs):
     cmd = [test_path + 'test-rgw-call.sh', 'call_rgw_admin', cluster] + args
     return bash(cmd, **kwargs)
 
+def ceph_admin(args, cluster='noname', **kwargs):
+    """ ceph command """
+    cmd = [test_path + 'test-rgw-call.sh', 'call_ceph', cluster] + args
+    return bash(cmd, **kwargs)
+
 def delete_all_topics(conn, tenant, cluster):
     """ delete all topics """
     if tenant == '':
         topics_result = admin(['topic', 'list'], cluster)
         topics_json = json.loads(topics_result[0])
-        for topic in topics_json:
-            rm_result = admin(['topic', 'rm', '--topic', topic['name']], cluster)
-            print(rm_result)
+        try:
+            for topic in topics_json['topics']:
+                admin(['topic', 'rm', '--topic', topic['name']], cluster)
+        except TypeError:
+            for topic in topics_json:
+                admin(['topic', 'rm', '--topic', topic['name']], cluster)
     else:
         topics_result = admin(['topic', 'list', '--tenant', tenant], cluster)
         topics_json = json.loads(topics_result[0])
-        for topic in topics_json:
-            rm_result = admin(['topic', 'rm', '--tenant', tenant, '--topic', topic['name']], cluster)
-            print(rm_result)
+        try:
+            for topic in topics_json['topics']:
+                admin(['topic', 'rm', '--tenant', tenant, '--topic', topic['name']], cluster)
+        except TypeError:
+            for topic in topics_json:
+                admin(['topic', 'rm', '--tenant', tenant, '--topic', topic['name']], cluster)
 
+def set_rgw_config_option(client, option, value, cluster='noname'):
+    """ change a config option """
+    print(f'Setting {option} to {value} for {client} in cluster {cluster}')
+    return ceph_admin(['config', 'set', client, option, str(value)], cluster)

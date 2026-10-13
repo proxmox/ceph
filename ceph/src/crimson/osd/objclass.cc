@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <cstdarg>
 #include <cstring>
@@ -436,7 +436,8 @@ int cls_cxx_map_remove_range(cls_method_context_t hctx,
 int cls_cxx_map_remove_key(cls_method_context_t hctx, const string &key)
 {
   OSDOp op{CEPH_OSD_OP_OMAPRMKEYS};
-  std::vector<string> to_rm{key};
+  std::set<std::string> to_rm;
+  to_rm.insert(key);
   encode(to_rm, op.indata);
   return execute_osd_op(hctx, op);
 }

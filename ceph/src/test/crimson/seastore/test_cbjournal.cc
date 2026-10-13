@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/crimson/gtest_seastar.h"
 
@@ -142,7 +142,7 @@ struct cbjournal_test_t : public seastar_test_suite_t, JournalTrimmer
   uint64_t block_size;
   WritePipeline pipeline;
 
-  cbjournal_test_t() = default;
+  cbjournal_test_t() : JournalTrimmer(true) {}
 
   /*
    * JournalTrimmer interfaces
@@ -198,7 +198,10 @@ struct cbjournal_test_t : public seastar_test_suite_t, JournalTrimmer
   }
 
   seastar::future<> tear_down_fut() final {
-    return close();
+    return close(
+    ).then([this] {
+      cbj.reset();
+    });
   }
 
   extent_t generate_extent(size_t blocks) {
@@ -284,7 +287,7 @@ struct cbjournal_test_t : public seastar_test_suite_t, JournalTrimmer
     });
   }
   seastar::future<> close() {
-    return cbj->close().handle_error(crimson::ct_error::assert_all{});
+    return cbj->close().handle_error(crimson::ct_error::assert_all("unexpected error"));
   }
   auto get_records_available_size() {
     return cbj->get_cjs().get_records_available_size();
@@ -328,7 +331,7 @@ struct cbjournal_test_t : public seastar_test_suite_t, JournalTrimmer
   seastar::future<> set_up_fut() final {
     device = random_block_device::create_test_ephemeral(
      random_block_device::DEFAULT_TEST_CBJOURNAL_SIZE, 0);
-    cbj.reset(new CircularBoundedJournal(*this, device.get(), std::string()));
+    cbj.reset(new CircularBoundedJournal(0, *this, device.get(), std::string()));
     block_size = device->get_block_size();
     cbj->set_write_pipeline(&pipeline);
     return mkfs(
@@ -340,7 +343,7 @@ struct cbjournal_test_t : public seastar_test_suite_t, JournalTrimmer
 	  return replay();
 	});
       });
-    }).handle_error(crimson::ct_error::assert_all{});
+    }).handle_error(crimson::ct_error::assert_all("unexpected error"));
   }
 };
 

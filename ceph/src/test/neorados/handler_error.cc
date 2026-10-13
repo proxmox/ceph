@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -22,7 +23,7 @@
 
 #include "include/neorados/RADOS.hpp"
 
-#include "cls/version/cls_version_types.h"
+#include "cls/version/cls_version_ops.h"
 
 #include "test/neorados/common_tests.h"
 
@@ -39,7 +40,8 @@ CORO_TEST_F(neocls_handler_error, test_handler_error, NeoRadosTest)
 
   {
     neorados::ReadOp op;
-    op.exec("version", "read", {},
+    bufferlist bl;
+    op.exec(::cls::version::method::read, std::move(bl),
 	    [](sys::error_code ec, const buffer::list& bl) {
 	      throw buffer::end_of_buffer{};
 	    });
@@ -50,7 +52,8 @@ CORO_TEST_F(neocls_handler_error, test_handler_error, NeoRadosTest)
 
   {
     neorados::ReadOp op;
-    op.exec("version", "read", {},
+    bufferlist bl;
+    op.exec(::cls::version::method::read, std::move(bl),
 	    [](sys::error_code ec, const buffer::list& bl) {
 	      throw std::exception();
 	    });

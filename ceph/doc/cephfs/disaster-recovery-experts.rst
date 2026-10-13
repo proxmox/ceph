@@ -20,9 +20,8 @@ Advanced: Metadata repair tools
 .. note:: The Ceph file system must be offline before metadata repair tools can
    be used on it. The tools will complain if they are invoked when the file
    system is online. If any of the recovery steps do not complete successfully,
-   DO NOT proceeed to run any more recovery steps. If any recovery step fails,
-   seek help from experts via mailing lists and IRC channels and Slack
-   channels.
+   DO NOT proceed to run any more recovery steps. If any recovery step fails,
+   seek help from experts via mailing lists or IRC/Slack channels.
 
 Journal export
 --------------
@@ -67,6 +66,18 @@ are now in use. In simple cases, this will result in an entirely valid backing
 store state.
 
 .. warning::
+   
+    Large journal sizes can cause the tool's Resident Set Size (RSS) to spike
+    significantly. Use the ``--max-rss <bytes>`` flag to limit memory usage, keeping the following
+    in mind:
+
+    * **Performance Impact:** Do not set this value too low. Restricting memory excessively will
+        severely degrade runtime performance and prolong the recovery process.
+    * **30% Buffer Rule:** Maintain a safety buffer of at least 30% relative to the tool's total
+        memory budget. For example, if 100 GiB can be allotted to the tool, cap its RSS limit at
+        70 GiB: ``--max-rss 75161927680``.
+
+.. warning::
 
     The resulting state of the backing store is not guaranteed to be
     self-consistent, and an online MDS scrub will be required afterwards. The
@@ -90,7 +101,7 @@ file system has or had multiple active MDS daemons.
    journal data has been extracted by other means such as ``recover_dentries``.
    Resetting the journal is likely to leave orphaned objects in the data pool
    and could result in the re-allocation of already-written inodes resulting in
-   faulty behaviour of the file system (bugs, etc..).
+   faulty behavior of the file system (bugs, etc..).
 
 MDS table wipes
 ---------------
@@ -199,6 +210,47 @@ Recovery from missing metadata objects
 
 Depending on which objects are missing or corrupt, you may need to run
 additional commands to regenerate default versions of the objects.
+
+Note the data scan tool can be time consuming. To enable progress updates
+during its operation, enable the cli_api tool.
+
+.. prompt:: bash #
+
+    ceph mgr module enable cli_api
+
+Track progress with ceph status command which will give an estimated completion
+time for long running tasks.
+
+.. prompt:: bash #
+
+    ceph -s
+
+The data scan tools (``scan_extents``, ``scan_inodes``, and ``scan_links``)
+will automatically report their progress to the Ceph Manager if the ``cli_api``
+module is enabled. Progress updates include:
+
+- Number of objects processed and total objects
+- Completion percentage
+- Estimated time to completion (ETA)
+- Average processing rate
+
+Progress is updated approximately every 5 seconds and will appear in the output
+of ``ceph -s`` under the "Progress" section. Each scan operation creates a
+unique progress event identified by the operation name and process ID.
+
+.. note:: The ``ceph`` command must be in your system PATH for progress updates
+   to function. If progress updates are not appearing in ``ceph -s``, verify
+   that:
+
+   - The ``cli_api`` Manager module is enabled
+   - The ``ceph`` command is available in your PATH
+   - Your ``CEPH_CONF`` environment variable (if set) points to a valid
+     configuration file
+
+Progress updates will be automatically disabled if the system cannot
+communicate with the Ceph Manager or if the required module is not available.
+Console output will continue to show local progress information even if
+Manager updates are disabled.
 
 If the root inode or MDS directory (``~mdsdir``) is missing or corrupt, run the following command: 
 
@@ -361,7 +413,7 @@ at recovery since the existing metadata pool would not be modified.
 
 #. Create a recovery file system. This recovery file system will be used to
    recover the data in the damaged pool. First, the filesystem will have a data
-   pool deployed for it. Then you will attacha new metadata pool to the new
+   pool deployed for it. Then you will attach a new metadata pool to the new
    data pool. Then you will set the new metadata pool to be backed by the old
    data pool. 
 
@@ -376,7 +428,7 @@ at recovery since the existing metadata pool would not be modified.
       The ``--recover`` flag prevents any MDS daemon from joining the new file
       system.
 
-#. Create the intial metadata for the file system:
+#. Create the initial metadata for the file system:
 
    .. prompt:: bash #
 

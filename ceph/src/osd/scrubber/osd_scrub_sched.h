@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 // clang-format off
@@ -140,6 +140,8 @@ class ScrubSchedListener {
    */
   virtual AsyncReserver<spg_t, Finisher>& get_scrub_reserver() = 0;
 
+  virtual uint64_t get_snap_trim_queue_total() const = 0;
+
   virtual ~ScrubSchedListener() {}
 };
 
@@ -198,7 +200,7 @@ class ScrubQueue {
   std::ostream& gen_prefix(std::ostream& out, std::string_view fn) const;
 
  public:
-  void dump_scrubs(ceph::Formatter* f) const;
+  void dump_scrubs(ceph::Formatter& f) const;
 
   void for_each_job(
       std::function<void(const Scrub::SchedEntry&)> fn,

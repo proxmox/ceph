@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -112,10 +112,12 @@ using JournalRef = std::unique_ptr<Journal>;
 namespace journal {
 
 JournalRef make_segmented(
+  store_index_t store_index,
   SegmentProvider &provider,
   JournalTrimmer &trimmer);
 
 JournalRef make_circularbounded(
+  store_index_t store_index,
   JournalTrimmer &trimmer,
   crimson::os::seastore::random_block_device::RBMDevice* device,
   std::string path);

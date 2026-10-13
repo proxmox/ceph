@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -701,10 +702,12 @@ Session* SessionMapStore::get_or_add_session(const entity_inst_t& i) {
   return s;
 }
 
-void SessionMapStore::generate_test_instances(std::list<SessionMapStore*>& ls)
+std::list<SessionMapStore> SessionMapStore::generate_test_instances()
 {
+  std::list<SessionMapStore> ls;
   // pretty boring for now
-  ls.push_back(new SessionMapStore());
+  ls.push_back(SessionMapStore());
+  return ls;
 }
 
 void SessionMap::wipe()
@@ -1300,10 +1303,16 @@ int SessionFilter::parse(
       if (v == "*") {
         // evict all clients , by default id set to 0
         return 0;
-      } else if (v == "0") {
-        *ss << "Invalid value";
-        return -EINVAL;
-      }
+      } else {
+        try {
+          if (!std::stoi(v)) {
+            *ss << "Invalid value";
+            return -EINVAL; } 
+          } catch (...) {
+            *ss << "Invalid input";
+            return -EINVAL;
+          }
+        }
       id = strict_strtoll(v.c_str(), 10, &err);
       if (!err.empty()) {
         *ss << err;

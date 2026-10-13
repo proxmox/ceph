@@ -13,7 +13,8 @@ import { BaseModal } from 'carbon-components-angular';
 @Component({
   selector: 'cd-rgw-user-capability-modal',
   templateUrl: './rgw-user-capability-modal.component.html',
-  styleUrls: ['./rgw-user-capability-modal.component.scss']
+  styleUrls: ['./rgw-user-capability-modal.component.scss'],
+  standalone: false
 })
 export class RgwUserCapabilityModalComponent extends BaseModal {
   /**
@@ -29,7 +30,10 @@ export class RgwUserCapabilityModalComponent extends BaseModal {
   resource: string;
   action: string;
 
-  constructor(private formBuilder: CdFormBuilder, public actionLabels: ActionLabelsI18n) {
+  constructor(
+    private formBuilder: CdFormBuilder,
+    public actionLabels: ActionLabelsI18n
+  ) {
     super();
     this.resource = $localize`capability`;
     this.createForm();

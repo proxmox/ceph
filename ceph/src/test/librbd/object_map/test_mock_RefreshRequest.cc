@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -88,7 +88,7 @@ public:
                               int r) {
     std::string oid(ObjectMap<>::object_map_name(mock_image_ctx.id, snap_id));
     auto &expect = EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                               exec(oid, _, StrEq("rbd"),
+                               exec_internal(oid, _, StrEq("rbd"),
                                     StrEq("object_map_load"), _, _, _, _));
     if (r < 0) {
       expect.WillOnce(Return(r));
@@ -130,7 +130,7 @@ public:
     std::string oid(ObjectMap<>::object_map_name(mock_image_ctx.id,
                                                  TEST_SNAP_ID));
     auto &expect = EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                               exec(oid, _, StrEq("rbd"),
+                               exec_internal(oid, _, StrEq("rbd"),
                                     StrEq("object_map_resize"), _, _, _, _));
     expect.WillOnce(Return(r));
   }

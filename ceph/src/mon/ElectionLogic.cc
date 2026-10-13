@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -13,6 +14,7 @@
  */
 
 #include "ElectionLogic.h"
+#include "ConnectionTracker.h"
 
 #include "include/ceph_assert.h"
 #include "common/dout.h"
@@ -47,7 +49,6 @@ using ceph::bufferlist;
 using ceph::decode;
 using ceph::encode;
 using ceph::Formatter;
-using ceph::JSONFormatter;
 using ceph::mono_clock;
 using ceph::mono_time;
 using ceph::timespan_str;
@@ -55,6 +56,21 @@ static ostream& _prefix(std::ostream *_dout, epoch_t epoch, ElectionOwner* elect
   return *_dout << "paxos." << elector->get_my_rank()
 		<< ").electionLogic(" <<  epoch << ") ";
 }
+
+ElectionLogic::ElectionLogic(ElectionOwner *e, election_strategy es, ConnectionTracker *t,
+			     double ipm,
+			     CephContext *c) : elector(e), peer_tracker(t), cct(c),
+					       last_election_winner(-1), last_voted_for(-1),
+					       ignore_propose_margin(ipm),
+					       stable_peer_tracker(),
+					       leader_peer_tracker(),
+					       leader_acked(-1),
+					       strategy(es),
+					       participating(true),
+					       electing_me(false) {}
+
+ElectionLogic::~ElectionLogic() noexcept = default;
+
 void ElectionLogic::init()
 {
   epoch = elector->read_persisted_epoch();
@@ -86,7 +102,7 @@ void ElectionLogic::bump_epoch(epoch_t e)
 
 void ElectionLogic::declare_standalone_victory()
 {
-  assert(elector->paxos_size() == 1 && elector->get_my_rank() == 0);
+  ceph_assert(elector->paxos_size() == 1 && elector->get_my_rank() == 0);
   init();
   bump_epoch(epoch+1);
 }

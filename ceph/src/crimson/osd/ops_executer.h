@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -337,6 +337,9 @@ private:
   }
 
   template <class Func>
+  auto do_read_attr_cache(Func&& f);
+
+  template <class Func>
   auto do_snapset_op(Func&& f) {
     ++num_read;
     return std::invoke(
@@ -352,6 +355,8 @@ private:
 
   template <class Func>
   auto do_write_op(Func&& f, modified_by m = modified_by::user);
+  template <class Func>
+  auto do_write_op_attr_cache(Func&& f, modified_by m = modified_by::user);
 
   decltype(auto) dont_do_legacy_op() {
     return crimson::ct_error::operation_not_supported::make();
@@ -449,6 +454,19 @@ public:
   }
 
   version_t get_last_user_version() const;
+
+  bool has_cloning_ctx() const {
+    return cloning_ctx != nullptr;
+  }
+
+  const hobject_t& get_cloning_coid() const {
+    ceph_assert(has_cloning_ctx());
+    return cloning_ctx->coid;
+  }
+
+  void reset_cloning_ctx() {
+    cloning_ctx.reset();
+  }
 
   ObjectContextRef prepare_clone(
     const hobject_t& coid,

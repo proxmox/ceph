@@ -18,10 +18,11 @@
     caps rm                          remove user capabilities
     dedup stats                      Display dedup statistics from the last run
     dedup estimate                   Runs dedup in estimate mode (no changes will be made)
-    dedup restart                    Restart dedup
+    dedup exec                       Execute dedup (duplicated tail objects will be deleted); must include --yes-i-really-mean-it to activate
     dedup abort                      Abort dedup
     dedup pause                      Pause dedup
     dedup resume                     Resume paused dedup
+    dedup throttle                   Throttle dedup execution
     subuser create                   create a new subuser
     subuser modify                   modify subuser
     subuser rm                       remove subuser
@@ -60,13 +61,14 @@
     object rm                        remove object; include --yes-i-really-mean-it to force removal from bucket index
     object put                       put object
     object stat                      stat an object for its metadata
+    object manifest                  display the manifest of an object, producing a list of RADOS objects containing the data
     object unlink                    unlink object from bucket index
     object rewrite                   rewrite the specified object
     object reindex                   reindex the object(s) indicated by --bucket and either --object or --objects-file
     objects expire                   run expired objects cleanup
     objects expire-stale list        list stale expired objects (caused by reshard)
     objects expire-stale rm          remove stale expired objects
-    period rm                        remove a period
+    period delete                    remove a period
     period get                       get period info
     period get-current               get current period info
     period pull                      pull a period
@@ -107,7 +109,7 @@
     zonegroup get                    show zone group info
     zonegroup modify                 modify an existing zonegroup
     zonegroup set                    set zone group info (requires infile)
-    zonegroup rm                     remove a zone from a zonegroup
+    zonegroup remove                 remove a zone from a zonegroup
     zonegroup rename                 rename a zone group
     zonegroup list                   list all zone groups set on this cluster
     zonegroup placement list         list zonegroup's placement targets
@@ -117,7 +119,7 @@
     zonegroup placement rm           remove a placement target from a zonegroup
     zonegroup placement default      set a zonegroup's default placement target
     zone create                      create a new zone
-    zone rm                          remove a zone
+    zone delete                      remove a zone
     zone get                         show zone cluster params
     zone modify                      modify an existing zone
     zone set                         set zone cluster params (requires infile)
@@ -168,7 +170,7 @@
     datalog list                     list data log
     datalog trim                     trim data log
     datalog status                   read data log status
-    datalog type                     change datalog type to --log_type={fifo,omap}
+    datalog type                     change datalog type to --log_type=fifo
     datalog semaphore list           List recovery semaphores
     datalog semaphore reset          Reset recovery semaphore (use marker)
     orphans find                     deprecated -- init and run search for leaked rados objects (use job-id, pool)
@@ -220,6 +222,9 @@
     notification list                list bucket notifications configuration
     notification get                 get a bucket notifications configuration
     notification rm                  remove a bucket notifications configuration
+    restore status                   shows restoration status of object in a bucket
+    restore list                     list restore status of each object in the bucket
+                                     can be filtered with help of --restore-status which shows objects with specified status
   options:
      --tenant=<tenant>                 tenant name
      --user_ns=<namespace>             namespace of user (oidc in case of users authenticated with oidc provider)
@@ -263,6 +268,9 @@
      --shard-id=<shard-id>             optional for:
                                          mdlog list
                                          data sync status
+                                         sync error trim
+                                         gc list
+                                         gc process
                                        required for:
                                          mdlog trim
      --gen=<gen-id>                    optional for:
@@ -314,7 +322,8 @@
      --bucket-index-max-shards         override a zone/zonegroup's default bucket index shard count
      --fix                             besides checking bucket index, will also fix it
      --check-objects                   bucket check: rebuilds bucket index according to actual objects state
-     --format=<format>                 specify output format for certain operations: xml, json
+     --format=<format>                 specify output format for certain operations: xml, json (default: json)
+     --pretty-format                   enable pretty formatting for json/xml output
      --purge-data                      when specified, user removal will also purge all the
                                        user data
      --purge-keys                      when specified, subuser removal will also purge all the
@@ -352,16 +361,29 @@
   
   <date> := "YYYY-MM-DD[ hh:mm:ss]"
   
+  Dedup throttle options:
+     --max-bucket-index-ops        specify max bucket-index requests per second allowed for an RGW during dedup, 0 means unlimited
+     --max-metadata-ops            specify max metadata requests per second allowed for an RGW during dedup, 0 means unlimited
+     --stat                        display dedup throttle setting
+  
+  Dedup filter options:
+     --allow-bucket-list=<file>    file with bucket names to allow in dedup (mutually exclusive with --deny-bucket-list)
+     --deny-bucket-list=<file>     file with bucket names to deny in dedup (mutually exclusive with --allow-bucket-list)
+     --allow-storage-class-list=<file> file with storage class names to allow in dedup (mutually exclusive with --deny-storage-class-list)
+     --deny-storage-class-list=<file>  file with storage class names to deny in dedup (mutually exclusive with --allow-storage-class-list)
+  
   Quota options:
      --max-objects                 specify max objects (negative value to disable)
      --max-size                    specify max size (in B/K/M/G/T, negative value to disable)
      --quota-scope                 scope of quota (bucket, user, account)
   
   Rate limiting options:
-     --max-read-ops                specify max requests per minute for READ ops per RGW (GET and HEAD request methods), 0 means unlimited
-     --max-read-bytes              specify max bytes per minute for READ ops per RGW (GET and HEAD request methods), 0 means unlimited
-     --max-write-ops               specify max requests per minute for WRITE ops per RGW (Not GET or HEAD request methods), 0 means unlimited
-     --max-write-bytes             specify max bytes per minute for WRITE ops per RGW (Not GET or HEAD request methods), 0 means unlimited
+     --max-read-ops                specify max requests per accumulation interval for READ ops per RGW (GET and HEAD request methods), 0 means unlimited
+     --max-read-bytes              specify max bytes per accumulation interval for READ ops per RGW (GET and HEAD request methods), 0 means unlimited
+     --max-write-ops               specify max requests per accumulation interval for WRITE ops per RGW (Not GET or HEAD request methods), 0 means unlimited
+     --max-write-bytes             specify max bytes per accumulation interval for WRITE ops per RGW (Not GET or HEAD request methods), 0 means unlimited
+     --max-list-ops                specify max requests per accumulation interval for bucket listing requests per RGW, 0 means unlimited
+     --max-delete-ops              specify max requests per accumulation interval for DELETE ops per RGW (DELETE request methods), 0 means unlimited
      --ratelimit-scope             scope of rate limiting: bucket, user, anonymous
                                    anonymous can be configured only with global rate limit
   
@@ -396,7 +418,7 @@
      --notification-id             bucket notifications id
   
   Script options:
-     --context                     context in which the script runs. one of: prerequest, postrequest, background, getdata, putdata
+     --context                     context in which the script runs. one of: prerequest, postauth, postrequest, background, getdata, putdata
      --package                     name of the Lua package that should be added/removed to/from the allowlist
      --allow-compilation           package is allowed to compile C code as part of its installation
   
@@ -411,7 +433,12 @@
   
   Bucket list objects options:
      --max-entries                 max number of entries listed (default 1000)
-     --marker                      the marker used to specify on which entry the listing begins, default none (i.e., very first entry)
+     --marker                      object name marker to specify where listing begins (default: start from beginning)
+                                   requires ordered listing (do not use with --allow-unordered)
+     --object-version              for versioned buckets: specify the version/instance ID to start from
+                                   use together with --marker to paginate through versioned buckets
+                                   example: --marker=obj1 --object-version=abc123def456
+     --show-restore-stats          if the flag is in present it will show restores stats in the bucket stats command
   
     --conf/-c FILE    read configuration from the given configuration file
     --id ID           set ID portion of my name

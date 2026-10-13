@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -92,7 +92,7 @@ public:
 
   void expect_add_child(MockImageCtx &mock_image_ctx, int r) {
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(RBD_CHILDREN, _, StrEq("rbd"), StrEq("add_child"), _, _, _,
+                exec_internal(RBD_CHILDREN, _, StrEq("rbd"), StrEq("add_child"), _, _, _,
                      _))
       .WillOnce(Return(r));
   }
@@ -119,7 +119,7 @@ public:
     encode(static_cast<uint64_t>(RBD_OPERATION_FEATURE_CLONE_CHILD), bl);
 
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(util::header_name(mock_image_ctx.id), _, StrEq("rbd"),
+                exec_internal(util::header_name(mock_image_ctx.id), _, StrEq("rbd"),
                      StrEq("op_features_set"), ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));
   }
@@ -131,7 +131,7 @@ public:
            bl);
 
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(mock_image_ctx.header_oid, _, StrEq("rbd"),
+                exec_internal(mock_image_ctx.header_oid, _, StrEq("rbd"),
                      StrEq("child_attach"), ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));
   }

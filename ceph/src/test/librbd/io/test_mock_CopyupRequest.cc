@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -245,7 +245,7 @@ struct TestMockIoCopyupRequest : public TestMockFixture {
     auto& mock_io_ctx = librados::get_mock_io_ctx(
       mock_image_ctx.rados_api, *mock_image_ctx.get_data_io_context());
     EXPECT_CALL(mock_io_ctx,
-                exec(oid, _, StrEq("rbd"), StrEq("copyup"),
+                exec_internal(oid, _, StrEq("rbd"), StrEq("copyup"),
                      ContentsEqual(in_bl), _, _, snapc))
       .WillOnce(Return(r));
   }
@@ -269,7 +269,7 @@ struct TestMockIoCopyupRequest : public TestMockFixture {
     auto& mock_io_ctx = librados::get_mock_io_ctx(
       mock_image_ctx.rados_api, *mock_image_ctx.get_data_io_context());
     EXPECT_CALL(mock_io_ctx,
-                exec(oid, _, StrEq("rbd"), StrEq("sparse_copyup"),
+                exec_internal(oid, _, StrEq("rbd"), StrEq("sparse_copyup"),
                      ContentsEqual(in_bl), _, _, snapc))
       .WillOnce(Return(r));
   }

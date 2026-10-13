@@ -10,22 +10,30 @@ import {
   ButtonModule,
   GridModule,
   ProgressIndicatorModule,
+  InlineLoadingModule,
   InputModule,
+  LoadingModule,
   ModalModule,
   TreeviewModule,
   ListModule,
   ToggletipModule,
   IconModule,
+  IconService,
   TagModule,
   SelectModule,
   LayoutModule,
   NumberModule,
   FileUploaderModule,
+  TabsModule,
   RadioModule,
   TilesModule,
-  LayerModule
+  LayerModule,
+  AccordionModule
 } from 'carbon-components-angular';
-
+import Analytics from '@carbon/icons/es/analytics/16';
+import CloseFilled from '@carbon/icons/es/close--filled/16';
+import ProgressBarRoundIcon from '@carbon/icons/es/progress-bar--round/32';
+import Connect from '@carbon/icons/es/connect/32';
 import {
   NgbActiveModal,
   NgbDatepickerModule,
@@ -46,6 +54,10 @@ import { ConfigurationDetailsComponent } from './configuration/configuration-det
 import { ConfigurationFormComponent } from './configuration/configuration-form/configuration-form.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
 import { CreateClusterReviewComponent } from './create-cluster/create-cluster-review.component';
+import { CreateClusterStep1Component } from './create-cluster/create-cluster-step-1/create-cluster-step-1.component';
+import { CreateClusterStep2Component } from './create-cluster/create-cluster-step-2/create-cluster-step-2.component';
+import { CreateClusterStep3Component } from './create-cluster/create-cluster-step-3/create-cluster-step-3.component';
+import { CreateClusterStep4Component } from './create-cluster/create-cluster-step-4/create-cluster-step-4.component';
 import { CreateClusterComponent } from './create-cluster/create-cluster.component';
 import { CrushmapComponent } from './crushmap/crushmap.component';
 import { HostDetailsComponent } from './hosts/host-details/host-details.component';
@@ -76,6 +88,7 @@ import { SilenceListComponent } from './prometheus/silence-list/silence-list.com
 import { SilenceMatcherModalComponent } from './prometheus/silence-matcher-modal/silence-matcher-modal.component';
 import { PlacementPipe } from './services/placement.pipe';
 import { ServiceDaemonListComponent } from './services/service-daemon-list/service-daemon-list.component';
+import { ServiceCertificateDetailsComponent } from './services/service-cert-details/service-certificate-details.component';
 import { ServiceDetailsComponent } from './services/service-details/service-details.component';
 import { ServiceFormComponent } from './services/service-form/service-form.component';
 import { ServicesComponent } from './services/services.component';
@@ -117,12 +130,15 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     GridModule,
     ProgressIndicatorModule,
     ButtonModule,
+    InlineLoadingModule,
     InputModule,
+    LoadingModule,
     ModalModule,
     ListModule,
     ToggletipModule,
     IconModule,
     TagModule,
+    TabsModule,
     TextLabelListComponent,
     SelectModule,
     LayoutModule,
@@ -130,7 +146,8 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     FileUploaderModule,
     RadioModule,
     TilesModule,
-    LayerModule
+    LayerModule,
+    AccordionModule
   ],
   declarations: [
     MonitorComponent,
@@ -163,6 +180,7 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     ActiveAlertListComponent,
     ServiceDetailsComponent,
     ServiceDaemonListComponent,
+    ServiceCertificateDetailsComponent,
     TelemetryComponent,
     PrometheusTabsComponent,
     ServiceFormComponent,
@@ -170,6 +188,10 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     PlacementPipe,
     CreateClusterComponent,
     CreateClusterReviewComponent,
+    CreateClusterStep1Component,
+    CreateClusterStep2Component,
+    CreateClusterStep3Component,
+    CreateClusterStep4Component,
     UpgradeComponent,
     UpgradeStartModalComponent,
     UpgradeProgressComponent,
@@ -181,4 +203,8 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
   ],
   providers: [NgbActiveModal]
 })
-export class ClusterModule {}
+export class ClusterModule {
+  constructor(private iconService: IconService) {
+    this.iconService.registerAll([Analytics, CloseFilled, ProgressBarRoundIcon, Connect]);
+  }
+}

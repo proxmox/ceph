@@ -7,7 +7,7 @@ HTTP Frontends
 .. contents::
 
 The Ceph Object Gateway supports two embedded HTTP frontend libraries
-that can be configured with ``rgw_frontends``. See `Config Reference`_
+that can be configured with ``rgw_frontends``. See :ref:`radosgw-config-ref`
 for details about the syntax.
 
 Beast
@@ -16,14 +16,14 @@ Beast
 .. versionadded:: Mimic
 
 The ``beast`` frontend uses the Boost.Beast library for HTTP parsing
-and the Boost.Asio library for asynchronous network i/o.
+and the Boost.Asio library for asynchronous network I/O.
 
 Options
 -------
 
 ``port`` and ``ssl_port``
 
-:Description: Sets the ipv4 & ipv6 listening port number. Can be specified multiple
+:Description: Sets the IPv4 & IPv6 listening port number. Can be specified multiple
               times as in ``port=80 port=8000``.
 :Type: Integer
 :Default: ``80``
@@ -34,7 +34,7 @@ Options
 :Description: Sets the listening address in the form ``address[:port]``, where
               the address is an IPv4 address string in dotted decimal form, or
               an IPv6 address in hexadecimal notation surrounded by square
-              brackets. Specifying a IPv6 endpoint would listen to v6 only. The
+              brackets. Specifying an IPv6 endpoint would listen to IPv6 only. The
               optional port defaults to 80 for ``endpoint`` and 443 for
               ``ssl_endpoint``. Can be specified multiple times as in
               ``endpoint=[::1] endpoint=192.168.0.100:8000``.
@@ -47,7 +47,7 @@ Options
 
 :Description: Path to the SSL certificate file used for SSL-enabled endpoints.
               If path is prefixed with ``config://``, the certificate will be
-              pulled from the ceph monitor ``config-key`` database.
+              pulled from the Ceph Monitor ``config-key`` database.
 
 :Type: String
 :Default: None
@@ -59,14 +59,25 @@ Options
               endpoints. If one is not given, the ``ssl_certificate`` file
               is used as the private key.
               If path is prefixed with ``config://``, the certificate will be
-              pulled from the ceph monitor ``config-key`` database.
+              pulled from the Ceph Monitor ``config-key`` database.
 
 :Type: String
 :Default: None
 
+``ssl_reload``
+
+:Description: Optional interval in seconds to periodically recreate the SSL
+              context, which reloads the SSL certificate and private key from
+              their specified paths. A value of ``0`` disables this feature.
+              The reload is non-disruptive to existing connections. If the
+              reload fails, the previous context continues to be used.
+
+:Type: Integer
+:Default: ``0``
+
 ``ssl_options``
 
-:Description: Optional colon separated list of ssl context options:
+:Description: Optional colon separated list of SSL context options:
 
               ``default_workarounds`` Implement various bug workarounds.
 
@@ -98,18 +109,29 @@ Options
 :Type: String
 :Default: None
 
+``tls_groups``
+
+:Description: Optional list of one or more `TLS Group`_ strings separated by colons.
+              The pseudo group name ``DEFAULT`` can be used to select the OpenSSL
+              built-in default list of groups. Other valid group names will depend on
+              OpenSSL version. As of OpenSSL 3.5, names can be listed with commands
+              ``openssl list -tls-groups`` and ``openssl list -all-tls-groups``.
+
+:Type: String
+:Default: None
+
 ``tcp_nodelay``
 
 :Description: If set the socket option will disable Nagle's algorithm on 
               the connection which means that packets will be sent as soon 
               as possible instead of waiting for a full buffer or timeout to occur.
 
-              ``1`` Disable Nagel's algorithm for all sockets.
+              ``1`` Disable Nagle's algorithm for all sockets.
 
-              ``0`` Keep the default: Nagel's algorithm enabled.
+              ``0`` Keep the default: Nagle's algorithm enabled.
 
 :Type: Integer (0 or 1)
-:Default: 0
+:Default: ``0``
 
 ``max_connection_backlog``
 
@@ -122,9 +144,9 @@ Options
 
 ``request_timeout_ms``
 
-:Description: The amount of time in milliseconds that Beast will wait
+:Description: The amount of time in milliseconds that ``beast`` will wait
               for more incoming data or outgoing data before giving up.
-              Setting this value to 0 will disable timeout.
+              Setting this value to ``0`` will disable timeout.
 
 :Type: Integer
 :Default: ``65000``
@@ -146,7 +168,7 @@ Options
               ``0`` Disallow running multiple RGW on same port.
 
 :Type: Integer (0 or 1)
-:Default: 0
+:Default: ``0``
 
 
 Generic Options
@@ -158,10 +180,10 @@ Some frontend options are generic and supported by all frontends:
 
 :Description: A prefix string that is inserted into the URI of all
               requests. For example, a swift-only frontend could supply
-              a uri prefix of ``/swift``.
+              a URI prefix of ``/swift``.
 
 :Type: String
 :Default: None
 
 
-.. _Config Reference: ../config-ref
+.. _TLS Group: https://openssl-library.org/post/2022-10-21-tls-groups-configuration/

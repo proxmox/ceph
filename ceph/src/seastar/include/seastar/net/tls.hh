@@ -20,13 +20,11 @@
  */
 #pragma once
 
-#ifndef SEASTAR_MODULE
 #include <functional>
 #include <unordered_set>
 #include <map>
 #include <any>
 #include <fmt/format.h>
-#endif
 
 #include <seastar/core/future.hh>
 #include <seastar/core/internal/api-level.hh>
@@ -35,7 +33,6 @@
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/inet_address.hh>
 #include <seastar/util/std-compat.hh>
-#include <seastar/util/modules.hh>
 #include <seastar/net/api.hh>
 
 namespace seastar {
@@ -56,7 +53,6 @@ class socket_address;
  * with OpenSSL or similar.
  *
  */
-SEASTAR_MODULE_EXPORT
 namespace tls {
 
     enum class x509_crt_format {
@@ -280,6 +276,12 @@ namespace tls {
          * a new window of TLS session keys.
         */
         void set_session_resume_mode(session_resume_mode);
+
+        /**
+         * Sets Application-Layer Protocol Name (ALPN) supported by the server,
+         * in preference order.
+         */
+        void set_alpn_protocols(const std::vector<sstring>& protocols);
     };
 
     class reloadable_credentials_base;
@@ -315,7 +317,20 @@ namespace tls {
         future<> set_system_trust();
         void set_client_auth(client_auth);
         void set_priority_string(const sstring&);
+        /**
+         * Sets session resume mode to be applied to all created server credential sets
+         * Note: setting this will generate a session key that will be reused across all
+         * built server credentials, i.e. they will share resume key.
+         * If you wish to reuse a builder to create disparate server crendentials,
+         * simply call this method again to regenerate the key.
+         */
         void set_session_resume_mode(session_resume_mode);
+
+        /**
+         * Sets Application-Layer Protocol Name (ALPN) supported by the server,
+         * in preference order.
+         */
+        void set_alpn_protocols(const std::vector<sstring>& protocols);
 
         void apply_to(certificate_credentials&) const;
 
@@ -335,18 +350,33 @@ namespace tls {
     private:
         friend class reloadable_credentials_base;
 
-        std::multimap<sstring, std::any> _blobs;
+        std::multimap<std::string_view, std::any> _blobs;
         client_auth _client_auth = client_auth::NONE;
         session_resume_mode _session_resume_mode = session_resume_mode::NONE;
         sstring _priority;
+        std::vector<uint8_t> _session_resume_key;
+        std::vector<sstring> _alpn_protocols;
     };
 
     using session_data = std::vector<uint8_t>;
 
     /// TLS configuration options
     struct tls_options {
+    private:
+        struct deprecated_wait_for_eof_on_shutdown {
+            bool _value = true;
+            deprecated_wait_for_eof_on_shutdown() noexcept : _value(true) {}
+            [[deprecated("Use tls::options::bye_timeout instead")]]
+            deprecated_wait_for_eof_on_shutdown(bool value) noexcept : _value(value) {}
+            [[deprecated("Use tls::options::bye_timeout instead")]]
+            void operator=(bool value) noexcept { _value = value; }
+            [[deprecated("Use tls::options::bye_timeout instead")]]
+            operator bool() const noexcept { return _value; }
+        };
+
+    public:
         /// \brief whether to wait for EOF from server on session termination
-        bool wait_for_eof_on_shutdown = true;
+        deprecated_wait_for_eof_on_shutdown wait_for_eof_on_shutdown;
         /// \brief server name to be used for the SNI TLS extension
         sstring server_name = {};
 
@@ -357,6 +387,20 @@ namespace tls {
         /// \brief Optional session resume data. Must be retrieved via
         /// get_session_resume_data below.
         session_data session_resume_data;
+
+        /// \brief Optional list of ALPN protocols to offer to the server,
+        /// in order of preference.
+        std::vector<sstring> alpn_protocols;
+
+        // \brief Time to wait for correct session wrap-up
+        // If set to zero, the TLS-level closing is not performed, the
+        // connection is just aborted
+        std::chrono::seconds bye_timeout = std::chrono::seconds(10);
+
+        // \brief Whether or not to pick up any unread data during shutdown
+        // When false and any data arrives at the socket, the connection is
+        // immediately aborted without waiting for graceful wrap-up
+        bool wait_for_data_on_shutdown = false;
     };
 
     /**
@@ -463,6 +507,13 @@ namespace tls {
     future<std::optional<session_dn>> get_dn_information(connected_socket& socket);
 
     /**
+     * Force a re-handshake (session key renegotiotion on TLS1.3).
+     * Can only be called on a server side socket.
+     * Mainly for testing purposes.
+     */
+    future<> force_rehandshake(connected_socket& socket);
+
+    /**
      * Subject alt name types.
     */
     enum class subject_alt_name_type {
@@ -528,6 +579,15 @@ namespace tls {
      * delay this call to sometime before shutting down/closing the socket.
     */
     future<session_data> get_session_resume_data(connected_socket&);
+
+    /**
+     * Gets the Application-Layer Protocol Name (ALPN) selected during the TLS handshake.
+     * Will force handshake if not already done.
+     *
+     * If the socket is not connected a system_error exception will be thrown.
+     * If the socket is not a TLS socket an exception will be thrown.
+    */
+    future<std::optional<sstring>> get_selected_alpn_protocol(connected_socket&);
 
     std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
     std::ostream& operator<<(std::ostream&, const subject_alt_name&);

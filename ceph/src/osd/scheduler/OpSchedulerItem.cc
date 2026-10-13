@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -18,11 +19,6 @@
 
 
 namespace ceph::osd::scheduler {
-
-std::ostream& operator<<(std::ostream& out, const op_scheduler_class& class_id) {
-  out << static_cast<size_t>(class_id);
-  return out;
-}
 
 void PGOpItem::run(
   OSD *osd,

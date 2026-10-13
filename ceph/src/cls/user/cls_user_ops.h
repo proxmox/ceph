@@ -1,10 +1,11 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_CLS_USER_OPS_H
 #define CEPH_CLS_USER_OPS_H
 
 #include "cls_user_types.h"
+#include "include/rados/cls_traits.hpp"
 
 struct cls_user_set_buckets_op {
   std::list<cls_user_bucket_entry> entries;
@@ -30,7 +31,7 @@ struct cls_user_set_buckets_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_set_buckets_op*>& ls);
+  static std::list<cls_user_set_buckets_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_set_buckets_op)
 
@@ -52,7 +53,7 @@ struct cls_user_remove_bucket_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_remove_bucket_op*>& ls);
+  static std::list<cls_user_remove_bucket_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_remove_bucket_op)
 
@@ -84,7 +85,7 @@ struct cls_user_list_buckets_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_list_buckets_op*>& ls);
+  static std::list<cls_user_list_buckets_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_list_buckets_op)
 
@@ -112,7 +113,7 @@ struct cls_user_list_buckets_ret {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_list_buckets_ret*>& ls);
+  static std::list<cls_user_list_buckets_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_list_buckets_ret)
 
@@ -131,7 +132,7 @@ struct cls_user_get_header_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_get_header_op*>& ls);
+  static std::list<cls_user_get_header_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_get_header_op)
 
@@ -152,7 +153,7 @@ struct cls_user_reset_stats_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_reset_stats_op*>& ls);
+  static std::list<cls_user_reset_stats_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_reset_stats_op);
 
@@ -180,7 +181,7 @@ struct cls_user_reset_stats2_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_reset_stats2_op*>& ls);
+  static std::list<cls_user_reset_stats2_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_reset_stats2_op);
 
@@ -214,8 +215,7 @@ struct cls_user_reset_stats2_ret {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(
-    std::list<cls_user_reset_stats2_ret*>& ls);
+  static std::list<cls_user_reset_stats2_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_reset_stats2_ret);
 
@@ -237,7 +237,7 @@ struct cls_user_get_header_ret {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_get_header_ret*>& ls);
+  static std::list<cls_user_get_header_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_get_header_ret)
 
@@ -259,7 +259,7 @@ struct cls_user_complete_stats_sync_op {
   }
 
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<cls_user_complete_stats_sync_op*>& ls);
+  static std::list<cls_user_complete_stats_sync_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_complete_stats_sync_op)
 
@@ -285,7 +285,7 @@ struct cls_user_account_resource_add_op {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_add_op*>& ls);
+  static std::list<cls_user_account_resource_add_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_add_op)
 
@@ -304,7 +304,7 @@ struct cls_user_account_resource_get_op {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_get_op*>& ls);
+  static std::list<cls_user_account_resource_get_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_get_op)
 
@@ -323,7 +323,7 @@ struct cls_user_account_resource_get_ret {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_get_ret*>& ls);
+  static std::list<cls_user_account_resource_get_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_get_ret)
 
@@ -342,7 +342,7 @@ struct cls_user_account_resource_rm_op {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_rm_op*>& ls);
+  static std::list<cls_user_account_resource_rm_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_rm_op)
 
@@ -367,7 +367,7 @@ struct cls_user_account_resource_list_op {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_list_op*>& ls);
+  static std::list<cls_user_account_resource_list_op> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_list_op)
 
@@ -392,8 +392,27 @@ struct cls_user_account_resource_list_ret {
   }
 
   void dump(ceph::Formatter* f) const;
-  static void generate_test_instances(std::list<cls_user_account_resource_list_ret*>& ls);
+  static std::list<cls_user_account_resource_list_ret> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(cls_user_account_resource_list_ret)
+
+namespace cls::user {
+struct ClassId {
+  static constexpr auto name = "user";
+};
+namespace method {
+constexpr auto set_buckets_info = ClsMethod<RdWrTag, ClassId>("set_buckets_info");
+constexpr auto complete_stats_sync = ClsMethod<RdWrTag, ClassId>("complete_stats_sync");
+constexpr auto remove_bucket = ClsMethod<RdWrTag, ClassId>("remove_bucket");
+constexpr auto list_buckets = ClsMethod<RdTag, ClassId>("list_buckets");
+constexpr auto get_header = ClsMethod<RdTag, ClassId>("get_header");
+constexpr auto reset_user_stats = ClsMethod<RdWrTag, ClassId>("reset_user_stats");
+constexpr auto reset_user_stats2 = ClsMethod<RdWrTag, ClassId>("reset_user_stats2");
+constexpr auto account_resource_add = ClsMethod<RdWrTag, ClassId>("account_resource_add");
+constexpr auto account_resource_get = ClsMethod<RdTag, ClassId>("account_resource_get");
+constexpr auto account_resource_rm = ClsMethod<RdWrTag, ClassId>("account_resource_rm");
+constexpr auto account_resource_list = ClsMethod<RdTag, ClassId>("account_resource_list");
+}
+}
 
 #endif

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -56,6 +56,13 @@ struct get_child_ret_t {
   get_child_ifut<ChildT> &get_child_fut() {
     ceph_assert(ret.index() == 1);
     return std::get<1>(ret);
+  }
+
+  template <typename T>
+  get_child_ifut<T> get_child_fut_as() {
+    return std::move(get_child_fut()).si_then([](auto e) {
+      return e->template cast<T>();
+    });
   }
 };
 
@@ -196,15 +203,22 @@ public:
   bool is_parent_valid() const {
     return parent_tracker && parent_tracker->is_valid();
   }
-  TCachedExtentRef<ParentT> get_parent_node() const {
+  // this method should only be used for asserts and logs, because
+  // the parent node might be stable writing and should "wait_io"
+  // before further access
+  TCachedExtentRef<ParentT> peek_parent_node() const {
     assert(parent_tracker);
     return parent_tracker->get_parent();
   }
   virtual key_t node_begin() const = 0;
+  virtual bool _is_pending_io() const = 0;
+  virtual bool _is_mutable() const = 0;
+  virtual bool _is_exist_clean() const = 0;
+  virtual bool _is_exist_mutation_pending() const = 0;
 protected:
   parent_tracker_ref<ParentT> parent_tracker;
-  virtual bool valid() const = 0;
-  virtual bool pending() const = 0;
+  virtual bool _is_valid() const = 0;
+  virtual bool _is_stable() const = 0;
   template <typename, typename, typename>
   friend class ParentNode;
 };
@@ -246,8 +260,13 @@ public:
       return ext->template cast<T>();
     });
   }
-  virtual bool is_viewable_extent_data_stable(Transaction &, CachedExtentRef) = 0;
-  virtual bool is_viewable_extent_stable(Transaction &, CachedExtentRef) = 0;
+  virtual CachedExtentRef get_extent_viewable_by_trans_sync(
+    Transaction &t,
+    CachedExtentRef extent) = 0;
+  virtual get_child_iertr::future<> maybe_wait_accessible(
+    Transaction &, CachedExtent&) = 0;
+  virtual CachedExtentRef peek_extent_viewable_by_trans(
+    Transaction &t, CachedExtentRef extent) = 0;
   virtual ~ExtentTransViewRetriever() {}
 protected:
   virtual get_child_iertr::future<CachedExtentRef> get_extent_viewable_by_trans(
@@ -299,27 +318,43 @@ class ParentNode {
    * 	cannot be rewritten) because their parents must be mutated upon remapping.
    */
 public:
-  TCachedExtentRef<T> find_pending_version(Transaction &t, node_key_t key) {
+  std::pair<bool, TCachedExtentRef<T>> resolve_transaction(
+    Transaction &t, node_key_t key) {
     auto &me = down_cast();
-    assert(me.is_stable());
-    auto mut_iter = me.mutation_pending_extents.find(
-      t.get_trans_id(), trans_spec_view_t::cmp_t());
-    if (mut_iter != me.mutation_pending_extents.end()) {
-      assert(copy_dests_by_trans.find(t.get_trans_id()) ==
-	copy_dests_by_trans.end());
-      return static_cast<T*>(&(*mut_iter));
+    ceph_assert(me.is_valid());
+    auto [viewable, state] = me.is_viewable_by_trans(t);
+    if (viewable) {
+      return {viewable, &me};
     }
-    auto iter = copy_dests_by_trans.find(
-      t.get_trans_id(), trans_spec_view_t::cmp_t());
-    ceph_assert(iter != copy_dests_by_trans.end());
-    auto &copy_dests = static_cast<copy_dests_t&>(*iter);
-    auto it = copy_dests.dests_by_key.lower_bound(key);
-    if (it == copy_dests.dests_by_key.end() || (*it)->get_begin() > key) {
-      ceph_assert(it != copy_dests.dests_by_key.begin());
-      --it;
+    return {viewable, find_pending_version(t, key, state)};
+  }
+
+  template <typename ChildT>
+  TCachedExtentRef<ChildT> get_child_sync(
+    Transaction &t,
+    ExtentTransViewRetriever &etvr,
+    btreenode_pos_t pos,
+    node_key_t key)
+  {
+    auto &me = down_cast();
+    assert(children.capacity());
+    assert(key == down_cast().iter_idx(pos).get_key());
+    auto child = children[pos];
+    ceph_assert(!is_reserved_ptr(child));
+    if (is_valid_child_ptr(child)) {
+      auto ret = etvr.get_extent_viewable_by_trans_sync(
+        t, static_cast<ChildT*>(child));
+      return ret->template cast<ChildT>();
+    } else {
+      assert(me.is_pending());
+      auto &sparent = me.get_stable_for_key(key);
+      auto spos = sparent.lower_bound(key).get_offset();
+      child = sparent.children[spos];
+      assert(is_valid_child_ptr(child));
+      auto ret = etvr.get_extent_viewable_by_trans_sync(
+        t, static_cast<ChildT*>(child));
+      return ret->template cast<ChildT>();
     }
-    ceph_assert((*it)->get_begin() <= key && key < (*it)->get_end());
-    return *it;
   }
 
   template <typename ChildT>
@@ -336,14 +371,14 @@ public:
     ceph_assert(!is_reserved_ptr(child));
     if (is_valid_child_ptr(child)) {
       return etvr.get_extent_viewable_by_trans<ChildT>(
-	t, static_cast<ChildT*>(child));
+        t, static_cast<ChildT*>(child));
     } else if (me.is_pending()) {
       auto &sparent = me.get_stable_for_key(key);
       auto spos = sparent.lower_bound(key).get_offset();
       auto child = sparent.children[spos];
       if (is_valid_child_ptr(child)) {
-	return etvr.get_extent_viewable_by_trans<ChildT>(
-	  t, static_cast<ChildT*>(child));
+        return etvr.get_extent_viewable_by_trans<ChildT>(
+          t, static_cast<ChildT*>(child));
       } else {
 	return child_pos_t<T>(&sparent, spos);
       }
@@ -357,9 +392,11 @@ public:
     assert(pos < me.get_size());
     assert(pos < children.capacity());
     assert(child);
-    ceph_assert(!me.is_pending());
-    assert(child->valid() && !child->pending());
-    assert(!children[pos]);
+    ceph_assert(me.is_stable());
+    assert(child->_is_stable());
+    if (unlikely(children[pos] != nullptr)) {
+      assert(is_valid_child_ptr(children[pos]));
+    }
     ceph_assert(is_valid_child_ptr(child));
     update_child_ptr(pos, child);
   }
@@ -392,6 +429,37 @@ public:
     set_child_ptracker(child);
   }
 
+  // copy dests points from a stable node back to its pending nodes
+  // having copy sources at the same tree level, it serves as a two-level index:
+  // transaction-id then node-key to the pending node.
+  //
+  // The copy dest pointers must be symmetric to the copy source pointers.
+  //
+  // copy_dests_t will be automatically unregisterred upon transaction destruction,
+  // see Transaction::views
+  struct copy_dests_t : trans_spec_view_t {
+    std::set<TCachedExtentRef<T>, Comparator> dests_by_key;
+    copy_dests_t(Transaction &t) : trans_spec_view_t{t.get_trans_id()} {}
+    ~copy_dests_t() {
+      LOG_PREFIX(~copy_dests_t);
+      SUBTRACE(seastore_fixedkv_tree, "copy_dests_t destroyed");
+    }
+  };
+
+  const copy_dests_t *get_copy_dests(Transaction &t) {
+    auto iter = copy_dests_by_trans.find(
+      t.get_trans_id(), trans_spec_view_t::cmp_t());
+    if (iter == copy_dests_by_trans.end()) {
+      return nullptr;
+    } else {
+      return static_cast<copy_dests_t*>(&*iter);
+    }
+  }
+
+  void reset_child_ptr(btreenode_pos_t pos) {
+    children[pos] = get_reserved_ptr<T, node_key_t>();
+  }
+
 protected:
   ParentNode(btreenode_pos_t capacity)
     : children(capacity, nullptr) {}
@@ -401,6 +469,44 @@ protected:
     auto &me = down_cast();
     maybe_expand_children(me.get_size());
   }
+
+  TCachedExtentRef<T> find_pending_version(
+    Transaction &t, node_key_t key, CachedExtent::viewable_state_t &hint) {
+    auto &me = down_cast();
+    assert(me.is_stable());
+    if (hint == CachedExtent::viewable_state_t::stable_become_pending) {
+      auto mut_iter = me.mutation_pending_extents.find(
+	t.get_trans_id(), trans_spec_view_t::cmp_t());
+      assert(mut_iter != me.mutation_pending_extents.end());
+      assert(copy_dests_by_trans.find(t.get_trans_id()) ==
+	copy_dests_by_trans.end());
+      return static_cast<T*>(&(*mut_iter));
+    }
+    ceph_assert(hint == CachedExtent::viewable_state_t::stable_become_retired);
+    auto iter = copy_dests_by_trans.find(
+      t.get_trans_id(), trans_spec_view_t::cmp_t());
+    ceph_assert(iter != copy_dests_by_trans.end());
+    auto &copy_dests = static_cast<copy_dests_t&>(*iter);
+    auto it = copy_dests.dests_by_key.lower_bound(key);
+    if (it == copy_dests.dests_by_key.end() || (*it)->get_begin() > key) {
+      ceph_assert(it != copy_dests.dests_by_key.begin());
+      --it;
+    }
+    ceph_assert((*it)->get_begin() <= key && key < (*it)->get_end());
+    return *it;
+  }
+
+  template <typename Func>
+  void for_each_copy_dest_set(Transaction &t, Func &&f) {
+    for (auto &dests : copy_dests_by_trans) {
+      if (dests.pending_for_transaction == t.get_trans_id()) {
+        continue;
+      }
+      auto &copy_dests = static_cast<copy_dests_t&>(dests);
+      std::invoke(f, copy_dests);
+    }
+  }
+
   void add_copy_dest(Transaction &t, TCachedExtentRef<T> dest) {
     ceph_assert(down_cast().is_stable());
     ceph_assert(dest->is_pending());
@@ -457,7 +563,7 @@ protected:
 
   void on_rewrite(Transaction &t, T &foreign_extent) {
     auto &me = down_cast();
-    if (!foreign_extent.is_pending()) {
+    if (foreign_extent.is_stable()) {
       foreign_extent.add_copy_dest(t, &me);
       copy_sources.emplace(&foreign_extent);
     } else {
@@ -505,7 +611,7 @@ protected:
     T &src)
   {
     ceph_assert(dest.is_initial_pending());
-    if (!src.is_pending()) {
+    if (src.is_stable()) {
       src.add_copy_dest(t, &dest);
       dest.copy_sources.emplace(&src);
     } else if (src.is_mutation_pending()) {
@@ -635,7 +741,7 @@ protected:
     size_t l_size = left.get_size();
     size_t r_size = right.get_size();
 
-    ceph_assert(pivot_idx != l_size && pivot_idx != r_size);
+    ceph_assert(pivot_idx != l_size);
     replacement_left.maybe_expand_children(pivot_idx);
     replacement_right.maybe_expand_children(r_size + l_size - pivot_idx);
 
@@ -710,7 +816,7 @@ protected:
     for (auto it = children.begin();
 	it != children.begin() + down_cast().get_size();
 	it++) {
-      if (is_valid_child_ptr(*it) && (*it)->valid()) {
+      if (is_valid_child_ptr(*it) && (*it)->_is_valid()) {
 	return false;
       }
     }
@@ -785,7 +891,7 @@ protected:
 	auto& copy_source = *it;
 	auto end_pos = copy_source->get_size();
 	if (copy_source->is_in_range(me.get_end())) {
-	  end_pos = copy_source->upper_bound(me.get_end()).get_offset();
+	  end_pos = copy_source->lower_bound(me.get_end()).get_offset();
 	}
 	auto local_start_iter = me.iter_idx(local_next_pos);
 	auto foreign_start_iter = copy_source->iter_idx(start_pos);
@@ -864,57 +970,73 @@ protected:
     assert(me.validate_stable_children());
   }
 
+  CachedExtentRef peek_child(
+    Transaction &t,
+    ExtentTransViewRetriever &etvr,
+    btreenode_pos_t pos,
+    node_key_t key) const
+  {
+    auto &me = down_cast();
+    assert(children.capacity());
+    assert(key == down_cast().iter_idx(pos).get_key());
+    auto child = children[pos];
+    if (is_reserved_ptr(child)) {
+      return nullptr;
+    } else if (is_valid_child_ptr(child)) {
+      return etvr.peek_extent_viewable_by_trans(
+	t, dynamic_cast<CachedExtent*>(child));
+    } else if (me.is_pending()) {
+      auto &sparent = me.get_stable_for_key(key);
+      auto spos = sparent.lower_bound(key).get_offset();
+      auto child = sparent.children[spos];
+      if (is_valid_child_ptr(child)) {
+	return etvr.peek_extent_viewable_by_trans(
+	  t, dynamic_cast<CachedExtent*>(child));
+      } else {
+	return nullptr;
+      }
+    } else {
+      return nullptr;
+    }
+  }
+
   // children are considered stable if any of the following case is true:
   // 1. The child extent is absent in cache
   // 2. The child extent is (data) stable
   //
   // For reserved mappings, the return values are undefined.
-  bool _is_child_stable(
+  bool is_child_stable(
     Transaction &t,
     ExtentTransViewRetriever &etvr,
     btreenode_pos_t pos,
     node_key_t key,
     bool data_only = false) const {
-    auto &me = down_cast();
-    assert(key == me.iter_idx(pos).get_key());
-    auto child = this->children[pos];
-    if (is_reserved_ptr(child)) {
+    auto extent = peek_child(t, etvr, pos, key);
+    if (!extent) {
       return true;
-    } else if (is_valid_child_ptr(child)) {
-      assert(dynamic_cast<CachedExtent*>(child)->is_logical());
-      assert(
-	dynamic_cast<CachedExtent*>(child)->is_pending_in_trans(t.get_trans_id())
-	|| me.is_stable_written());
-      if (data_only) {
-	return etvr.is_viewable_extent_data_stable(
-	  t, dynamic_cast<CachedExtent*>(child));
-      } else {
-	return etvr.is_viewable_extent_stable(
-	  t, dynamic_cast<CachedExtent*>(child));
-      }
-    } else if (me.is_pending()) {
-      auto key = me.iter_idx(pos).get_key();
-      auto &sparent = me.get_stable_for_key(key);
-      auto spos = sparent.lower_bound(key).get_offset();
-      auto child = sparent.children[spos];
-      if (is_valid_child_ptr(child)) {
-	assert(dynamic_cast<CachedExtent*>(child)->is_logical());
-	if (data_only) {
-	  return etvr.is_viewable_extent_data_stable(
-	    t, dynamic_cast<CachedExtent*>(child));
-	} else {
-	  return etvr.is_viewable_extent_stable(
-	    t, dynamic_cast<CachedExtent*>(child));
-	}
-      } else {
-	return true;
-      }
+    }
+    if (data_only) {
+      return extent->is_data_stable();
     } else {
-      return true;
+      return extent->is_stable();
     }
   }
 
+  bool is_child_initial_pending(
+    Transaction &t,
+    ExtentTransViewRetriever &etvr,
+    btreenode_pos_t pos,
+    node_key_t key) const {
+    auto extent = peek_child(t, etvr, pos, key);
+    if (!extent) {
+      return false;
+    }
+    return extent->is_initial_pending();
+  }
+
   parent_tracker_t<T>* my_tracker = nullptr;
+  std::vector<BaseChildNode<T, node_key_t>*> children;
+
 private:
   T& down_cast() {
     return *static_cast<T*>(this);
@@ -943,25 +1065,7 @@ private:
     }
   }
 
-  std::vector<BaseChildNode<T, node_key_t>*> children;
   std::set<TCachedExtentRef<T>, Comparator> copy_sources;
-
-  // copy dests points from a stable node back to its pending nodes
-  // having copy sources at the same tree level, it serves as a two-level index:
-  // transaction-id then node-key to the pending node.
-  //
-  // The copy dest pointers must be symmetric to the copy source pointers.
-  //
-  // copy_dests_t will be automatically unregisterred upon transaction destruction,
-  // see Transaction::views
-  struct copy_dests_t : trans_spec_view_t {
-    std::set<TCachedExtentRef<T>, Comparator> dests_by_key;
-    copy_dests_t(Transaction &t) : trans_spec_view_t{t.get_trans_id()} {}
-    ~copy_dests_t() {
-      LOG_PREFIX(~copy_dests_t);
-      SUBTRACE(seastore_fixedkv_tree, "copy_dests_t destroyed");
-    }
-  };
 
   using trans_view_set_t = trans_spec_view_t::trans_view_set_t;
   trans_view_set_t copy_dests_by_trans;
@@ -982,6 +1086,24 @@ private:
 // as the parents, so they are ChildNodes.
 template <typename ParentT, typename T, typename key_t>
 class ChildNode : public BaseChildNode<ParentT, key_t> {
+public:
+  using get_parent_node_iertr = get_child_iertr;
+  using get_parent_node_ret =
+    get_parent_node_iertr::future<TCachedExtentRef<ParentT>>;
+  get_parent_node_ret get_parent_node(
+    Transaction &t,
+    ExtentTransViewRetriever &etvr)
+  {
+    auto &me = down_cast();
+    if (this->has_parent_tracker()) {
+      return this->_get_parent_node(t, etvr, me.get_begin());
+    } else {
+      assert(me.is_mutation_pending());
+      auto prior = me.get_prior_instance()->template cast<T>();
+      return prior->_get_parent_node(t, etvr, prior->get_begin());
+    }
+  }
+
 protected:
   void on_invalidated() {
     this->reset_parent_tracker();
@@ -999,7 +1121,7 @@ protected:
     assert(!down_cast().is_btree_root());
     assert(this->has_parent_tracker());
     auto off = get_parent_pos();
-    auto parent = this->get_parent_node();
+    auto parent = this->peek_parent_node();
     assert(parent->children[off] == &down_cast());
     parent->children[off] = nullptr;
   }
@@ -1011,6 +1133,19 @@ private:
     return *static_cast<const T*>(this);
   }
 
+  get_parent_node_ret _get_parent_node(
+    Transaction &t,
+    ExtentTransViewRetriever &etvr,
+    key_t key)
+  {
+    return etvr.maybe_wait_accessible(
+      t, *this->peek_parent_node()
+    ).si_then([&t, key, this] {
+      auto parent = this->peek_parent_node();
+      return parent->resolve_transaction(t, key).second;
+    });
+  }
+
   void _take_parent_from_prior() {
     auto &me = down_cast();
     assert(!me.is_btree_root());
@@ -1018,7 +1153,7 @@ private:
     this->parent_tracker = prior.BaseChildNode<ParentT, key_t>::parent_tracker;
     assert(this->has_parent_tracker());
     auto off = get_parent_pos();
-    auto parent = this->get_parent_node();
+    auto parent = this->peek_parent_node();
     assert(me.get_prior_instance().get() ==
 	   dynamic_cast<CachedExtent*>(parent->children[off]));
     parent->children[off] = &me;
@@ -1026,7 +1161,7 @@ private:
 
   btreenode_pos_t get_parent_pos() const {
     auto &me = down_cast();
-    auto parent = this->get_parent_node();
+    auto parent = this->peek_parent_node();
     assert(parent);
     //TODO: can this search be avoided?
     auto key = me.get_begin();
@@ -1038,11 +1173,23 @@ private:
     assert(iter.get_key() == me.get_begin());
     return iter.get_offset();
   }
-  bool valid() const final {
+  bool _is_valid() const final {
     return down_cast().is_valid();
   }
-  bool pending() const final {
-    return down_cast().is_pending();
+  bool _is_stable() const final {
+    return down_cast().is_stable();
+  }
+  bool _is_mutable() const final {
+    return down_cast().is_mutable();
+  }
+  bool _is_exist_clean() const final {
+    return down_cast().is_exist_clean();
+  }
+  bool _is_exist_mutation_pending() const final {
+    return down_cast().is_exist_mutation_pending();
+  }
+  bool _is_pending_io() const final {
+    return down_cast().is_pending_io();
   }
   key_t node_begin() const final {
     return down_cast().get_begin();

@@ -88,6 +88,16 @@ class TestBaseObjectStore:
         bo.osd_id = '123'
         assert bo.get_osd_path() == '/var/lib/ceph/osd/ceph-123/'
 
+    def test_get_default_entrypoint_cmd_classic(self):
+        bo = BaseObjectStore([])
+        bo.osd_type = 'classic'
+        assert bo.get_default_entrypoint_cmd() == 'ceph-osd'
+
+    def test_get_default_entrypoint_cmd_crimson(self):
+        bo = BaseObjectStore([])
+        bo.osd_type = 'crimson'
+        assert bo.get_default_entrypoint_cmd() == 'ceph-osd-crimson'
+
     @patch('ceph_volume.conf.cluster', 'ceph')
     def test_build_osd_mkfs_cmd_base(self):
         bo = BaseObjectStore([])
@@ -96,9 +106,36 @@ class TestBaseObjectStore:
         bo.objectstore = 'my-fake-objectstore'
         bo.osd_id = '123'
         bo.monmap = '/etc/ceph/ceph.monmap'
+        bo.osd_type = 'classic'
         result = bo.build_osd_mkfs_cmd()
 
         assert result == ['ceph-osd',
+                          '--cluster',
+                          'ceph',
+                          '--osd-objectstore',
+                          'my-fake-objectstore',
+                          '--mkfs', '-i', '123',
+                          '--monmap',
+                          '/etc/ceph/ceph.monmap',
+                          '--keyfile', '-',
+                          '--osd-data',
+                          '/var/lib/ceph/osd/ceph-123/',
+                          '--osd-uuid', 'abcd-1234',
+                          '--setuser', 'ceph',
+                          '--setgroup', 'ceph']
+
+    @patch('ceph_volume.conf.cluster', 'ceph')
+    def test_build_osd_mkfs_cmd_crimson(self):
+        bo = BaseObjectStore([])
+        bo.osd_path = '/var/lib/ceph/osd/ceph-123/'
+        bo.osd_fsid = 'abcd-1234'
+        bo.objectstore = 'my-fake-objectstore'
+        bo.osd_id = '123'
+        bo.monmap = '/etc/ceph/ceph.monmap'
+        bo.osd_type = 'crimson'
+        result = bo.build_osd_mkfs_cmd()
+
+        assert result == ['ceph-osd-crimson',
                           '--cluster',
                           'ceph',
                           '--osd-objectstore',

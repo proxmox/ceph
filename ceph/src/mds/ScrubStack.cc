@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -17,7 +18,7 @@
 #include "RetryMessage.h"
 #include "SnapRealm.h"
 #include "common/debug.h"
-#include "common/Formatter.h"
+#include "common/JSONFormatter.h"
 #include "mds/MDLog.h"
 #include "mds/MDSRank.h"
 #include "mds/MDCache.h"
@@ -539,8 +540,8 @@ void ScrubStack::scrub_dirfrag(CDir *dir, bool *added_children, bool *done)
 	continue;
       }
       if (dnl->is_primary()) {
-  *added_children = true;
-	_enqueue(dnl->get_inode(), header, true);
+	_enqueue(dnl->get_inode(), header, false);
+        *added_children = true;
       } else if (dnl->is_remote()) {
         identify_remote_link_damage(dn);
       }
@@ -1013,6 +1014,7 @@ void ScrubStack::handle_scrub(const cref_t<MMDSScrub> &m)
       ceph_assert(diri);
 
       std::vector<CDir*> dfs;
+      bool has_dirty_dirfrag = false;
       MDSGatherBuilder gather(g_ceph_context);
       frag_vec_t frags;
       diri->dirfragtree.get_leaves(frags);
@@ -1035,6 +1037,10 @@ void ScrubStack::handle_scrub(const cref_t<MMDSScrub> &m)
 	    dout(10) << __func__ << " can't auth pin " << *dir <<  dendl;
 	    dir->add_waiter(CDir::WAIT_UNFREEZE, gather.new_sub());
 	    continue;
+	  }
+          if (dir->is_dirty()) {
+            dout(10) << __func__ << " found dirty remote dirfrag " << *dir <<  dendl;
+            has_dirty_dirfrag = true;
 	  }
 	  dfs.push_back(dir);
 	}
@@ -1068,7 +1074,8 @@ void ScrubStack::handle_scrub(const cref_t<MMDSScrub> &m)
       }
 
       auto r = make_message<MMDSScrub>(MMDSScrub::OP_QUEUEDIR_ACK, m->get_ino(),
-				       std::move(queued), m->get_tag());
+				       std::move(queued), m->get_tag(),
+				       inodeno_t(), false, false, false, false, has_dirty_dirfrag);
       mdcache->mds->send_message_mds(r, from);
     }
     break;
@@ -1090,6 +1097,8 @@ void ScrubStack::handle_scrub(const cref_t<MMDSScrub> &m)
 
 	    const auto& header = diri->get_scrub_header();
 	    header->set_epoch_last_forwarded(scrub_epoch);
+	    if (m->is_remote_dirfrag_dirty())
+	      diri->mark_dirty_remote_dirfrag_scrubbed();
 	    remove_from_waiting(diri);
 	  }
 	}

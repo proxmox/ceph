@@ -7,8 +7,8 @@ set(crimson_seastore_srcs
   segment_manager/block.cc
   transaction_interruptor.cc
   transaction_manager.cc
-  transaction.cc
   cache.cc
+  extent_pinboard.cc
   root_block.cc
   lba_manager.cc
   async_cleaner.cc
@@ -20,6 +20,8 @@ set(crimson_seastore_srcs
   omap_manager.cc
   omap_manager/btree/btree_omap_manager.cc
   omap_manager/btree/omap_btree_node_impl.cc
+  omap_manager/log/log_node.cc
+  omap_manager/log/log_manager.cc
   onode.cc
   onode_manager/staged-fltree/node.cc
   onode_manager/staged-fltree/node_extent_manager.cc

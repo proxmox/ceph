@@ -1,13 +1,23 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPHFS_MIRROR_AIO_UTILS_H
 #define CEPHFS_MIRROR_AIO_UTILS_H
 
+#include "include/Context.h"
 #include "include/rados/librados.hpp"
 
 namespace cephfs {
 namespace mirror {
+
+inline void rados_ctx_callback(rados_completion_t c, void *arg) {
+  Context *on_finish = reinterpret_cast<Context *>(arg);
+  on_finish->complete(rados_aio_get_return_value(c));
+}
+
+inline librados::AioCompletion *create_rados_callback(Context *on_finish) {
+  return librados::Rados::aio_create_completion(on_finish, rados_ctx_callback);
+}
 
 template <typename T, void(T::*MF)(int)>
 void rados_callback(rados_completion_t c, void *arg) {

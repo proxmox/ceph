@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -24,45 +24,47 @@
 
 namespace crimson::os::seastore {
 
+using LBACursor = lba::LBACursor;
+using LBACursorRef = lba::LBACursorRef;
+
 /**
  * Abstract interface for managing the logical to physical mapping
  */
 class LBAManager {
 public:
-  using base_iertr = Cache::base_iertr;
-
   using mkfs_iertr = base_iertr;
   using mkfs_ret = mkfs_iertr::future<>;
   virtual mkfs_ret mkfs(
     Transaction &t
   ) = 0;
 
-  /**
-   * Fetches mappings for laddr_t in range [offset, offset + len)
-   *
-   * Future will not resolve until all pins have resolved (set_paddr called)
-   * For indirect lba mappings, get_mappings will always retrieve the original
-   * lba value.
-   */
-  using get_mappings_iertr = base_iertr;
-  using get_mappings_ret = get_mappings_iertr::future<lba_mapping_list_t>;
-  virtual get_mappings_ret get_mappings(
+  using get_cursors_iertr = base_iertr;
+  using get_cursors_ret = get_cursors_iertr::future<std::list<LBACursorRef>>;
+  virtual get_cursors_ret get_cursors(
     Transaction &t,
     laddr_t offset, extent_len_t length) = 0;
 
-  /**
-   * Fetches the mapping for laddr_t
-   *
-   * Future will not resolve until the pin has resolved (set_paddr called)
-   * For indirect lba mappings, get_mapping will always retrieve the original
-   * lba value.
-   */
-  using get_mapping_iertr = base_iertr::extend<
+  using get_cursor_iertr = base_iertr::extend<
     crimson::ct_error::enoent>;
-  using get_mapping_ret = get_mapping_iertr::future<LBAMapping>;
-  virtual get_mapping_ret get_mapping(
+  using get_cursor_ret = get_cursor_iertr::future<LBACursorRef>;
+  virtual get_cursor_ret get_cursor(
     Transaction &t,
-    laddr_t offset) = 0;
+    laddr_t offset,
+    bool search_containing = false) = 0;
+  virtual get_cursor_ret get_cursor(
+    Transaction &t,
+    LogicalChildNode &extent) = 0;
+
+  using lower_bound_ret = base_iertr::future<LBACursorRef>;
+  virtual lower_bound_ret lower_bound(
+    Transaction &t,
+    laddr_t laddr) = 0;
+
+#ifdef UNIT_TESTS_BUILT
+  using get_end_mapping_iertr = base_iertr;
+  using get_end_mapping_ret = get_end_mapping_iertr::future<LBACursorRef>;
+  virtual get_end_mapping_ret get_end_mapping(Transaction &t) = 0;
+#endif
 
   /**
    * Allocates a new mapping referenced by LBARef
@@ -72,62 +74,147 @@ public:
    * is called on the LBAMapping.
    */
   using alloc_extent_iertr = base_iertr;
-  using alloc_extent_ret = alloc_extent_iertr::future<LBAMapping>;
+  using alloc_extent_ret = alloc_extent_iertr::future<LBACursorRef>;
   virtual alloc_extent_ret alloc_extent(
     Transaction &t,
-    laddr_t hint,
+    laddr_hint_t hint,
     LogicalChildNode &nextent,
     extent_ref_count_t refcount) = 0;
 
   using alloc_extents_ret = alloc_extent_iertr::future<
-    std::vector<LBAMapping>>;
+    std::vector<LBACursorRef>>;
   virtual alloc_extents_ret alloc_extents(
     Transaction &t,
-    laddr_t hint,
+    laddr_hint_t hint,
     std::vector<LogicalChildNodeRef> extents,
     extent_ref_count_t refcount) = 0;
-
-  virtual alloc_extent_ret clone_mapping(
+  /*
+   * Allocate extents at "pos"
+   *
+   * Returns the inserted lba mappings
+   */
+  virtual alloc_extents_ret alloc_extents(
     Transaction &t,
-    laddr_t hint,
-    extent_len_t len,
-    laddr_t intermediate_key,
-    laddr_t intermediate_base) = 0;
+    LBACursorRef cursor,
+    std::vector<LogicalChildNodeRef> ext) = 0;
+
+  struct clone_mapping_ret_t {
+    LBACursorRef cloned_mapping;
+    LBACursorRef orig_mapping;
+  };
+  using clone_mapping_iertr = alloc_extent_iertr;
+  using clone_mapping_ret = clone_mapping_iertr::future<clone_mapping_ret_t>;
+  /*
+   * Clones (part of) "mapping" at the position "pos" with the new lba key "laddr".
+   */
+  virtual clone_mapping_ret clone_mapping(
+    Transaction &t,
+    LBACursorRef pos,		// the destined position
+    LBACursorRef mapping,	// the mapping to be cloned
+    laddr_t laddr,		// the new lba key of the cloned mapping
+    laddr_t inter_key,	        // offset within mapping of the target of the
+                                // clone
+    extent_len_t len,		// the length of the part to be cloned
+    bool updateref		// whether to update the refcount of the
+				// direct mapping
+  ) = 0;
+
+  struct move_mapping_ret_t {
+    LBACursorRef src;
+    LBACursorRef dest;
+  };
+  /*
+   * move_and_clone_direct_mapping
+   *
+   * move the direct mapping "src" to "dest" and clone it at the
+   * position of "src".
+   *
+   * Return: the new indirect mapping and the moved direct mapping
+   */
+  using move_mapping_iertr = alloc_extent_iertr;
+  using move_mapping_ret = move_mapping_iertr::future<move_mapping_ret_t>;
+  virtual move_mapping_ret move_and_clone_direct_mapping(
+    Transaction &t,
+    LBACursorRef src,
+    laddr_t dest_laddr,
+    LBACursorRef dest,
+    LogicalChildNode &extent) = 0;
+
+  /*
+   * move_indirect_mapping
+   *
+   * move the indirect mapping "src" to dest, and remove "src".
+   *
+   * Return: the mapping next to "src" and the original "dest"
+   */
+  virtual move_mapping_ret move_indirect_mapping(
+    Transaction &t,
+    LBACursorRef src,
+    laddr_t dest_laddr,
+    LBACursorRef dest) = 0;
+
+  /*
+   * move_direct_mapping
+   *
+   * move the indirect mapping "src" to dest, and remove "src".
+   *
+   * Return: the mapping next to "src" and the original "dest"
+   */
+  virtual move_mapping_ret move_direct_mapping(
+    Transaction &t,
+    LBACursorRef src,
+    laddr_t dest_laddr,
+    LBACursorRef dest,
+    LogicalChildNode &extent) = 0;
 
   virtual alloc_extent_ret reserve_region(
     Transaction &t,
-    laddr_t hint,
-    extent_len_t len) = 0;
+    laddr_hint_t hint,
+    extent_len_t len,
+    extent_types_t type) = 0;
 
-  struct ref_update_result_t {
-    laddr_t direct_key;
-    extent_ref_count_t refcount = 0;
-    pladdr_t addr;
-    extent_len_t length = 0;
-  };
+  /*
+   * Inserts a zero mapping at the position "pos" with
+   * the key "laddr" and length "len"
+   */
+  virtual alloc_extent_ret reserve_region(
+    Transaction &t,
+    LBACursorRef cursor,
+    laddr_t hint,
+    extent_len_t len,
+    extent_types_t type) = 0;
+
   using ref_iertr = base_iertr::extend<
     crimson::ct_error::enoent>;
-  using ref_ret = ref_iertr::future<ref_update_result_t>;
 
   /**
-   * Removes a mapping and deal with indirection
-   *
-   * @return returns resulting refcount
+   * Update ref count on mapping
    */
-  virtual ref_ret remove_mapping(
+  virtual base_iertr::future<LBACursorRef> update_mapping_refcount(
     Transaction &t,
-    laddr_t addr) = 0;
+    LBACursorRef cursor,
+    int delta) = 0;
+  ref_iertr::future<> update_mapping_refcount(
+    Transaction &t,
+    laddr_t addr,
+    int delta) {
+    auto cursor = co_await get_cursor(t, addr);
+    co_await update_mapping_refcount(t, cursor, delta);
+  }
 
   struct remap_entry_t {
     extent_len_t offset;
     extent_len_t len;
-    remap_entry_t(extent_len_t _offset, extent_len_t _len) {
-      offset = _offset;
-      len = _len;
-    }
+    LogicalChildNode* extent = nullptr;
+    remap_entry_t(
+      extent_len_t _offset,
+      extent_len_t _len,
+      LogicalChildNode *extent = nullptr)
+      : offset(_offset), len(_len), extent(extent)
+    {}
   };
   using remap_iertr = ref_iertr;
-  using remap_ret = remap_iertr::future<std::vector<LBAMapping>>;
+  using remap_ret = remap_iertr::future<std::vector<LBACursorRef>>;
 
   /**
    * remap_mappings
@@ -137,10 +224,8 @@ public:
    */
   virtual remap_ret remap_mappings(
     Transaction &t,
-    LBAMapping orig_mapping,
-    std::vector<remap_entry_t> remaps,
-    std::vector<LogicalChildNodeRef> extents  // Required if and only
-						 // if pin isn't indirect
+    LBACursorRef orig_mapping,
+    std::vector<remap_entry_t> remaps
     ) = 0;
 
   /**
@@ -195,7 +280,7 @@ public:
   using update_mapping_ret = base_iertr::future<extent_ref_count_t>;
   virtual update_mapping_ret update_mapping(
     Transaction& t,
-    laddr_t laddr,
+    LBACursorRef cursor,
     extent_len_t prev_len,
     paddr_t prev_addr,
     LogicalChildNode& nextent) = 0;
@@ -230,19 +315,43 @@ public:
     laddr_t laddr,
     extent_len_t len) = 0;
 
-  using refresh_lba_mapping_iertr = base_iertr;
-  using refresh_lba_mapping_ret = refresh_lba_mapping_iertr::future<LBAMapping>;
-  virtual refresh_lba_mapping_ret refresh_lba_mapping(
+  /*
+   * scan all extents in the tree, including logical extents
+   * and lba extents, visit them with scan_mapped_space_func_t.
+   * 
+   * Note that it's only when both the main and secondary devices
+   * are RBMs that this method can be used to scan the disk space
+   */
+  using scan_mapped_space_iertr = base_iertr;
+  using scan_mapped_space_ret = scan_mapped_space_iertr::future<>;
+  using scan_mapped_space_func_t = std::function<
+    void(paddr_t, extent_len_t, extent_types_t, laddr_t)>;
+  virtual scan_mapped_space_ret scan_mapped_space(
     Transaction &t,
-    LBAMapping mapping) = 0;
+    scan_mapped_space_func_t &&f) = 0;
 
   virtual ~LBAManager() {}
 };
 using LBAManagerRef = std::unique_ptr<LBAManager>;
 
+inline std::ostream &operator<<(
+  std::ostream &lhs,
+  const LBAManager::remap_entry_t &rhs)
+{
+  return lhs << "remap_entry_t("
+	     << "offset=0x" << std::hex << rhs.offset
+	     << ", len=0x" << rhs.len << std::dec
+	     << ", extent=" << rhs.extent
+	     << ")";
+}
+
 class Cache;
 namespace lba {
-LBAManagerRef create_lba_manager(Cache &cache);
+LBAManagerRef create_lba_manager(Cache &cache, store_index_t store_index);
 }
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::os::seastore::LBAManager::remap_entry_t> : fmt::ostream_formatter {};
+#endif

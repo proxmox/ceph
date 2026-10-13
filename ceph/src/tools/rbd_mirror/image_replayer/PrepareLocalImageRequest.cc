@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "tools/rbd_mirror/image_replayer/PrepareLocalImageRequest.h"
 #include "include/rados/librados.hpp"
@@ -153,7 +153,7 @@ void PrepareLocalImageRequest<I>::handle_get_mirror_info(int r) {
     derr << "unsupported mirror image mode " << m_mirror_image.mode << " "
          << "for image " << m_global_image_id << dendl;
     finish(-EOPNOTSUPP);
-    break;
+    return;
   }
 
   dout(10) << "local_image_id=" << m_local_image_id << ", "

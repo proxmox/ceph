@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "rgw_service.h"
 
@@ -24,6 +24,7 @@
 
 #include "account.h"
 #include "group.h"
+#include "oidc.h"
 #include "rgw_bucket.h"
 #include "rgw_cr_rados.h"
 #include "rgw_datalog.h"
@@ -53,6 +54,7 @@ int RGWServices_Def::init(CephContext *cct,
 			  bool background_tasks,
 			  optional_yield y,
                           const DoutPrefixProvider *dpp,
+                          rgw::sal::ConfigStore* cfgstore,
                           const rgw::SiteConfig* site)
 {
   bucket_sobj = std::make_unique<RGWSI_Bucket_SObj>(cct);
@@ -62,11 +64,11 @@ int RGWServices_Def::init(CephContext *cct,
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
   datalog_rados = std::make_unique<RGWDataChangesLog>(driver);
-  mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync);
+  mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync, cfgstore);
   if (have_cache) {
     notify = std::make_unique<RGWSI_Notify>(cct);
   }
-  zone = std::make_unique<RGWSI_Zone>(cct, site);
+  zone = std::make_unique<RGWSI_Zone>(cct, cfgstore, site);
   zone_utils = std::make_unique<RGWSI_ZoneUtils>(cct);
   quota = std::make_unique<RGWSI_Quota>(cct);
   sync_modules = std::make_unique<RGWSI_SyncModules>(cct);
@@ -259,12 +261,12 @@ void RGWServices_Def::shutdown()
   has_shutdown = true;
 }
 
-int RGWServices::do_init(CephContext *_cct, rgw::sal::RadosStore* driver, bool have_cache, bool raw, bool run_sync, bool background_tasks, optional_yield y, const DoutPrefixProvider *dpp, const rgw::SiteConfig& _site)
+int RGWServices::do_init(CephContext *_cct, rgw::sal::RadosStore* driver, bool have_cache, bool raw, bool run_sync, bool background_tasks, optional_yield y, const DoutPrefixProvider *dpp, const rgw::SiteConfig& _site, rgw::sal::ConfigStore* cfgstore)
 {
   cct = _cct;
   site = &_site;
 
-  int r = _svc.init(cct, driver, have_cache, raw, run_sync, background_tasks, y, dpp, site);
+  int r = _svc.init(cct, driver, have_cache, raw, run_sync, background_tasks, y, dpp, cfgstore, site);
   if (r < 0) {
     return r;
   }
@@ -349,6 +351,8 @@ int RGWCtlDef::init(RGWServices& svc, rgw::sal::Driver* driver,
       *svc.sysobj, *svc.cls, *svc.mdlog, svc.zone->get_zone_params());
   meta.role = rgwrados::role::create_metadata_handler(
       rados, *svc.sysobj, *svc.mdlog, svc.zone->get_zone_params());
+  meta.oidc = rgwrados::oidc::create_metadata_handler(
+      rados, *svc.sysobj, *svc.mdlog, svc.zone->get_zone_params());
   meta.account = rgwrados::account::create_metadata_handler(
       *svc.sysobj, svc.zone->get_zone_params());
   meta.group = rgwrados::group::create_metadata_handler(
@@ -420,6 +424,13 @@ int RGWCtl::init(RGWServices *_svc, rgw::sal::Driver* driver,
   r = meta.role->attach(meta.mgr);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start init meta.role ctl (" << cpp_strerror(-r) << dendl;
+    return r;
+  }
+
+  r = _ctl.meta.oidc->attach(meta.mgr);
+  if (r < 0) {
+    ldout(cct, 0) << "ERROR: failed to start init meta.oidc ctl ("
+                  << cpp_strerror(-r) << ")" << dendl;
     return r;
   }
 

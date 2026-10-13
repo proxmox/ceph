@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -30,7 +30,7 @@ public:
     std::string oid(ObjectMap<>::object_map_name(mock_image_ctx.id,
                                                  CEPH_NOSNAP));
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(oid, _, StrEq("lock"), StrEq("lock"), _, _, _, _))
+                exec_internal(oid, _, StrEq("lock"), StrEq("lock"), _, _, _, _))
                   .WillOnce(Return(r));
   }
 
@@ -38,7 +38,7 @@ public:
     std::string oid(ObjectMap<>::object_map_name(mock_image_ctx.id,
                                                  CEPH_NOSNAP));
     auto &expect = EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                               exec(oid, _, StrEq("lock"), StrEq("get_info"), _,
+                               exec_internal(oid, _, StrEq("lock"), StrEq("get_info"), _,
                                     _, _, _));
     if (r < 0) {
       expect.WillOnce(Return(r));
@@ -65,7 +65,7 @@ public:
     std::string oid(ObjectMap<>::object_map_name(mock_image_ctx.id,
                                                  CEPH_NOSNAP));
     auto &expect = EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                               exec(oid, _, StrEq("lock"), StrEq("break_lock"),
+                               exec_internal(oid, _, StrEq("lock"), StrEq("break_lock"),
                                     _, _, _, _));
     if (r < 0) {
       expect.WillOnce(Return(r));

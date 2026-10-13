@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -153,6 +153,9 @@ public:
     OP_COLL_SET_BITS = 42, // cid, bits
 
     OP_MERGE_COLLECTION = 43, // cid, destination
+#ifdef WITH_CRIMSON
+    OP_TOUCH_TEMP = 44, // cid, temp_oid, target_oid
+#endif
   };
 
   // Transaction hint type
@@ -195,6 +198,7 @@ public:
     TransactionData(TransactionData&& other) noexcept :
       ops(other.ops),
       fadvise_flags(other.fadvise_flags) {
+      unused1 = unused2 = unused3 = 0;
       other.ops = 0;
       other.fadvise_flags = 0;
     }
@@ -391,6 +395,8 @@ public:
   }
   uint32_t get_fadvise_flags() { return data.fadvise_flags; }
 
+  uint64_t get_data_features() const { return data_features; }
+
   void swap(Transaction& other) noexcept {
     std::swap(data, other.data);
     std::swap(on_applied, other.on_applied);
@@ -438,6 +444,9 @@ public:
       op->oid = om[op->oid];
       break;
 
+#ifdef WITH_CRIMSON
+    case OP_TOUCH_TEMP:
+#endif
     case OP_CLONERANGE2:
     case OP_CLONE:
       ceph_assert(op->cid < cm.size());
@@ -625,7 +634,7 @@ public:
     return !data.ops;
   }
   /// Number of operations in the transaction
-  int get_num_ops() {
+  uint64_t get_num_ops() {
     return data.ops;
   }
 
@@ -745,7 +754,8 @@ public:
       using ceph::decode;
       decode(aset, data_misaligned_bl_p);
     }
-    void decode_attrset(std::map<std::string,ceph::buffer::list>& aset) {
+    template <class CmpT>
+    void decode_attrset(std::map<std::string,ceph::buffer::list,CmpT>& aset) {
       using ceph::decode;
       decode(aset, data_misaligned_bl_p);
     }
@@ -854,6 +864,29 @@ public:
     _op->oid = _get_object_id(oid);
     data.ops = data.ops + 1;
   }
+#ifdef WITH_CRIMSON
+  /**
+   * touch_temp
+   *
+   * Ensure the existance of the temp recovering object in a collection.
+   * OP_TOUCH_TEMP exists for recovery/backfill objects. Unlike OP_TOUCH,
+   * the temp-recovering object must share the **same** laddr object pre-
+   * fixes of the target object. See "Multi-push Recovery" in doc/dev/crim-
+   * son/seastore_laddr.rst.
+   */
+  void touch_temp(
+    const coll_t& cid,
+    const ghobject_t &tmp_oid,
+    const ghobject_t &target_oid)
+  {
+    Op* _op = _get_next_op();
+    _op->op = OP_TOUCH_TEMP;
+    _op->cid = _get_coll_id(cid);
+    _op->oid = _get_object_id(tmp_oid);
+    _op->dest_oid = _get_object_id(target_oid);
+    data.ops = data.ops + 1;
+  }
+#endif
   /**
    * Write data to an offset within an object. If the object is too
    * small, it is expanded as needed.  It is possible to specify an
@@ -1385,7 +1418,7 @@ public:
   }
 
   void dump(ceph::Formatter *f);
-  static void generate_test_instances(std::list<Transaction*>& o);
+  static std::list<Transaction> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(ceph::os::Transaction)
 WRITE_CLASS_ENCODER(ceph::os::Transaction::TransactionData)

@@ -950,7 +950,13 @@ class OSDThrasher(Thrasher):
         have the option to specify which pool you
         want the PG from.
         """
-        pgs = self.ceph_manager.get_pg_stats()
+        with safe_while(sleep=5, tries=3, action="get_pg_stats") as proceed:
+            while proceed():
+                pgs = self.ceph_manager.get_pg_stats()
+                if pgs:
+                    break
+                # If pool has just been created it might not have PGs yet
+                self.log('No pgs; trying again')
         if not pgs:
             self.log('No pgs; doing nothing')
             return
@@ -1040,8 +1046,19 @@ class OSDThrasher(Thrasher):
                 self.log("chose to kill {n} OSDs".format(n=most_killable))
                 acting_set = self.get_rand_pg_acting_set(pool_id)
                 assert most_killable < len(acting_set)
+                # kill the selected osds first, then mark them out. This makes
+                # the error inject a single 'atomic' failure. It simulates what
+                # happens if multiple OSDs fail over a couple of minutes and
+                # then the mon marks them out mon_osd_down_out_interval (10 mins)
+                # later. In contrast if each osd is killed and marked out in turn
+                # then this simulates a rolling failure, here rebalancing and
+                # async recovery can start after the first osd is marked out
+                # further reducing redundancy. With this number of injects in
+                # quick succession this risks a PG in the pool becoming dead
                 for i in range(0, most_killable):
-                    self.kill_osd(osd=acting_set[i], mark_out=True)
+                    self.kill_osd(osd=acting_set[i])
+                for i in range(0, most_killable):
+                    self.out_osd(osd=acting_set[i])
                 self.log("dead_osds={d}, live_osds={ld}".format(d=self.dead_osds, ld=self.live_osds))
                 with safe_while(
                     sleep=25, tries=5,
@@ -3282,7 +3299,22 @@ class CephManager:
             self._assert_ipmi(remote)
             remote.console.power_on()
             self.make_admin_daemon_dir(remote)
-        self.ctx.daemons.get_daemon('mon', mon, self.cluster).restart()
+        daemon = self.ctx.daemons.get_daemon('mon', mon, self.cluster)
+        try:
+            daemon.restart()
+        except CommandFailedError:
+            if not self.cephadm:
+                raise
+            # https://tracker.ceph.com/issues/80583
+            # Reset failed systemd state if mon restart failed during thrashing
+            # before retrying to prevent mon quorum timeout
+            fsid = self.ctx.ceph[self.cluster].fsid
+            service = 'ceph-{fsid}@mon.{mon}'.format(fsid=fsid, mon=mon)
+            self.log('restarting mon.{m} failed, resetting systemd state for '
+                     '{s} and retrying'.format(m=mon, s=service))
+            self.find_remote('mon', mon).run(
+                args=['sudo', 'systemctl', 'reset-failed', service])
+            daemon.restart()
 
     def revive_mgr(self, mgr):
         """

@@ -5,10 +5,14 @@ import { LoadingPanelComponent } from '../components/loading-panel/loading-panel
 import { LoadingStatus } from '../forms/cd-form';
 
 @Directive({
-  selector: '[cdFormLoading]'
+  selector: '[cdFormLoading]',
+  standalone: false
 })
 export class FormLoadingDirective {
-  constructor(private templateRef: TemplateRef<any>, private viewContainer: ViewContainerRef) {}
+  constructor(
+    private templateRef: TemplateRef<any>,
+    private viewContainer: ViewContainerRef
+  ) {}
 
   @Input() set cdFormLoading(condition: LoadingStatus) {
     let content: any;

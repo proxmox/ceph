@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab expandtab
+// vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include "circular_journal_space.h"
 
@@ -27,7 +27,7 @@ std::ostream &operator<<(std::ostream &out,
 CircularJournalSpace::CircularJournalSpace(RBMDevice * device) : device(device) {}
   
 bool CircularJournalSpace::needs_roll(std::size_t length) const {
-  if (length + get_rbm_addr(get_written_to()) > get_journal_end()) {
+  if (length + get_rbm_addr(get_written_to()) >= get_journal_end()) {
     return true;
   }
   return false;
@@ -55,10 +55,8 @@ CircularJournalSpace::write(ceph::bufferlist&& to_write) {
   assert(get_written_to().segment_seq != NULL_SEG_SEQ);
   auto encoded_size = to_write.length();
   if (encoded_size > get_records_available_size()) {
-    ceph_abort("should be impossible with EPM reservation");
+    ceph_abort_msg("should be impossible with EPM reservation");
   }
-  assert(encoded_size + get_rbm_addr(get_written_to())
-	 < get_journal_end());
 
   auto target = get_rbm_addr(get_written_to());
   auto new_written_to = target + encoded_size;
@@ -74,7 +72,7 @@ CircularJournalSpace::write(ceph::bufferlist&& to_write) {
   return device_write_bl(target, to_write
   ).handle_error(
     write_ertr::pass_further{},
-    crimson::ct_error::assert_all{ "Invalid error" }
+    crimson::ct_error::assert_all( "Invalid error" )
   );
 }
 
@@ -116,25 +114,21 @@ CircularJournalSpace::open_ret CircularJournalSpace::open(bool is_mkfs) {
     DEBUG(
       "initialize header block in CircularJournalSpace length {}, head: {}",
       bl.length(), header);
-    return write_header(
-    ).safe_then([this]() {
-      return open_ret(
-	open_ertr::ready_future_marker{},
-	get_written_to());
-    }).handle_error(
+    co_await write_header(
+    ).handle_error(
       open_ertr::pass_further{},
-      crimson::ct_error::assert_all{
-	"Invalid error write_header"
-      }
+      crimson::ct_error::assert_all(
+        "Invalid error write_header"
+      )
     );
+
+    co_return get_written_to();
   }
   ceph_assert(initialized);
   if (written_to.segment_seq == NULL_SEG_SEQ) {
     written_to.segment_seq = 0;
   }
-  return open_ret(
-    open_ertr::ready_future_marker{},
-    get_written_to());
+  co_return get_written_to();
 }
 
 ceph::bufferlist CircularJournalSpace::encode_header()
@@ -162,17 +156,17 @@ CircularJournalSpace::device_write_bl(
 {
   LOG_PREFIX(CircularJournalSpace::device_write_bl);
   auto length = bl.length();
-  if (offset + length > get_journal_end()) {
-    return crimson::ct_error::erange::make();
+  if (offset + length >= get_journal_end()) {
+    co_return co_await submit_ertr::future<>(crimson::ct_error::erange::make());
   }
   DEBUG(
     "overwrite in CircularJournalSpace, offset {}, length {}",
     offset,
     length);
-  return device->writev(offset, bl
+  co_await device->writev(offset, bl
   ).handle_error(
     submit_ertr::pass_further{},
-    crimson::ct_error::assert_all{ "Invalid error device->write" }
+    crimson::ct_error::assert_all( "Invalid error device->write" )
   );
 }
 
@@ -184,39 +178,36 @@ CircularJournalSpace::read_header()
   auto bptr = bufferptr(ceph::buffer::create_page_aligned(
 			device->get_block_size()));
   DEBUG("reading {}", device->get_shard_journal_start());
-  return device->read(device->get_shard_journal_start(), bptr
-  ).safe_then([bptr, FNAME, this]() mutable
-    -> read_header_ret {
-    bufferlist bl;
-    bl.append(bptr);
-    auto bp = bl.cbegin();
-    cbj_header_t cbj_header;
-    try {
-      decode(cbj_header, bp);
-    } catch (ceph::buffer::error &e) {
-      ERROR("unable to read header block");
-      return crimson::ct_error::enoent::make();
+  co_await device->read(device->get_shard_journal_start(), bptr);
+  
+  bufferlist bl;
+  bl.append(bptr);
+  auto bp = bl.cbegin();
+  cbj_header_t cbj_header;
+  bool decode_failed = false;
+  try {
+    decode(cbj_header, bp);
+  } catch (ceph::buffer::error &e) {
+    ERROR("unable to read header block");
+    decode_failed = true;
+  }
+  if (decode_failed) {
+    co_return co_await read_header_ret(crimson::ct_error::enoent::make());
+  }
+  if (!device->is_end_to_end_data_protection()) {
+    auto bliter = bl.cbegin();
+    auto test_crc = bliter.crc32c(
+      ceph::encoded_sizeof_bounded<cbj_header_t>(),
+      -1);
+    ceph_le32 recorded_crc_le;
+    decode(recorded_crc_le, bliter);
+    uint32_t recorded_crc = recorded_crc_le;
+    if (test_crc != recorded_crc) {
+      ERROR("error, header crc mismatch.");
+      co_return std::nullopt;
     }
-    if (!device->is_end_to_end_data_protection()) {
-      auto bliter = bl.cbegin();
-      auto test_crc = bliter.crc32c(
-	ceph::encoded_sizeof_bounded<cbj_header_t>(),
-	-1);
-      ceph_le32 recorded_crc_le;
-      decode(recorded_crc_le, bliter);
-      uint32_t recorded_crc = recorded_crc_le;
-      if (test_crc != recorded_crc) {
-	ERROR("error, header crc mismatch.");
-	return read_header_ret(
-	  read_header_ertr::ready_future_marker{},
-	  std::nullopt);
-      }
-    }
-    return read_header_ret(
-      read_header_ertr::ready_future_marker{},
-      std::make_pair(cbj_header, bl)
-    );
-  });
+  }
+  co_return std::make_pair(cbj_header, bl);
 }
 
 CircularJournalSpace::submit_ertr::future<>
@@ -233,10 +224,10 @@ CircularJournalSpace::write_header()
   assert(bl.length() < get_block_size());
   bufferptr bp = bufferptr(ceph::buffer::create_page_aligned(get_block_size()));
   iter.copy(bl.length(), bp.c_str());
-  return device->write(device->get_shard_journal_start(), std::move(bp)
+  co_await device->write(device->get_shard_journal_start(), std::move(bp)
   ).handle_error(
     submit_ertr::pass_further{},
-    crimson::ct_error::assert_all{ "Invalid error device->write" }
+    crimson::ct_error::assert_all( "Invalid error device->write" )
   );
 }
 

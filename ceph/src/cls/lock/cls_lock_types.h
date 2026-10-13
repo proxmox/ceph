@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_CLS_LOCK_TYPES_H
 #define CEPH_CLS_LOCK_TYPES_H
@@ -8,6 +8,7 @@
 #include "include/types.h"
 #include "include/utime.h"
 #include "msg/msg_types.h"
+#include "include/rados/cls_traits.hpp"
 
 /* lock flags */
 #define LOCK_FLAG_MAY_RENEW 0x1    /* idempotent lock acquire */
@@ -90,7 +91,7 @@ namespace rados {
 	  out << data.locker;
 	  return out;
 	}
-        static void generate_test_instances(std::list<locker_id_t*>& o);
+        static std::list<locker_id_t> generate_test_instances();
       };
       WRITE_CLASS_ENCODER(locker_id_t)
 
@@ -133,7 +134,7 @@ namespace rados {
 
 	  return out;
 	}
-        static void generate_test_instances(std::list<locker_info_t *>& o);
+        static std::list<locker_info_t > generate_test_instances();
       };
       WRITE_CLASS_ENCODER_FEATURES(locker_info_t)
 
@@ -164,7 +165,7 @@ namespace rados {
 
         lock_info_t() : lock_type(ClsLockType::NONE) {}
         void dump(ceph::Formatter *f) const;
-        static void generate_test_instances(std::list<lock_info_t *>& o);
+        static std::list<lock_info_t > generate_test_instances();
       };
       WRITE_CLASS_ENCODER_FEATURES(lock_info_t);
     }

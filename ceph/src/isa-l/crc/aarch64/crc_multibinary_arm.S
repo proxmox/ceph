@@ -40,3 +40,5 @@ mbin_interface crc64_iso_refl
 mbin_interface crc64_iso_norm
 mbin_interface crc64_jones_refl
 mbin_interface crc64_jones_norm
+mbin_interface crc64_rocksoft_refl
+mbin_interface crc64_rocksoft_norm

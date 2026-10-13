@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_LIBRBD_MIRRORING_WATCHER_TYPES_H
 #define CEPH_LIBRBD_MIRRORING_WATCHER_TYPES_H
@@ -18,7 +18,7 @@ namespace ceph { class Formatter; }
 namespace librbd {
 namespace mirroring_watcher {
 
-enum NotifyOp {
+enum NotifyOp : uint32_t {
   NOTIFY_OP_MODE_UPDATED  = 0,
   NOTIFY_OP_IMAGE_UPDATED = 1
 };
@@ -86,7 +86,7 @@ struct NotifyMessage {
   void decode(bufferlist::const_iterator& it);
   void dump(Formatter *f) const;
 
-  static void generate_test_instances(std::list<NotifyMessage *> &o);
+  static std::list<NotifyMessage> generate_test_instances();
 };
 
 WRITE_CLASS_ENCODER(NotifyMessage);

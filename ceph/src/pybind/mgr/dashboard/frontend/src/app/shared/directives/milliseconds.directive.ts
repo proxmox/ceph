@@ -4,13 +4,17 @@ import { NgControl } from '@angular/forms';
 import { FormatterService } from '../services/formatter.service';
 
 @Directive({
-  selector: '[cdMilliseconds]'
+  selector: '[cdMilliseconds]',
+  standalone: false
 })
 export class MillisecondsDirective implements OnInit {
   @Input()
   ngDataReady: EventEmitter<any>;
 
-  constructor(private control: NgControl, private formatter: FormatterService) {}
+  constructor(
+    private control: NgControl,
+    private formatter: FormatterService
+  ) {}
 
   setValue(value: string): void {
     const ms = this.formatter.toMilliseconds(value);

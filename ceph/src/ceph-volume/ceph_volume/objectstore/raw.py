@@ -87,7 +87,7 @@ class Raw(BaseObjectStore):
 
     @decorators.needs_root
     def prepare(self) -> None:
-        self.osd_fsid = system.generate_uuid()
+        self.osd_fsid = self.osd_fsid or system.generate_uuid()
         crush_device_class = self.args.crush_device_class
         if self.encrypted and not self.with_tpm:
             self.dmcrypt_key = os.getenv('CEPH_VOLUME_DMCRYPT_SECRET', '')

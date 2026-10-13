@@ -27,9 +27,9 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
-
 #ifndef _GF_VECT_MUL_H
 #define _GF_VECT_MUL_H
+#include "isal_api.h"
 
 /**
  *  @file gf_vect_mul.h
@@ -46,7 +46,7 @@ extern "C" {
 // x86 only
 #if defined(__i386__) || defined(__x86_64__)
 
- /**
+/**
  * @brief GF(2^8) vector multiply by constant.
  *
  * Does a GF(2^8) vector multiply b = Ca where a and b are arrays and C
@@ -62,12 +62,15 @@ extern "C" {
  * @param src   Pointer to src data array. Must be aligned to 32B.
  * @param dest  Pointer to destination data array. Must be aligned to 32B.
  * @returns 0 pass, other fail
+
+ * @deprecated Please use gf_vect_mul() instead.
  */
 
-int gf_vect_mul_sse(int len, unsigned char *gftbl, void *src, void *dest);
+ISAL_LIB_DEPRECATED("Please use gf_vect_mul() instead.")
+int
+gf_vect_mul_sse(int len, unsigned char *gftbl, void *src, void *dest);
 
-
- /**
+/**
  * @brief GF(2^8) vector multiply by constant.
  *
  * Does a GF(2^8) vector multiply b = Ca where a and b are arrays and C
@@ -83,11 +86,44 @@ int gf_vect_mul_sse(int len, unsigned char *gftbl, void *src, void *dest);
  * @param src   Pointer to src data array. Must be aligned to 32B.
  * @param dest  Pointer to destination data array. Must be aligned to 32B.
  * @returns 0 pass, other fail
+
+ * @deprecated Please use gf_vect_mul() instead.
  */
 
-int gf_vect_mul_avx(int len, unsigned char *gftbl, void *src, void *dest);
+ISAL_LIB_DEPRECATED("Please use gf_vect_mul() instead.")
+int
+gf_vect_mul_avx(int len, unsigned char *gftbl, void *src, void *dest);
 
 #endif
+
+/**
+ * @brief Initialize 32-byte constant array for GF(2^8) vector multiply
+ *
+ * Calculates 32-byte expanded array  as required by other fast vector multiply
+ * functions.
+ *
+ * This function determines what instruction sets are enabled
+ * and selects the appropriate version at runtime.
+ *
+ * @param c     Constant input.
+ * @param gftbl Table output.
+ */
+
+void
+gf_vect_mul_init(unsigned char c, unsigned char *gftbl);
+
+/**
+ * @brief Initialize 32-byte constant array for GF(2^8) vector multiply
+ *
+ * Calculates array {C{00}, C{01}, C{02}, ... , C{0f} }, {C{00}, C{10},
+ * C{20}, ... , C{f0} } as required by other fast vector multiply
+ * functions.
+ * @param c     Constant input.
+ * @param gftbl Table output.
+ */
+
+void
+gf_vect_mul_init_base(unsigned char c, unsigned char *gftbl);
 
 /**
  * @brief GF(2^8) vector multiply by constant, runs appropriate version.
@@ -95,8 +131,8 @@ int gf_vect_mul_avx(int len, unsigned char *gftbl, void *src, void *dest);
  * Does a GF(2^8) vector multiply b = Ca where a and b are arrays and C
  * is a single field element in GF(2^8). Can be used for RAID6 rebuild
  * and partial write functions. Function requires pre-calculation of a
- * 32-element constant array based on constant C. gftbl(C) = {C{00},
- * C{01}, C{02}, ... , C{0f} }, {C{00}, C{10}, C{20}, ... , C{f0} }.
+ * 32-element constant array based on constant C,
+ * by calling gf_vect_mul_init().
  * Len and src must be aligned to 32B.
  *
  * This function determines what instruction sets are enabled
@@ -109,21 +145,8 @@ int gf_vect_mul_avx(int len, unsigned char *gftbl, void *src, void *dest);
  * @returns 0 pass, other fail
  */
 
-int gf_vect_mul(int len, unsigned char *gftbl, void *src, void *dest);
-
-
-/**
- * @brief Initialize 32-byte constant array for GF(2^8) vector multiply
- *
- * Calculates array {C{00}, C{01}, C{02}, ... , C{0f} }, {C{00}, C{10},
- * C{20}, ... , C{f0} } as required by other fast vector multiply
- * functions.
- * @param c     Constant input.
- * @param gftbl Table output.
- */
-
-void gf_vect_mul_init(unsigned char c, unsigned char* gftbl);
-
+int
+gf_vect_mul(int len, unsigned char *gftbl, void *src, void *dest);
 
 /**
  * @brief GF(2^8) vector multiply by constant, runs baseline version.
@@ -132,18 +155,20 @@ void gf_vect_mul_init(unsigned char c, unsigned char* gftbl);
  * is a single field element in GF(2^8). Can be used for RAID6 rebuild
  * and partial write functions. Function requires pre-calculation of a
  * 32-element constant array based on constant C. gftbl(C) = {C{00},
- * C{01}, C{02}, ... , C{0f} }, {C{00}, C{10}, C{20}, ... , C{f0} }. Len
- * and src must be aligned to 32B.
+ * C{01}, C{02}, ... , C{0f} }, {C{00}, C{10}, C{20}, ... , C{f0} },
+ * by calling gf_vect_mul_init_base().
+ * Len  and src must be aligned to 32B.
  *
  * @param len   Length of vector in bytes. Must be aligned to 32B.
- * @param a 	Pointer to 32-byte array of pre-calculated constants based on C.
- * 		only use 2nd element is used.
+ * @param gftbl Pointer to 32-byte array of pre-calculated constants based on C.
+ *              Only the 2nd element is used.
  * @param src   Pointer to src data array. Must be aligned to 32B.
  * @param dest  Pointer to destination data array. Must be aligned to 32B.
+ * @returns 0 pass, other fail
  */
 
-void gf_vect_mul_base(int len, unsigned char *a, unsigned char *src,
-			unsigned char *dest);
+int
+gf_vect_mul_base(int len, unsigned char *gftbl, unsigned char *src, unsigned char *dest);
 
 #ifdef __cplusplus
 }

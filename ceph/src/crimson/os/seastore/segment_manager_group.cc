@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab expandtab
+// vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include "crimson/os/seastore/segment_manager_group.h"
 
@@ -21,9 +21,9 @@ SegmentManagerGroup::read_segment_tail(segment_id_t segment)
     get_rounded_tail_length()
   ).handle_error(
     read_segment_header_ertr::pass_further{},
-    crimson::ct_error::assert_all{
+    crimson::ct_error::assert_all(
       "Invalid error in SegmentManagerGroup::read_segment_tail"
-    }
+    )
   ).safe_then([=, &segment_manager](bufferptr bptr) -> read_segment_tail_ret {
     LOG_PREFIX(SegmentManagerGroup::read_segment_tail);
     DEBUG("segment {} bptr size 0x{:x}", segment, bptr.length());
@@ -61,9 +61,9 @@ SegmentManagerGroup::read_segment_header(segment_id_t segment)
     get_rounded_header_length()
   ).handle_error(
     read_segment_header_ertr::pass_further{},
-    crimson::ct_error::assert_all{
+    crimson::ct_error::assert_all(
       "Invalid error in SegmentManagerGroup::read_segment_header"
-    }
+    )
   ).safe_then([=, &segment_manager](bufferptr bptr) -> read_segment_header_ret {
     LOG_PREFIX(SegmentManagerGroup::read_segment_header);
     DEBUG("segment {} bptr size 0x{:x}", segment, bptr.length());

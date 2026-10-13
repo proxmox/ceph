@@ -82,13 +82,6 @@ TYPE(ECSubWriteReply)
 TYPE_FEATUREFUL(ECSubRead)
 TYPE(ECSubReadReply)
 
-#include "osd/HitSet.h"
-TYPE_NONDETERMINISTIC(ExplicitHashHitSet)
-TYPE_NONDETERMINISTIC(ExplicitObjectHitSet)
-TYPE(BloomHitSet)
-TYPE_NONDETERMINISTIC(HitSet)   // because some subclasses are
-TYPE(HitSet::Params)
-
 #include "osd/SnapMapper.h"
 TYPE(SnapMapper::Mapping)
 TYPE(SnapMapper::object_snaps)
@@ -200,7 +193,3 @@ TYPE(ConnectionTracker);
 #include "mon/health_check.h"
 TYPE(health_check_t)
 TYPE(health_check_map_t)
-
-#include "os/kstore/kstore_types.h"
-TYPE(kstore_cnode_t)
-TYPE(kstore_onode_t)

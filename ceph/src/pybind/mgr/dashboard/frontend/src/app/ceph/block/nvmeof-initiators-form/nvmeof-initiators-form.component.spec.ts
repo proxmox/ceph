@@ -6,8 +6,6 @@ import { ActivatedRoute } from '@angular/router';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { of } from 'rxjs';
 
-import { ToastrModule } from 'ngx-toastr';
-
 import { NgbActiveModal, NgbTypeaheadModule } from '@ng-bootstrap/ng-bootstrap';
 
 import { SharedModule } from '~/app/shared/shared.module';
@@ -46,8 +44,7 @@ describe('NvmeofInitiatorsFormComponent', () => {
         NgbTypeaheadModule,
         ReactiveFormsModule,
         RouterTestingModule,
-        SharedModule,
-        ToastrModule.forRoot()
+        SharedModule
       ]
     }).compileComponents();
 
@@ -78,7 +75,7 @@ describe('NvmeofInitiatorsFormComponent', () => {
   describe('should test form', () => {
     beforeEach(() => {
       nvmeofService = TestBed.inject(NvmeofService);
-      spyOn(nvmeofService, 'addSubsystemInitiators').and.stub();
+      spyOn(nvmeofService, 'addSubsystemInitiators').and.returnValue(of({}));
     });
 
     it('should be creating request correctly', () => {
@@ -117,6 +114,22 @@ describe('NvmeofInitiatorsFormComponent', () => {
         gw_group: 'test-group',
         hosts: [{ dhchap_key: '', host_nqn: 'host2' }]
       });
+    });
+
+    it('should not submit when hostType is SPECIFIC and no host is provided', () => {
+      const subsystemNQN = 'nqn.test';
+      component.subsystemNQN = subsystemNQN;
+      component.group = 'test-group';
+
+      const payload: any = {
+        hostType: HOST_TYPE.SPECIFIC,
+        addedHosts: []
+      };
+
+      component.onSubmit(payload);
+
+      expect(nvmeofService.addSubsystemInitiators).not.toHaveBeenCalled();
+      expect(component.isSubmitLoading).toBe(false);
     });
   });
 });

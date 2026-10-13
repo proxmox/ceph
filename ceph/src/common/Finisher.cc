@@ -1,7 +1,8 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "Finisher.h"
+#include "common/Clock.h" // for ceph_clock_now()
 #include "common/perf_counters.h"
 #include "include/types.h" // for operator<<(std::vector)
 
@@ -46,6 +47,8 @@ Finisher::~Finisher() {
 void Finisher::start()
 {
   ldout(cct, 10) << __func__ << dendl;
+  tid_promise = std::promise<void>{};
+  started_future = tid_promise.get_future();
   finisher_thread.create(thread_name.c_str());
 }
 
@@ -85,6 +88,8 @@ void *Finisher::finisher_thread_entry()
   std::unique_lock ul(finisher_lock);
   ldout(cct, 10) << "finisher_thread start" << dendl;
 
+  finisher_tid.store(ceph_gettid());
+  tid_promise.set_value();
   utime_t start;
   uint64_t count = 0;
   while (!finisher_stop) {

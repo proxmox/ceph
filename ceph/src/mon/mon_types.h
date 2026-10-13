@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -22,6 +23,7 @@
 #include <string>
 
 #include "include/ceph_features.h" // for CEPH_FEATURE_*
+#include "include/types.h" // for operator<<(std::map)
 #include "include/util.h"
 #include "include/utime.h"
 #include "common/Formatter.h"
@@ -118,13 +120,15 @@ struct FeatureMap {
     }
   }
 
-  static void generate_test_instances(std::list<FeatureMap*>& ls) {
-    ls.push_back(new FeatureMap);
-    ls.push_back(new FeatureMap);
-    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_UID);
-    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_NOSRCADDR);
-    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_PGID64);
-    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_INCSUBOSDMAP);
+  static std::list<FeatureMap> generate_test_instances() {
+    std::list<FeatureMap> ls;
+    ls.emplace_back();
+    ls.emplace_back();
+    ls.back().add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_UID);
+    ls.back().add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_NOSRCADDR);
+    ls.back().add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_PGID64);
+    ls.back().add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_INCSUBOSDMAP);
+    return ls;
   }
 };
 WRITE_CLASS_ENCODER(FeatureMap)
@@ -175,14 +179,16 @@ struct MonitorDBStoreStats {
     DECODE_FINISH(p);
   }
 
-  static void generate_test_instances(std::list<MonitorDBStoreStats*>& ls) {
-    ls.push_back(new MonitorDBStoreStats);
-    ls.push_back(new MonitorDBStoreStats);
-    ls.back()->bytes_total = 1024*1024;
-    ls.back()->bytes_sst = 512*1024;
-    ls.back()->bytes_log = 256*1024;
-    ls.back()->bytes_misc = 256*1024;
-    ls.back()->last_update = utime_t();
+  static std::list<MonitorDBStoreStats> generate_test_instances() {
+    std::list<MonitorDBStoreStats> ls;
+    ls.emplace_back();
+    ls.emplace_back();
+    ls.back().bytes_total = 1024*1024;
+    ls.back().bytes_sst = 512*1024;
+    ls.back().bytes_log = 256*1024;
+    ls.back().bytes_misc = 256*1024;
+    ls.back().last_update = utime_t();
+    return ls;
   }
 };
 WRITE_CLASS_ENCODER(MonitorDBStoreStats)
@@ -206,19 +212,21 @@ struct DataStats {
     store_stats.dump(f);
     f->close_section();
   }
-  static void generate_test_instances(std::list<DataStats*>& ls) {
-    ls.push_back(new DataStats);
-    ls.push_back(new DataStats);
-    ls.back()->fs_stats.byte_total = 1024*1024;
-    ls.back()->fs_stats.byte_used = 512*1024;
-    ls.back()->fs_stats.byte_avail = 256*1024;
-    ls.back()->fs_stats.avail_percent = 50;
-    ls.back()->last_update = utime_t();
-    ls.back()->store_stats.bytes_total = 1024*1024;
-    ls.back()->store_stats.bytes_sst = 512*1024;
-    ls.back()->store_stats.bytes_log = 256*1024;
-    ls.back()->store_stats.bytes_misc = 256*1024;
-    ls.back()->store_stats.last_update = utime_t();
+  static std::list<DataStats> generate_test_instances() {
+    std::list<DataStats> ls;
+    ls.emplace_back();
+    ls.emplace_back();
+    ls.back().fs_stats.byte_total = 1024*1024;
+    ls.back().fs_stats.byte_used = 512*1024;
+    ls.back().fs_stats.byte_avail = 256*1024;
+    ls.back().fs_stats.avail_percent = 50;
+    ls.back().last_update = utime_t();
+    ls.back().store_stats.bytes_total = 1024*1024;
+    ls.back().store_stats.bytes_sst = 512*1024;
+    ls.back().store_stats.bytes_log = 256*1024;
+    ls.back().store_stats.bytes_misc = 256*1024;
+    ls.back().store_stats.last_update = utime_t();
+    return ls;
   }
 
   void encode(ceph::buffer::list &bl) const {
@@ -287,11 +295,13 @@ struct ScrubResult {
       f->dump_unsigned(p->first.c_str(), p->second);
     f->close_section();
   }
-  static void generate_test_instances(std::list<ScrubResult*>& ls) {
-    ls.push_back(new ScrubResult);
-    ls.push_back(new ScrubResult);
-    ls.back()->prefix_crc["foo"] = 123;
-    ls.back()->prefix_keys["bar"] = 456;
+  static std::list<ScrubResult> generate_test_instances() {
+    std::list<ScrubResult> ls;
+    ls.emplace_back();
+    ls.emplace_back();
+    ls.back().prefix_crc["foo"] = 123;
+    ls.back().prefix_keys["bar"] = 456;
+    return ls;
   }
 };
 WRITE_CLASS_ENCODER(ScrubResult)
@@ -498,12 +508,14 @@ public:
     DECODE_FINISH(p);
   }
 
-  static void generate_test_instances(std::list<mon_feature_t*>& ls) {
-    ls.push_back(new mon_feature_t);
-    ls.push_back(new mon_feature_t);
-    ls.back()->features = 1;
-    ls.push_back(new mon_feature_t);
-    ls.back()->features = 2;
+  static std::list<mon_feature_t> generate_test_instances() {
+    std::list<mon_feature_t> ls;
+    ls.emplace_back();
+    ls.emplace_back();
+    ls.back().features = 1;
+    ls.emplace_back();
+    ls.back().features = 2;
+    return ls;
   }
 };
 WRITE_CLASS_ENCODER(mon_feature_t)
@@ -524,6 +536,7 @@ namespace ceph {
       constexpr mon_feature_t FEATURE_REEF(       (1ULL << 9));
       constexpr mon_feature_t FEATURE_SQUID(      (1ULL << 10));
       constexpr mon_feature_t FEATURE_TENTACLE(   (1ULL << 11));
+      constexpr mon_feature_t FEATURE_UMBRELLA(   (1ULL << 12));
 
 
       // Release-independent features
@@ -552,6 +565,7 @@ namespace ceph {
 	  FEATURE_REEF |
 	  FEATURE_SQUID |
 	  FEATURE_TENTACLE |
+	  FEATURE_UMBRELLA |
 
 	  // Release-independent features
 	  FEATURE_NVMEOF_BEACON_DIFF |
@@ -584,6 +598,7 @@ namespace ceph {
 	  FEATURE_REEF |
 	  FEATURE_SQUID |
 	  FEATURE_TENTACLE |
+	  FEATURE_UMBRELLA |
 
 	  // Release-independent features
 	  FEATURE_NVMEOF_BEACON_DIFF |
@@ -607,6 +622,9 @@ namespace ceph {
 
 static inline ceph_release_t infer_ceph_release_from_mon_features(mon_feature_t f)
 {
+  if (f.contains_all(ceph::features::mon::FEATURE_UMBRELLA)) {
+    return ceph_release_t::umbrella;
+  }
   if (f.contains_all(ceph::features::mon::FEATURE_TENTACLE)) {
     return ceph_release_t::tentacle;
   }
@@ -667,6 +685,8 @@ static inline const char *ceph::features::mon::get_feature_name(uint64_t b) {
     return "squid";
   } else if (f == FEATURE_TENTACLE) {
     return "tentacle";
+  } else if (f == FEATURE_UMBRELLA) {
+    return "umbrella";
   // Release-independent features
   } else if (f == FEATURE_NVMEOF_BEACON_DIFF) {
     return "nvmeof_beacon_diff";
@@ -704,6 +724,8 @@ inline mon_feature_t ceph::features::mon::get_feature_by_name(const std::string 
     return FEATURE_SQUID;
   } else if (n == "tentacle") {
     return FEATURE_TENTACLE;
+  } else if (n == "umbrella") {
+    return FEATURE_UMBRELLA;
   // Release-independent features
   } else if (n == "nvmeof_beacon_diff") {
     return FEATURE_NVMEOF_BEACON_DIFF;
@@ -752,12 +774,14 @@ struct ProgressEvent {
     f->dump_float("progress", progress);
     f->dump_bool("add_to_ceph_s", add_to_ceph_s);
   }
-  static void generate_test_instances(std::list<ProgressEvent*>& o) {
-    o.push_back(new ProgressEvent);
-    o.push_back(new ProgressEvent);
-    o.back()->message = "test message";
-    o.back()->progress = 0.5;
-    o.back()->add_to_ceph_s = true;
+  static std::list<ProgressEvent> generate_test_instances() {
+    std::list<ProgressEvent> o;
+    o.emplace_back();
+    o.emplace_back();
+    o.back().message = "test message";
+    o.back().progress = 0.5;
+    o.back().add_to_ceph_s = true;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(ProgressEvent)
@@ -812,20 +836,22 @@ struct PoolAvailability {
     DECODE_FINISH(p);
   }
 
-  static void generate_test_instances(std::list<PoolAvailability*>& o) {
-    o.push_back(new PoolAvailability);
-    o.back()->started_at = utime_t(123, 456);      
-    o.back()->last_uptime = utime_t(123, 456);      
-    o.back()->last_downtime = utime_t(123, 456);   
-    o.push_back(new PoolAvailability);
-    o.back()->pool_name = "foo";    
-    o.back()->started_at = utime_t(123, 456);    
-    o.back()->uptime = 100;    
-    o.back()->last_uptime = utime_t(123, 456);    
-    o.back()->downtime = 15;    
-    o.back()->last_downtime = utime_t(123, 456);    
-    o.back()->num_failures = 2;    
-    o.back()->is_avail = true;    
+  static std::list<PoolAvailability> generate_test_instances() {
+    std::list<PoolAvailability> o;
+    o.emplace_back();
+    o.back().started_at = utime_t(123, 456);
+    o.back().last_uptime = utime_t(123, 456);
+    o.back().last_downtime = utime_t(123, 456);
+    o.emplace_back();
+    o.back().pool_name = "foo";
+    o.back().started_at = utime_t(123, 456);
+    o.back().uptime = 100;
+    o.back().last_uptime = utime_t(123, 456);
+    o.back().downtime = 15;
+    o.back().last_downtime = utime_t(123, 456);
+    o.back().num_failures = 2;
+    o.back().is_avail = true;
+    return o;
   }  
 };
 WRITE_CLASS_ENCODER(PoolAvailability)

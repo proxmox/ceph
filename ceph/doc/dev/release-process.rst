@@ -92,7 +92,7 @@ Notify the "Build Lead" that the release branch is ready.
 
 We'll use a stable/regular 19.2.2 release of Squid as an example throughout this document.
 
-1. Browse to https://jenkins.ceph.com/view/all/job/ceph/build?delay=0sec
+1. Browse to https://jenkins.ceph.com/view/all/job/ceph-release-pipeline/build?delay=0sec
 2. Log in with GitHub OAuth
 3. Set the parameters as necessary::
 
@@ -117,6 +117,9 @@ NOTE: if for some reason the build has to be restarted (for example if one distr
     +-------------------+--------------------------------------------------+
     | squid (19.X.X)    | ``jammy centos9 windows bookworm``               |
     +-------------------+--------------------------------------------------+
+    | tentacle (20.X.X) | ``jammy centos9 noble windows bookworm rocky10`` |
+    +-------------------+--------------------------------------------------+
+
 
 5. Click ``Build``.
 
@@ -262,15 +265,15 @@ This job:
   or "fat" container image and pushes it to ``quay.ceph.io/ceph/prerelease``
 
 Finally, when all appropriate testing and verification is done on the
-container images, run ``make-manifest-list.py --promote`` from the Ceph
+container images, run ``make-manifest-list.py --promote --version <ver>`` from the Ceph
 source tree (at ``container/make-manifest-list.py``) to promote them to
 their final release location on ``quay.io/ceph/ceph`` (you must ensure
 that you're logged into ``quay.io/ceph`` and ``quay.ceph.io/ceph`` with appropriate permissions):
 
     .. prompt:: bash
 
-       cd <ceph-checkout>/src/container
-       ./make-manifest-list.py --promote
+       cd <ceph-checkout>/container
+       ./make-manifest-list.py --promote --version <ver>
 
 The ``--promote`` step should be performed only as the final step in releasing
 containers, after the container images have been tested and have been confirmed

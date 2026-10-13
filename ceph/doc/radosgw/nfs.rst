@@ -12,7 +12,7 @@ alongside the traditional HTTP access protocols (S3 and Swift).
 In particular, the Ceph Object Gateway can now be configured to
 provide file-based access when embedded in the NFS-Ganesha NFS server.
 
-The simplest and preferred way of managing nfs-ganesha clusters and rgw exports
+The simplest and preferred way of managing NFS-Ganesha clusters and RGW exports
 is using ``ceph nfs ...`` commands. See :doc:`/mgr/nfs` for more details.
 
 librgw
@@ -33,7 +33,7 @@ Namespace Conventions
 =====================
 
 The implementation conforms to Amazon Web Services (AWS) hierarchical
-namespace conventions which map UNIX-style path names onto S3 buckets
+namespace conventions which map Unix-style path names onto S3 buckets
 and objects.
 
 The top level of the attached namespace consists of S3 buckets,
@@ -90,7 +90,7 @@ following characteristics:
 
 - NFS protocol security is provided by the NFS-Ganesha server, as negotiated by the NFS server and clients
 
-  + e.g., clients can by trusted (AUTH_SYS), or required to present Kerberos user credentials (RPCSEC_GSS)
+  + e.g., clients can be trusted (AUTH_SYS), or required to present Kerberos user credentials (RPCSEC_GSS)
   + RPCSEC_GSS wire security can be integrity only (krb5i) or integrity and privacy (encryption, krb5p)
   + various NFS-specific security and permission rules are available
 
@@ -102,7 +102,7 @@ following characteristics:
 
     * additional RGW authentication types such as Keystone are not currently supported
 
-Manually configuring an NFS-Ganesha Instance
+Manually Configuring an NFS-Ganesha Instance
 ============================================
 
 Each NFS RGW instance is an NFS-Ganesha server instance *embedding*
@@ -127,7 +127,7 @@ optional.
 A small number of config variables (e.g., ``rgw_nfs_namespace_expire_secs``)
 are unique to RGW NFS.
 
-In particular, front-end selection is handled specially by the librgw.so runtime.  By default, only the
+In particular, frontend selection is handled specially by the librgw.so runtime.  By default, only the
 ``rgw-nfs`` frontend is started. Additional frontends (e.g., ``beast``) are enabled via the
 ``rgw nfs frontends`` config option.  Its syntax is identical to the ordinary ``rgw frontends`` option.
 Default options for non-default frontends are specified via ``rgw frontend defaults`` as normal.
@@ -190,8 +190,8 @@ variables in the RGW config section::
 ``ceph_conf`` gives a path to a non-default ceph.conf file to use
 
 
-Other useful NFS-Ganesha configuration:
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Other Useful NFS-Ganesha Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Any EXPORT block which should support NFSv3 should include version 3
 in the NFS_Protocols setting. Additionally, NFSv3 is the last major
@@ -238,45 +238,45 @@ Example::
   
   LOG {
 
-	Components {
-		MEMLEAKS = FATAL;
-		FSAL = FATAL;
-		NFSPROTO = FATAL;
-		NFS_V4 = FATAL;
-		EXPORT = FATAL;
-		FILEHANDLE = FATAL;
-		DISPATCH = FATAL;
-		CACHE_INODE = FATAL;
-		CACHE_INODE_LRU = FATAL;
-		HASHTABLE = FATAL;
-		HASHTABLE_CACHE = FATAL;
-		DUPREQ = FATAL;
-		INIT = DEBUG;
-		MAIN = DEBUG;
-		IDMAPPER = FATAL;
-		NFS_READDIR = FATAL;
-		NFS_V4_LOCK = FATAL;
-		CONFIG = FATAL;
-		CLIENTID = FATAL;
-		SESSIONS = FATAL;
-		PNFS = FATAL;
-		RW_LOCK = FATAL;
-		NLM = FATAL;
-		RPC = FATAL;
-		NFS_CB = FATAL;
-		THREAD = FATAL;
-		NFS_V4_ACL = FATAL;
-		STATE = FATAL;
-		FSAL_UP = FATAL;
-		DBUS = FATAL;
-	}
-	# optional: redirect log output
- #	Facility {
- #		name = FILE;
- #		destination = "/tmp/ganesha-rgw.log";
- #		enable = active;
-	}
- }
+    Components {
+        MEMLEAKS = FATAL;
+        FSAL = FATAL;
+        NFSPROTO = FATAL;
+        NFS_V4 = FATAL;
+        EXPORT = FATAL;
+        FILEHANDLE = FATAL;
+        DISPATCH = FATAL;
+        CACHE_INODE = FATAL;
+        CACHE_INODE_LRU = FATAL;
+        HASHTABLE = FATAL;
+        HASHTABLE_CACHE = FATAL;
+        DUPREQ = FATAL;
+        INIT = DEBUG;
+        MAIN = DEBUG;
+        IDMAPPER = FATAL;
+        NFS_READDIR = FATAL;
+        NFS_V4_LOCK = FATAL;
+        CONFIG = FATAL;
+        CLIENTID = FATAL;
+        SESSIONS = FATAL;
+        PNFS = FATAL;
+        RW_LOCK = FATAL;
+        NLM = FATAL;
+        RPC = FATAL;
+        NFS_CB = FATAL;
+        THREAD = FATAL;
+        NFS_V4_ACL = FATAL;
+        STATE = FATAL;
+        FSAL_UP = FATAL;
+        DBUS = FATAL;
+    }
+  # optional: redirect log output
+  # Facility {
+  #     name = FILE;
+  #     destination = "/tmp/ganesha-rgw.log";
+  #     enable = active;
+  # }
+  }
 
 Running Multiple NFS Gateways
 =============================
@@ -298,7 +298,7 @@ RGW vs RGW NFS
 ==============
 
 Exporting an NFS namespace and other RGW namespaces (e.g., S3 or Swift
-via the Civetweb HTTP front-end) from the same program instance is
+via the Civetweb HTTP frontend) from the same program instance is
 currently not supported.
 
 When adding objects and buckets outside of NFS, those objects will
@@ -314,7 +314,7 @@ if a Swift container name contains underscores, it is not a valid S3
 bucket name and will be rejected unless ``rgw_relaxed_s3_bucket_names``
 is set to true.
 
-Configuring NFSv4 clients
+Configuring NFSv4 Clients
 =========================
 
 To access the namespace, mount the configured NFS-Ganesha export(s)

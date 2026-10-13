@@ -29,6 +29,8 @@
 
 include raid/aarch64/Makefile.am
 
+include raid/riscv64/Makefile.am
+
 lsrc        += 	raid/raid_base.c
 
 lsrc_base_aliases += raid/raid_base_aliases.c
@@ -42,26 +44,20 @@ lsrc_x86_64 += \
 		raid/pq_gen_avx.asm \
 		raid/xor_gen_avx.asm \
 		raid/pq_gen_avx2.asm \
+		raid/pq_gen_avx2_gfni.asm \
 		raid/xor_gen_avx512.asm \
 		raid/pq_gen_avx512.asm \
+		raid/pq_gen_avx512_gfni.asm \
 		raid/raid_multibinary.asm
-
-lsrc_x86_32 += \
-		raid/xor_gen_sse.asm \
-		raid/pq_gen_sse_i32.asm \
-		raid/xor_check_sse.asm \
-		raid/pq_check_sse_i32.asm \
-		raid/raid_multibinary_i32.asm
-
 
 extern_hdrs +=	include/raid.h
 
-other_src   +=  include/test.h include/types.h
+other_src   +=  include/test.h
 
 check_tests +=  raid/xor_gen_test raid/pq_gen_test raid/xor_check_test raid/pq_check_test
 
-perf_tests  +=  raid/xor_gen_perf raid/pq_gen_perf
+perf_tests  +=  raid/xor_gen_perf raid/pq_gen_perf raid/raid_funcs_perf
+
+raid_raid_funcs_perf_LDFLAGS = -lpthread
 
 examples    += 	raid/xor_example
-
-lsrc32       += xor_gen_sse.asm pq_gen_sse_i32.asm xor_check_sse.asm pq_check_sse_i32.asm raid_base.c

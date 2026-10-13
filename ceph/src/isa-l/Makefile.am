@@ -3,10 +3,11 @@ CLEANFILES =
 LDADD =
 AM_MAKEFLAGS = --no-print-directory
 noinst_HEADERS =
-pkginclude_HEADERS = include/test.h include/types.h
+pkginclude_HEADERS = include/test.h
 noinst_LTLIBRARIES =
 bin_PROGRAMS =
 INCLUDE = -I $(srcdir)/include/
+D =
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libisal.pc
@@ -25,17 +26,13 @@ perf_tests_extra=
 examples=
 other_tests=
 other_tests_x86_64=
-other_tests_x86_32=
-other_tests_aarch64=
 other_tests_ppc64le=
+other_tests_riscv64=
 lsrc_x86_64=
-lsrc_x86_32=
 lsrc_aarch64=
 lsrc_ppc64le=
+lsrc_riscv64=
 lsrc_base_aliases=
-lsrc32=
-unit_tests32=
-perf_tests32=
 progs=
 
 # Include units
@@ -48,10 +45,11 @@ include tests/fuzz/Makefile.am
 include examples/ec/Makefile.am
 include programs/Makefile.am
 include mem/Makefile.am
+include misc/Makefile.am
 
 # LIB version info not necessarily the same as package version
 LIBISAL_CURRENT=2
-LIBISAL_REVISION=30
+LIBISAL_REVISION=32
 LIBISAL_AGE=0
 
 lib_LTLIBRARIES = libisal.la
@@ -59,23 +57,27 @@ pkginclude_HEADERS += $(sort ${extern_hdrs})
 libisal_la_SOURCES = ${lsrc}
 
 if CPU_X86_64
+ARCH=-Dx86_64
 libisal_la_SOURCES += ${lsrc_x86_64}
 other_tests += ${other_tests_x86_64}
 endif
 
-if CPU_X86_32
-libisal_la_SOURCES += ${lsrc_x86_32}
-other_tests += ${other_tests_x86_32}
-endif
-
 if CPU_AARCH64
+ARCH=-Daarch64
 libisal_la_SOURCES += ${lsrc_aarch64}
 other_tests += ${other_tests_aarch64}
 endif
 
 if CPU_PPC64LE
+ARCH=-Dppc64le
 libisal_la_SOURCES += ${lsrc_ppc64le}
 other_tests += ${other_tests_ppc64le}
+endif
+
+if CPU_RISCV64
+ARCH=-Driscv64
+libisal_la_SOURCES += ${lsrc_riscv64}
+other_tests += ${other_tests_riscv64}
 endif
 
 if CPU_UNDEFINED
@@ -85,6 +87,7 @@ endif
 nobase_include_HEADERS = isa-l.h
 libisal_la_LDFLAGS = $(AM_LDFLAGS) \
 	-version-info $(LIBISAL_CURRENT):$(LIBISAL_REVISION):$(LIBISAL_AGE)
+libisal_la_CFLAGS = $(AM_CFLAGS) -DISAL_DEPRECATED_INTERNAL
 libisal_la_LIBADD = ${noinst_LTLIBRARIES}
 
 EXTRA_DIST += ${other_src}
@@ -116,37 +119,29 @@ test: $(addsuffix .run,$(unit_tests))
 	$<
 	@echo Completed run: $<
 
-# Support for yasm/nasm/gas
-if INTEL_CET_ENABLED
-export CET_LD=$(LD)
-endif
-if USE_YASM
-if INTEL_CET_ENABLED
-  as_filter = ${srcdir}/tools/yasm-cet-filter.sh
-else
-  as_filter = ${srcdir}/tools/yasm-filter.sh
-endif
-endif
+# Support for nasm/gas
 if USE_NASM
-if INTEL_CET_ENABLED
-  as_filter = ${srcdir}/tools/nasm-cet-filter.sh
-else
   as_filter = ${srcdir}/tools/nasm-filter.sh
-endif
 endif
 if CPU_AARCH64
   as_filter = $(CC) -D__ASSEMBLY__
 endif
+if CPU_RISCV64
+  as_filter = $(CC) -D__ASSEMBLY__
+endif
 
 CCAS = $(as_filter)
-EXTRA_DIST += tools/yasm-filter.sh tools/nasm-filter.sh
-EXTRA_DIST += tools/yasm-cet-filter.sh tools/nasm-cet-filter.sh
+EXTRA_DIST += tools/nasm-filter.sh
+EXTRA_DIST += tools/nasm-cet-filter.sh
 
-AM_CFLAGS = ${my_CFLAGS} ${INCLUDE} $(src_include) ${D}
+AM_CFLAGS = ${my_CFLAGS} ${INCLUDE} $(src_include) ${ARCH} ${D}
 if CPU_AARCH64
 AM_CCASFLAGS = ${AM_CFLAGS}
 else
-AM_CCASFLAGS = ${yasm_args} ${INCLUDE} ${src_include} ${DEFS} ${D}
+AM_CCASFLAGS = ${asm_args} ${INCLUDE} ${src_include} ${DEFS} ${D}
+endif
+if CPU_RISCV64
+AM_CCASFLAGS = ${AM_CFLAGS}
 endif
 
 .asm.s:

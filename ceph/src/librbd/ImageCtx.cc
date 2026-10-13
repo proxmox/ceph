@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #include <errno.h>
 #include <boost/assign/list_of.hpp>
 #include <stddef.h>
@@ -7,6 +8,8 @@
 #include "include/neorados/RADOS.hpp"
 
 #include "common/ceph_context.h"
+#include "common/Clock.h" // for ceph_clock_now()
+#include "common/Cond.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/perf_counters.h"
@@ -45,6 +48,12 @@
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <shared_mutex> // for std::shared_lock
+
+#ifdef WITH_CRIMSON
+#include "crimson/common/perf_counters_collection.h"
+#else
+#include "common/perf_counters_collection.h"
+#endif
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix

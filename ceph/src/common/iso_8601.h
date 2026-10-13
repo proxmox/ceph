@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_COMMON_ISO_8601_H
 #define CEPH_COMMON_ISO_8601_H
@@ -30,7 +30,7 @@ namespace ceph {
 // If a date is invalid, boost::none is returned.
 
 boost::optional<ceph::real_time> from_iso_8601(
-  std::string_view s, const bool ws_terminates = true) noexcept;
+  std::string_view s, const bool ws_terminates = true);
 
 enum class iso_8601_format {
   Y, YM, YMD, YMDh, YMDhm, YMDhms, YMDhmsn

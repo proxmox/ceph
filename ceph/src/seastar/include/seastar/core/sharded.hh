@@ -25,19 +25,17 @@
 #include <seastar/core/loop.hh>
 #include <seastar/core/map_reduce.hh>
 #include <seastar/core/internal/run_in_background.hh>
+#include <seastar/core/on_internal_error.hh>
 #include <seastar/util/is_smart_ptr.hh>
 #include <seastar/util/tuple_utils.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/util/assert.hh>
 #include <seastar/util/log.hh>
-#include <seastar/util/modules.hh>
 
-#ifndef SEASTAR_MODULE
 #include <concepts>
 #include <functional>
 #include <ranges>
 #include <type_traits>
-#endif
 
 /// \defgroup smp-module Multicore
 ///
@@ -51,7 +49,6 @@
 
 namespace seastar {
 
-SEASTAR_MODULE_EXPORT_BEGIN
 
 template <typename Func, typename... Param>
 class sharded_parameter;
@@ -59,7 +56,6 @@ class sharded_parameter;
 template <typename Service>
 class sharded;
 
-SEASTAR_MODULE_EXPORT_END
 
 namespace internal {
 
@@ -112,7 +108,6 @@ concept unsigned_range = std::ranges::range<R>
 /// \addtogroup smp-module
 /// @{
 
-SEASTAR_MODULE_EXPORT_BEGIN
 
 template <typename T>
 class sharded;
@@ -202,14 +197,14 @@ private:
     friend struct shared_ptr_make_helper;
 
     template <typename T>
-    std::enable_if_t<std::is_base_of_v<peering_sharded_service<T>, T>>
-    set_container(T& service) noexcept {
+    requires std::is_base_of_v<peering_sharded_service<T>, T>
+    void set_container(T& service) noexcept {
         service.set_container(this);
     }
 
     template <typename T>
-    std::enable_if_t<!std::is_base_of_v<peering_sharded_service<T>, T>>
-    set_container(T&) noexcept {
+    requires (!std::is_base_of_v<peering_sharded_service<T>, T>)
+    void set_container(T&) noexcept {
     }
 
     future<>
@@ -516,7 +511,6 @@ public:
 
     /// Checks whether the local instance has been initialized.
     bool local_is_initialized() const noexcept;
-
 private:
     template <typename... Args>
     shared_ptr<Service> create_local_service(Args&&... args) {
@@ -525,20 +519,18 @@ private:
         return s;
     }
 
+    /// Performs the same check as `local_is_initialized`, but throws an exception
+    /// if the local instance is not initialized.
+    void check_local() const;
+
     shared_ptr<Service> get_local_service() {
-        auto inst = _instances[this_shard_id()].service;
-        if (!inst) {
-            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
-        }
-        return inst;
+        check_local();
+        return _instances[this_shard_id()].service;
     }
 
     shared_ptr<const Service> get_local_service() const {
-        auto inst = _instances[this_shard_id()].service;
-        if (!inst) {
-            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
-        }
-        return inst;
+        check_local();
+        return _instances[this_shard_id()].service;
     }
 };
 
@@ -574,7 +566,6 @@ private:
 /// \example sharded_parameter_demo.cc
 ///
 /// Example use of \ref sharded_parameter.
-SEASTAR_MODULE_EXPORT_END
 /// @}
 
 template <typename Service>
@@ -677,21 +668,13 @@ namespace internal {
 
 // Helper check if Service::stop exists
 
-struct sharded_has_stop {
+template <typename Service>
+concept sharded_has_stop = requires {
     // If a member names "stop" exists, try to call it, even if it doesn't
     // have the correct signature. This is so that we don't ignore a function
     // named stop() just because the signature is incorrect, and instead
     // force the user to resolve the ambiguity.
-    template <typename Service>
-    constexpr static auto check(int) -> std::enable_if_t<(sizeof(&Service::stop) >= 0), bool> {
-        return true;
-    }
-
-    // Fallback in case Service::stop doesn't exist.
-    template<typename>
-    static constexpr auto check(...) -> bool {
-        return false;
-    }
+    { &Service::stop };
 };
 
 template <bool stop_exists>
@@ -715,7 +698,7 @@ future<> sharded_call_stop<false>::call(Service&) {
 template <typename Service>
 future<>
 stop_sharded_instance(Service& instance) {
-    constexpr bool has_stop = internal::sharded_has_stop::check<Service>(0);
+    constexpr bool has_stop = internal::sharded_has_stop<Service>;
     return internal::sharded_call_stop<has_stop>::call(instance);
 }
 
@@ -916,7 +899,13 @@ bool sharded<Service>::local_is_initialized() const noexcept {
            _instances[this_shard_id()].service;
 }
 
-SEASTAR_MODULE_EXPORT_BEGIN
+template <typename Service>
+void sharded<Service>::check_local() const {
+    if (!local_is_initialized()) {
+        throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
+    }
+}
+
 /// \addtogroup smp-module
 /// @{
 /// Smart pointer wrapper which makes it safe to move across CPUs.
@@ -973,6 +962,14 @@ private:
         }
         return make_ready_future<>();
     }
+
+    void check_shard() const {
+#ifdef SEASTAR_DEBUG_SHARED_PTR
+        if (_cpu != this_shard_id()) [[unlikely]] {
+            on_fatal_internal_error(seastar_logger, "foreign_ptr accessed on non-owner cpu");
+        }
+#endif
+    }
 public:
     using element_type = typename std::pointer_traits<PtrType>::element_type;
     using pointer = element_type*;
@@ -1025,12 +1022,25 @@ public:
         _cpu = other._cpu;
         return *this;
     }
+    /// Return a reference to the wrapped pointer.
+    ///
+    /// Warning: This method must be called on the
+    /// owner shard to avoid accidents.
+    const PtrType& unwrap_on_owner_shard() const noexcept {
+        check_shard();
+        return _value;
+    }
+    PtrType& unwrap_on_owner_shard() noexcept {
+        check_shard();
+        return _value;
+    }
     /// Releases the owned pointer
     ///
     /// Warning: the caller is now responsible for destroying the
     /// pointer on its owner shard. This method is best called on the
     /// owner shard to avoid accidents.
     PtrType release() noexcept(std::is_nothrow_default_constructible_v<PtrType>) {
+        check_shard();
         return std::exchange(_value, {});
     }
     /// Replace the managed pointer with new_ptr.
@@ -1073,6 +1083,5 @@ foreign_ptr<T> make_foreign(T ptr) {
 template<typename T>
 struct is_smart_ptr<foreign_ptr<T>> : std::true_type {};
 
-SEASTAR_MODULE_EXPORT_END
 
 }

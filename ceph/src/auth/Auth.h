@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -58,7 +59,7 @@ struct EntityAuth {
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& bl);
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<EntityAuth*>& ls);
+  static std::list<EntityAuth> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(EntityAuth)
 
@@ -71,7 +72,7 @@ struct AuthCapsInfo {
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& bl);
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<AuthCapsInfo*>& ls);
+  static std::list<AuthCapsInfo> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(AuthCapsInfo)
 
@@ -83,24 +84,23 @@ WRITE_CLASS_ENCODER(AuthCapsInfo)
 struct AuthTicket {
   EntityName name;
   uint64_t global_id; /* global instance id */
-  utime_t created, renew_after, expires;
+  uint64_t auid; /* decoded value; encode writes CEPH_AUTH_UID_DEFAULT */
+  utime_t created, expires;
   AuthCapsInfo caps;
   __u32 flags;
 
-  AuthTicket() : global_id(0), flags(0){}
+  AuthTicket() : global_id(0), auid(CEPH_AUTH_UID_DEFAULT), flags(0) {}
 
   void init_timestamps(utime_t now, double ttl) {
     created = now;
     expires = now;
     expires += ttl;
-    renew_after = now;
-    renew_after += ttl / 2.0;
   }
 
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& bl);
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<AuthTicket*>& ls);
+  static std::list<AuthTicket> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(AuthTicket)
 
@@ -189,7 +189,7 @@ struct ExpiringCryptoKey {
     decode(expiration, bl);
   }
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<ExpiringCryptoKey*>& ls);
+  static std::list<ExpiringCryptoKey> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(ExpiringCryptoKey)
 
@@ -245,8 +245,9 @@ struct RotatingSecrets {
     return secrets.end();
   }
 
+  void dump();
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<RotatingSecrets*>& ls);
+  static std::list<RotatingSecrets> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RotatingSecrets)
 

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -16,6 +17,7 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <boost/system/errc.hpp>
+#include <cls/rbd/cls_rbd_ops.h>
 
 #include "include/neorados/RADOS.hpp"
 
@@ -164,10 +166,10 @@ CORO_TEST_F(NeoRadosMisc, LongAttrName, NeoRadosTest) {
 }
 
 CORO_TEST_F(NeoRadosMisc, Exec, NeoRadosTest) {
-  buffer::list out;
+  buffer::list in, out;
   co_await execute(oid, WriteOp{}.create(true));
   co_await execute(oid,
-		   ReadOp{}.exec("rbd"sv, "get_all_features"sv, {}, &out));
+		   ReadOp{}.exec(::cls::rbd::method::get_all_features, std::move(in), &out));
   auto features = from_buffer_list<std::uint64_t>(out);
   // make sure *some* features are specified; don't care which ones
   EXPECT_NE(0, features);

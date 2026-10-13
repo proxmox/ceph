@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -69,6 +69,15 @@ protected:
 public:
   using RGWHandler_REST_S3Website::RGWHandler_REST_S3Website;
   ~RGWHandler_REST_Bucket_S3Website() override = default;
+};
+
+class RGWRESTMgr_S3Website : public RGWRESTMgr {
+  friend class RGWRESTMgr_S3; // for protected get_resource_mgr()
+public:
+  RGWHandler_REST *get_handler(rgw::sal::Driver* driver,
+                               req_state* s,
+                               const rgw::auth::StrategyRegistry& auth_registry,
+                               const std::string& frontend_prefix) override;
 };
 
 // TODO: do we actually need this?

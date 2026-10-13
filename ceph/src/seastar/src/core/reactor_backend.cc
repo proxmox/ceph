@@ -18,9 +18,6 @@
 /*
  * Copyright 2019 ScyllaDB
  */
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <atomic>
 #include <chrono>
@@ -41,9 +38,6 @@ module;
 #include <liburing.h>
 #endif
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include "core/reactor_backend.hh"
 #include "core/thread_pool.hh"
 #include "core/syscall_result.hh"
@@ -55,7 +49,6 @@ module seastar;
 #include <seastar/core/smp.hh>
 #include <seastar/util/defer.hh>
 #include <seastar/util/read_first_line.hh>
-#endif
 
 namespace seastar {
 
@@ -113,7 +106,7 @@ void prepare_iocb(const io_request& req, io_completion* desc, iocb& iocb) {
 
 aio_storage_context::iocb_pool::iocb_pool() {
     for (unsigned i = 0; i != max_aio; ++i) {
-        _free_iocbs.push(&_iocb_pool[i]);
+        _free_iocbs.push(&_all_iocbs[i]);
     }
 }
 
@@ -123,7 +116,7 @@ aio_storage_context::aio_storage_context(reactor& r)
     static_assert(max_aio >= reactor::max_queues * reactor::max_queues,
                   "Mismatch between maximum allowed io and what the IO queues can produce");
     internal::setup_aio_context(max_aio, &_io_context);
-    _r.at_exit([this] { return stop(); });
+    _r.do_at_exit([this] { return stop(); });
 }
 
 aio_storage_context::~aio_storage_context() {
@@ -197,8 +190,6 @@ aio_storage_context::handle_aio_error(linux_abi::iocb* iocb, int ec) {
     }
 }
 
-extern bool aio_nowait_supported;
-
 bool
 aio_storage_context::submit_work() {
     bool did_work = false;
@@ -266,7 +257,8 @@ void aio_storage_context::schedule_retry() {
         }
         return false;
     }, [this] {
-        return _r._thread_pool->submit<syscall_result<int>>([this] () mutable {
+        return _r._thread_pool->submit<syscall_result<int>>(
+                internal::thread_pool_submit_reason::aio_fallback, [this] () mutable {
             auto r = io_submit(_io_context, _aio_retries.size(), _aio_retries.data());
             return wrap_syscall<int>(r);
         }).then_wrapped([this] (future<syscall_result<int>> f) {
@@ -307,6 +299,7 @@ bool aio_storage_context::reap_completions(bool allow_retry)
         auto iocb = get_iocb(_ev_buffer[i]);
         if (_ev_buffer[i].res == -EAGAIN && allow_retry) {
             set_nowait(*iocb, false);
+            _r._io_stats.aio_retries++;
             _pending_aio_retry.push_back(iocb);
             continue;
         }
@@ -537,6 +530,10 @@ reactor_backend_aio::reactor_backend_aio(reactor& r)
     SEASTAR_ASSERT(e == 0);
 }
 
+std::string_view reactor_backend_aio::get_backend_name() const {
+    return "linux-aio";
+}
+
 bool reactor_backend_aio::reap_kernel_completions() {
     bool did_work = await_events(0, nullptr);
     did_work |= _storage_context.reap_completions();
@@ -657,10 +654,6 @@ future<> reactor_backend_aio::connect(pollable_fd_state& fd, socket_address& sa)
     return _r.do_connect(fd, sa);
 }
 
-void reactor_backend_aio::shutdown(pollable_fd_state& fd, int how) {
-    fd.fd.shutdown(how);
-}
-
 future<size_t>
 reactor_backend_aio::read(pollable_fd_state& fd, void* buffer, size_t len) {
     return _r.do_read(fd, buffer, len);
@@ -676,14 +669,16 @@ reactor_backend_aio::read_some(pollable_fd_state& fd, internal::buffer_allocator
     return _r.do_read_some(fd, ba);
 }
 
+#if SEASTAR_API_LEVEL < 9
 future<size_t>
 reactor_backend_aio::send(pollable_fd_state& fd, const void* buffer, size_t len) {
     return _r.do_send(fd, buffer, len);
 }
+#endif
 
 future<size_t>
-reactor_backend_aio::sendmsg(pollable_fd_state& fd, net::packet& p) {
-    return _r.do_sendmsg(fd, p);
+reactor_backend_aio::sendmsg(pollable_fd_state& fd, std::span<iovec> iovs, size_t len) {
+    return _r.do_sendmsg(fd, iovs, len);
 }
 
 future<temporary_buffer<char>>
@@ -763,7 +758,7 @@ reactor_backend_epoll::task_quota_timer_thread_fn() {
         _r.request_preemption();
     }
 
-    while (!_r._dying.load(std::memory_order_relaxed)) {
+    while (!_dying.load(std::memory_order_relaxed)) {
         // Wait for either the task quota timer, or the high resolution timer, or both,
         // to expire.
         struct pollfd pfds[2] = {};
@@ -792,6 +787,10 @@ reactor_backend_epoll::task_quota_timer_thread_fn() {
 
 reactor_backend_epoll::~reactor_backend_epoll() = default;
 
+std::string_view reactor_backend_epoll::get_backend_name() const {
+    return "epoll";
+}
+
 void reactor_backend_epoll::start_tick() {
     _task_quota_timer_thread = std::thread(&reactor_backend_epoll::task_quota_timer_thread_fn, this);
 
@@ -804,7 +803,7 @@ void reactor_backend_epoll::start_tick() {
 }
 
 void reactor_backend_epoll::stop_tick() {
-    _r._dying.store(true, std::memory_order_relaxed);
+    _dying.store(true, std::memory_order_relaxed);
     _r._task_quota_timer.timerfd_settime(0, seastar::posix::to_relative_itimerspec(1ns, 1ms)); // Make the timer fire soon
     _task_quota_timer_thread.join();
 }
@@ -875,7 +874,7 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             evt.events = pfd->events_requested;
         }
         auto events = evt.events & (EPOLLIN | EPOLLOUT | EPOLLRDHUP);
-        auto events_to_remove = has_error ? pfd->events_requested : events & ~pfd->events_requested;
+        auto events_to_remove = events & ~pfd->events_requested;
         complete_epoll_event(*pfd, events, EPOLLRDHUP);
         if (pfd->events_rw) {
             // accept() signals normal completions via EPOLLIN, but errors (due to shutdown())
@@ -893,6 +892,13 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             evt.events = pfd->events_epoll;
             auto op = evt.events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
             ::epoll_ctl(_epollfd.get(), op, pfd->fd.get(), &evt);
+        } else if (has_error) {
+            // In the error case, all requested events are cleared (as we handle
+            // all requested events on error), so unconditionally delete the fd
+            // from epoll, which avoids edge conditions where we otherwise might
+            // get stuck spinning.
+            pfd->events_epoll = 0;
+            ::epoll_ctl(_epollfd.get(), EPOLL_CTL_DEL, pfd->fd.get(), nullptr);
         }
     }
     return nr;
@@ -1045,10 +1051,6 @@ future<> reactor_backend_epoll::connect(pollable_fd_state& fd, socket_address& s
     return _r.do_connect(fd, sa);
 }
 
-void reactor_backend_epoll::shutdown(pollable_fd_state& fd, int how) {
-    fd.fd.shutdown(how);
-}
-
 future<size_t>
 reactor_backend_epoll::read(pollable_fd_state& fd, void* buffer, size_t len) {
     return _r.do_read(fd, buffer, len);
@@ -1064,14 +1066,16 @@ reactor_backend_epoll::read_some(pollable_fd_state& fd, internal::buffer_allocat
     return _r.do_read_some(fd, ba);
 }
 
+#if SEASTAR_API_LEVEL < 9
 future<size_t>
 reactor_backend_epoll::send(pollable_fd_state& fd, const void* buffer, size_t len) {
     return _r.do_send(fd, buffer, len);
 }
+#endif
 
 future<size_t>
-reactor_backend_epoll::sendmsg(pollable_fd_state& fd, net::packet& p) {
-    return _r.do_sendmsg(fd, p);
+reactor_backend_epoll::sendmsg(pollable_fd_state& fd, std::span<iovec> iovs, size_t len) {
+    return _r.do_sendmsg(fd, iovs, len);
 }
 
 future<temporary_buffer<char>>
@@ -1449,6 +1453,9 @@ public:
     ~reactor_backend_uring() {
         ::io_uring_queue_exit(&_uring);
     }
+    virtual std::string_view get_backend_name() const override {
+        return "io_uring";
+    }
     virtual bool reap_kernel_completions() override {
         return do_process_kernel_completions();
     }
@@ -1596,9 +1603,6 @@ public:
         auto req = internal::io_request::make_connect(fd.fd.get(), desc->posix_sockaddr(), desc->socklen());
         return submit_request(std::move(desc), std::move(req));
     }
-    virtual void shutdown(pollable_fd_state& fd, int how) override {
-        fd.fd.shutdown(how);
-    }
     virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) override {
         return _r.do_read(fd, buffer, len);
     }
@@ -1703,23 +1707,15 @@ public:
             return submit_request(std::move(desc), std::move(req));
         });
     }
-    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) final {
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, std::span<iovec> iovs, size_t len) final {
         if (fd.take_speculation(EPOLLOUT)) {
-            static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
-                sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
-                offsetof(iovec, iov_len) == offsetof(net::fragment, size) &&
-                sizeof(iovec::iov_len) == sizeof(net::fragment::size) &&
-                alignof(iovec) == alignof(net::fragment) &&
-                sizeof(iovec) == sizeof(net::fragment)
-                , "net::fragment and iovec should be equivalent");
-
             ::msghdr mh = {};
-            mh.msg_iov = reinterpret_cast<iovec*>(p.fragment_array());
-            mh.msg_iovlen = std::min<size_t>(p.nr_frags(), IOV_MAX);
+            mh.msg_iov = iovs.data();
+            mh.msg_iovlen = std::min<size_t>(iovs.size(), IOV_MAX);
             try {
                 auto r = fd.fd.sendmsg(&mh, MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (r) {
-                    if (size_t(*r) == p.len()) {
+                    if (size_t(*r) == len) {
                         fd.speculate_epoll(EPOLLOUT);
                     }
                     return make_ready_future<size_t>(*r);
@@ -1734,10 +1730,10 @@ public:
             const size_t _to_write;
             promise<size_t> _result;
         public:
-            write_completion(pollable_fd_state& fd, net::packet& p)
-                : _fd(fd), _to_write(p.len()) {
-                _mh.msg_iov = reinterpret_cast<iovec*>(p.fragment_array());
-                _mh.msg_iovlen = std::min<size_t>(p.nr_frags(), IOV_MAX);
+            write_completion(pollable_fd_state& fd, std::span<iovec> iovs, size_t len)
+                : _fd(fd), _to_write(len) {
+                _mh.msg_iov = iovs.data();
+                _mh.msg_iovlen = std::min<size_t>(iovs.size(), IOV_MAX);
             }
             void complete(size_t bytes) noexcept final {
                 if (bytes == _to_write) {
@@ -1757,10 +1753,12 @@ public:
                 return _result.get_future();
             }
         };
-        auto desc = std::make_unique<write_completion>(fd, p);
+        auto desc = std::make_unique<write_completion>(fd, iovs, len);
         auto req = internal::io_request::make_sendmsg(fd.fd.get(), desc->msghdr(), MSG_NOSIGNAL);
         return submit_request(std::move(desc), std::move(req));
     }
+
+#if SEASTAR_API_LEVEL < 9
     virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) override {
         if (fd.take_speculation(EPOLLOUT)) {
             try {
@@ -1801,6 +1799,7 @@ public:
         auto req = internal::io_request::make_send(fd.fd.get(), buffer, len, MSG_NOSIGNAL);
         return submit_request(std::move(desc), std::move(req));
     }
+#endif
 
     virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override {
         if (fd.take_speculation(POLLIN)) {

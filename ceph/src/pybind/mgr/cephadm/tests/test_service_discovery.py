@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
-from cephadm.service_discovery import Root
+from typing import List
+from cephadm.services.service_discovery import Root
 from cephadm.services.service_registry import service_registry
 
 
@@ -58,6 +59,20 @@ class FakeInventory:
         return '1.2.3.4'
 
 
+class FakeNFSServiceSpec:
+    def __init__(self, port):
+        self.monitoring_port = None
+        self.monitoring_ip_addrs = None
+        self.monitoring_networks = None
+
+
+class FakeIngressServiceSpec:
+    def __init__(self, port):
+        self.monitor_port = port
+        self.monitor_ip_addrs = {}
+        self.monitor_networks = {}
+
+
 class FakeServiceSpec:
     def __init__(self, port):
         self.monitor_port = port
@@ -68,20 +83,25 @@ class FakeServiceSpec:
 
 
 class FakeSpecDescription:
-    def __init__(self, port):
-        self.spec = FakeServiceSpec(port)
+    def __init__(self, service, port):
+        if service == 'ingress':
+            self.spec = FakeIngressServiceSpec(port)
+        elif service == 'nfs':
+            self.spec = FakeNFSServiceSpec(port)
+        else:
+            self.spec = FakeServiceSpec(port)
 
 
 class FakeSpecStore():
     def __init__(self, mgr):
         self.mgr = mgr
-        self._specs = {'ingress': FakeSpecDescription(9049)}
+        self._specs = {'ingress': FakeSpecDescription('ingress', 9049), 'nfs': FakeSpecDescription('nfs', 9587), 'smb': FakeSpecDescription('smb', 9922)}
 
     def __contains__(self, name):
         return name in self._specs
 
     def __getitem__(self, name):
-        return self._specs['ingress']
+        return self._specs[name]
 
 
 class FakeMgr:
@@ -109,7 +129,10 @@ class FakeMgr:
         return -1, '', 'error'
 
     def get_module_option_ex(self, module, option, default_value):
-        return "9283"
+        # Port value for prometheus server_port (used by prometheus_sd_config).
+        if module == 'prometheus' and option == 'server_port':
+            return 9283
+        return default_value
 
     def daemon_is_self(self, d_type, d_id) -> bool:
         if d_type == 'mgr' and d_id == 'fake_active_mgr':
@@ -133,8 +156,27 @@ class TestServiceDiscovery:
             assert 'labels' in entry
             assert 'targets' in entry
 
-        # check content
-        assert cfg[0]['targets'] == ['node0:9283']
+        # check content - should return IP address instead of hostname
+        assert cfg[0]['targets'] == ['1.2.3.4:9283']
+
+    def test_get_sd_config_prometheus_uses_ip_when_hostname_unresolvable(self, monkeypatch):
+        mgr = FakeMgr()
+
+        def _mgr_daemons_no_ip(service_type: str) -> List[FakeDaemonDescription]:
+            if service_type == 'mgr':
+                return [
+                    FakeDaemonDescription(None, [9922], 'node0', daemon_type='mgr', daemon_id='fake_active_mgr'),
+                    FakeDaemonDescription('1.2.3.5', [9922], 'node1', daemon_type='mgr', daemon_id='fake_standby_mgr'),
+                ]
+            return FakeCache().get_daemons_by_service(service_type)
+
+        monkeypatch.setattr(mgr.cache, 'get_daemons_by_service', _mgr_daemons_no_ip)
+
+        root = Root(mgr)
+        cfg = root.get_sd_config('mgr-prometheus')
+
+        # Expect fallback to inventory IP (FakeInventory returns 1.2.3.4)
+        assert cfg == [{"targets": ["1.2.3.4:9283"], "labels": {}}]
 
     def test_get_sd_config_node_exporter(self):
         mgr = FakeMgr()

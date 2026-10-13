@@ -23,7 +23,6 @@
 
 #include <seastar/util/program-options.hh>
 #include <seastar/util/memory_diagnostics.hh>
-#include <seastar/util/modules.hh>
 #include <seastar/core/scheduling.hh>
 
 namespace seastar {
@@ -42,6 +41,8 @@ struct reactor_config {
     bool strict_o_direct = true;
     bool bypass_fsync = false;
     bool no_poll_aio = false;
+    bool aio_nowait_works = false;
+    bool abort_on_too_long_task_queue = false;
 };
 /// \endcond
 
@@ -49,7 +50,6 @@ class reactor_backend_selector;
 class network_stack_factory;
 
 /// Configuration for the reactor.
-SEASTAR_MODULE_EXPORT
 struct reactor_options : public program_options::option_group {
     /// \brief Select network stack to use.
     ///
@@ -134,6 +134,8 @@ struct reactor_options : public program_options::option_group {
     program_options::value<> overprovisioned;
     /// \brief Abort when seastar allocator cannot allocate memory.
     program_options::value<> abort_on_seastar_bad_alloc;
+    /// \brief Abort when a task queue becomes too long.
+    program_options::value<bool> abort_on_too_long_task_queue;
     /// \brief Force \p io_getevents(2) to issue a system call, instead of
     /// bypassing the kernel when possible.
     ///

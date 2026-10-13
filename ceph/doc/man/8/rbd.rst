@@ -392,7 +392,7 @@ Commands
 :command:`image-meta set` *image-spec* *key* *value*
   Set metadata key with the value. They will displayed in `image-meta list`.
 
-:command:`import` [--export-format *format (1 or 2)*] [--image-format *format-id*] [--object-size *size-in-B/K/M*] [--stripe-unit *size-in-B/K/M* --stripe-count *num*] [--image-feature *feature-name*]... [--image-shared] *src-path* [*image-spec*]
+:command:`import` [--export-format *format (1 or 2)*] [--image-format *format-id*] [--object-size *size-in-B/K/M*] [--stripe-unit *size-in-B/K/M* --stripe-count *num*] [--image-feature *feature-name*] [--estimated-size *size-in-M/G/T*]... [--image-shared] *src-path* [*image-spec*]
   Create a new image and import its data from path (use - for
   stdin).  The import operation will try to create sparse rbd images 
   if possible.  For import from stdin, the sparsification unit is
@@ -783,11 +783,10 @@ Per client instance `rbd device map` options:
   For msgr2.1 protocol this option is ignored.
 
 * cephx_require_signatures - Require msgr1 message signing feature (since 3.19,
-  default).  This option is deprecated and will be removed in the future as the
-  feature has been supported since the Bobtail release.
+  default).  This option is deprecated and will be removed in a future release.
 
 * nocephx_require_signatures - Don't require msgr1 message signing feature
-  (since 3.19).  This option is deprecated and will be removed in the future.
+  (since 3.19).  This option is deprecated and will be removed in a future release.
 
 * tcp_nodelay - Disable Nagle's algorithm on client sockets (since 4.0,
   default).
@@ -869,6 +868,11 @@ Per mapping (block device) `rbd device map` options:
 
 * read_from_replica=balance - When issued a read on a replicated pool, pick
   a random OSD for serving it (since 5.8).
+
+  When issued a read on an erasure-coded pool, pick the shard that stores the
+  data, giving a performance uplift over routing the request via the primary
+  (requires Umbrella server and client; kernel client support is planned for a
+  future release).
 
   This mode is safe for general use only since Octopus (i.e. after "ceph osd
   require-osd-release octopus").  Otherwise it should be limited to read-only
@@ -974,7 +978,7 @@ To delete a snapshot::
 
        rbd snap rm mypool/myimage@mysnap
 
-To map an image via the kernel with CephX enabled::
+To map an image via the kernel with cephx enabled::
 
        rbd device map mypool/myimage --id admin --keyfile secretfile
 
@@ -1037,7 +1041,7 @@ To restore an image from trash and rename it::
 
 To create a mirror snapshot schedule for an image::
 
-       rbd mirror snapshot schedule add --pool mypool --image myimage 12h 14:00:00-05:00
+       rbd mirror snapshot schedule add --pool mypool --image myimage 12h 2020-01-14T11:30+05:30
 
 Availability
 ============

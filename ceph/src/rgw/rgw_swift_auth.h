@@ -1,10 +1,19 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 #include "rgw_common.h"
-#include "rgw_user.h"
+#include "driver/rados/rgw_user.h"
 #include "rgw_op.h"
 #include "rgw_rest.h"
 #include "rgw_auth.h"
@@ -393,9 +402,9 @@ class FormatSignature<HASHFLAVOR, SignatureFlavor::BARE_HEX> : public SignatureH
   using base_t = SignatureHelperT<HASHFLAVOR>;
 public:
   const char *result() {
-    buf_to_hex((UCHARPTR) base_t::dest,
-      signature_hash_size<HASHFLAVOR>,
-      base_t::dest_str);
+    auto i = buf_to_hex(std::span{(UCHARPTR) base_t::dest, signature_hash_size<HASHFLAVOR>},
+                        std::begin(base_t::dest_str));
+    *i++ = '\0';
     base_t::dest_size = strlen(base_t::dest_str);
     return base_t::dest_str;
   };

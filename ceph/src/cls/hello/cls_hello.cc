@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 /*
  * This is a simple example RADOS class, designed to be usable as a
@@ -36,6 +36,7 @@
 
 #include "objclass/objclass.h"
 #include "osd/osd_types.h"
+#include "cls_hello_ops.h"
 
 using std::string;
 using std::ostringstream;
@@ -87,9 +88,9 @@ static int record_hello(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   // we can write arbitrary stuff to the ceph-osd debug log.  each log
   // message is accompanied by an integer log level.  smaller is
   // "louder".  how much of this makes it into the log is controlled
-  // by the debug_cls option on the ceph-osd, similar to how other log
+  // by the debug_objclass option on the ceph-osd, similar to how other log
   // levels are controlled.  this message, at level 20, will generally
-  // not be seen by anyone unless debug_cls is set at 20 or higher.
+  // not be seen by anyone unless debug_objclass is set at 20 or higher.
   CLS_LOG(20, "in record_hello");
 
   // see if the input data from the client matches what this method
@@ -326,7 +327,9 @@ CLS_INIT(hello)
   cls_method_handle_t h_bad_reader;
   cls_method_handle_t h_bad_writer;
 
-  cls_register("hello", &h_class);
+  using namespace cls::hello;
+  cls_register(ClassId::name, &h_class);
+  ClassRegistrar<ClassId> cls(h_class);
 
   // There are two flags we specify for methods:
   //
@@ -337,36 +340,20 @@ CLS_INIT(hello)
   // neither, the data it returns to the caller is a function of the
   // request and not the object contents.
 
-  cls_register_cxx_method(h_class, "say_hello",
-			  CLS_METHOD_RD,
-			  say_hello, &h_say_hello);
-  cls_register_cxx_method(h_class, "record_hello",
-			  CLS_METHOD_WR | CLS_METHOD_PROMOTE,
-			  record_hello, &h_record_hello);
-  cls_register_cxx_method(h_class, "write_return_data",
-			  CLS_METHOD_WR,
-			  write_return_data, &h_write_return_data);
+  cls.register_cxx_method(method::say_hello,                  say_hello,                  &h_say_hello);
+  cls.register_cxx_method(method::record_hello,               record_hello,               &h_record_hello);
+  cls.register_cxx_method(method::write_return_data,          write_return_data,          &h_write_return_data);
   // legacy alias for this method for pre-octopus clients
-  cls_register_cxx_method(h_class, "writes_dont_return_data",
-			  CLS_METHOD_WR,
-			  write_return_data, &h_writes_dont_return_data);
-  cls_register_cxx_method(h_class, "write_too_much_return_data",
-			  CLS_METHOD_WR,
-			  write_too_much_return_data, &h_write_too_much_return_data);
-  cls_register_cxx_method(h_class, "replay",
-			  CLS_METHOD_RD,
-			  replay, &h_replay);
+  cls.register_cxx_method(method::writes_dont_return_data,    write_return_data,          &h_writes_dont_return_data);
+  cls.register_cxx_method(method::write_too_much_return_data, write_too_much_return_data, &h_write_too_much_return_data);
+  cls.register_cxx_method(method::replay,                     replay,                     &h_replay);
 
   // RD | WR is a read-modify-write method.
-  cls_register_cxx_method(h_class, "turn_it_to_11",
-			  CLS_METHOD_RD | CLS_METHOD_WR | CLS_METHOD_PROMOTE,
-			  turn_it_to_11, &h_turn_it_to_11);
+  cls.register_cxx_method(method::turn_it_to_11,              turn_it_to_11,              &h_turn_it_to_11);
 
   // counter-examples
-  cls_register_cxx_method(h_class, "bad_reader", CLS_METHOD_WR,
-			  bad_reader, &h_bad_reader);
-  cls_register_cxx_method(h_class, "bad_writer", CLS_METHOD_RD,
-			  bad_writer, &h_bad_writer);
+  cls.register_cxx_method(method::bad_reader,                 bad_reader,                 &h_bad_reader);
+  cls.register_cxx_method(method::bad_writer,                 bad_writer,                 &h_bad_writer);
 
   // A PGLS filter
   cls_register_cxx_filter(h_class, "hello", hello_filter);

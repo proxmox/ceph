@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef LIBRADOS_TEST_STUB_MOCK_TEST_MEM_RADOS_CLIENT_H
 #define LIBRADOS_TEST_STUB_MOCK_TEST_MEM_RADOS_CLIENT_H
@@ -75,7 +75,7 @@ public:
   int do_mon_command(const std::vector<std::string>& cmd,
                      const bufferlist &inbl, bufferlist *outbl,
                      std::string *outs) {
-    return mon_command(cmd, inbl, outbl, outs);
+    return TestRadosClient::mon_command(cmd, inbl, outbl, outs);
   }
 
   MOCK_METHOD0(wait_for_latest_osd_map, int());

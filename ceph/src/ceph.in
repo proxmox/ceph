@@ -1,6 +1,6 @@
 #!@Python3_EXECUTABLE@
 # -*- mode:python -*-
-# vim: ts=4 sw=4 smarttab expandtab
+# vim: ts=4 sw=4 expandtab
 #
 # Processed in Makefile to add python #! line and version variable
 #
@@ -310,7 +310,7 @@ def parse_cmdargs(args=None, target='') -> Tuple[argparse.ArgumentParser,
 
     parser.add_argument('--admin-daemon', dest='admin_socket',
                         help='submit admin-socket command (e.g. "help\" for' \
-                        'a list of available commands)')
+                        ' a list of available commands)')
 
     parser.add_argument('-s', '--status', action='store_true',
                         help='show cluster status')

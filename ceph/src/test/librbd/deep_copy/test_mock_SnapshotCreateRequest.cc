@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librados_test_stub/LibradosTestStub.h"
@@ -127,7 +127,7 @@ public:
     std::string oid(librbd::ObjectMap<>::object_map_name(mock_image_ctx.id,
                                                          snap_id));
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                exec(oid, _, StrEq("rbd"), StrEq("object_map_resize"), _, _, _,
+                exec_internal(oid, _, StrEq("rbd"), StrEq("object_map_resize"), _, _, _,
                      _))
                   .WillOnce(Return(r));
   }

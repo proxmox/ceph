@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_JOURNAL_OBJECT_RECORDER_H
 #define CEPH_JOURNAL_OBJECT_RECORDER_H
@@ -21,6 +21,8 @@
 namespace journal {
 
 class ObjectRecorder;
+void intrusive_ptr_add_ref(ObjectRecorder*);
+void intrusive_ptr_release(ObjectRecorder*);
 
 typedef std::pair<ceph::ref_t<FutureImpl>, bufferlist> AppendBuffer;
 typedef std::list<AppendBuffer> AppendBuffers;
@@ -154,6 +156,16 @@ private:
   void notify_handler_unlock(std::unique_lock<ceph::mutex>& locker,
                              bool notify_overflowed);
 };
+
+inline void intrusive_ptr_add_ref(ObjectRecorder* o)
+{
+  o->get();
+}
+
+inline void intrusive_ptr_release(ObjectRecorder* o)
+{
+  o->put();
+}
 
 } // namespace journal
 

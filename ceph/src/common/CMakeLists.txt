@@ -19,6 +19,7 @@ add_subdirectory(options)
 set(common_srcs
   AsyncOpTracker.cc
   BackTrace.cc
+  CompatSet.cc
   ConfUtils.cc
   Cycles.cc
   CDC.cc
@@ -28,6 +29,7 @@ set(common_srcs
   FixedCDC.cc
   Formatter.cc
   Graylog.cc
+  JSONFormatter.cc
   HTMLFormatter.cc
   HeartbeatMap.cc
   LogClient.cc
@@ -38,12 +40,14 @@ set(common_srcs
   Readahead.cc
   RefCountedObj.cc
   SloppyCRCMap.cc
+  TableFormatter.cc
   Thread.cc
   Throttle.cc
   Timer.cc
   TracepointProvider.cc
   TrackedOp.cc
   WorkQueue.cc
+  XMLFormatter.cc
   admin_socket.cc
   admin_socket_client.cc
   assert.cc
@@ -90,6 +94,7 @@ set(common_srcs
   perf_counters_key.cc
   perf_histogram.cc
   pick_address.cc
+  prime.cc
   random_string.cc
   reverse.c
   run_cmd.cc
@@ -105,7 +110,15 @@ set(common_srcs
   utf8.c
   util.cc
   version.cc
+  mclock_common.cc
   tcp_info.cc)
+
+if(WITH_CPUTRACE)
+  list(APPEND common_srcs
+    cputrace.cc)
+endif()
+
+include_directories(${CMAKE_SOURCE_DIR}/src/dmclock/support/src)
 
 if(WITH_SYSTEMD)
   list(APPEND common_srcs
@@ -196,7 +209,11 @@ target_compile_definitions(common-common-objs PRIVATE
   "CEPH_INSTALL_FULL_PKGLIBDIR=\"${CEPH_INSTALL_FULL_PKGLIBDIR}\""
   "CEPH_INSTALL_DATADIR=\"${CEPH_INSTALL_DATADIR}\""
   $<TARGET_PROPERTY:${FMT_LIB},INTERFACE_COMPILE_DEFINITIONS>)
-target_link_libraries(common-common-objs legacy-option-headers)
+target_link_libraries(common-common-objs PUBLIC legacy-option-headers)
+if(WITH_BREAKPAD)
+  target_link_libraries(common-common-objs PUBLIC
+    Breakpad::client)
+endif()
 
 set(common_mountcephfs_srcs
   armor.c
@@ -217,10 +234,13 @@ if(HAVE_INTEL)
   if(HAVE_NASM_X64)
     set(CMAKE_ASM_FLAGS "-i ${PROJECT_SOURCE_DIR}/src/isa-l/include/ ${CMAKE_ASM_FLAGS}")
     list(APPEND crc32_srcs
-      ${PROJECT_SOURCE_DIR}/src/isa-l/crc/crc32_iscsi_00.asm
       ${PROJECT_SOURCE_DIR}/src/isa-l/crc/crc32_iscsi_01.asm
       crc32c_intel_fast_zero_asm.s)
   endif(HAVE_NASM_X64)
+  if(HAVE_NASM_X64_AVX512_VPCLMUL)
+    set(CMAKE_ASM_FLAGS "-DAS_FEATURE_LEVEL=10 ${CMAKE_ASM_FLAGS}")
+    list(APPEND crc32_srcs ${PROJECT_SOURCE_DIR}/src/isa-l/crc/crc32_iscsi_by16_10.asm)
+  endif(HAVE_NASM_X64_AVX512_VPCLMUL)
 elseif(HAVE_POWER8)
   list(APPEND crc32_srcs
     crc32c_ppc.c)
@@ -238,6 +258,11 @@ elseif(HAVE_S390X)
     crc32c_s390x.c
     crc32c_s390x_le-vx.S
   )
+elseif(HAVE_RISCV_ZVBC OR HAVE_RISCV_ZBC)
+  list(APPEND crc32_srcs
+    crc32c_riscv.c
+    crc32c_riscv_zbc_asm.S
+  )
 endif(HAVE_INTEL)
 
 add_library(crc32 OBJECT ${crc32_srcs})
@@ -245,6 +270,15 @@ add_library(crc32 OBJECT ${crc32_srcs})
 if(HAVE_ARMV8_CRC)
   set_target_properties(crc32 PROPERTIES
     COMPILE_FLAGS "${CMAKE_C_FLAGS} ${ARMV8_CRC_COMPILE_FLAGS}")
+endif()
+if(HAVE_RISCV)
+  set_target_properties(crc32 PROPERTIES COMPILE_FLAGS "${CMAKE_C_FLAGS} ${SIMD_COMPILE_FLAGS}")
+  if(HAVE_RISCV_ZBC)
+    target_compile_definitions(crc32 PRIVATE HAVE_RISCV_ZBC)
+  endif()
+  if(HAVE_RISCV_ZVBC)
+    target_compile_definitions(crc32 PRIVATE HAVE_RISCV_ZVBC)
+  endif()
 endif()
 target_link_libraries(crc32
   arch)
@@ -255,4 +289,9 @@ if(HAVE_KEYUTILS)
   set(parse_secret_srcs
     secret.c)
   add_library(parse_secret_objs OBJECT ${parse_secret_srcs})
+
+  set(keyring_srcs
+    keyring.cc)
+  add_library(keyring STATIC ${keyring_srcs})
+  target_link_libraries(keyring keyutils::keyutils)
 endif()

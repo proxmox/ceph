@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -332,13 +333,14 @@ int ObjBencher::aio_bench(
     }
 
     data.start_time = mono_clock::now();
-    out(cout) << "Cleaning up (deleting benchmark objects)" << std::endl;
+    out(cerr) << "Cleaning up (deleting benchmark objects)" << std::endl;
 
     r = clean_up(num_objects, prev_pid, concurrentios);
     if (r != 0) goto out;
 
     timePassed = mono_clock::now() - data.start_time;
-    out(cout) << "Clean up completed and total clean up time :" << timePassed.count() << std::endl;
+    out(cerr) << "Clean up completed and total clean up time :"
+              << timePassed.count() << std::endl;
 
     // lastrun file
     r = sync_remove(run_name_meta);
@@ -1243,7 +1245,8 @@ int ObjBencher::clean_up(int num_objects, int prevPid, int concurrentios) {
 
   completions_done();
 
-  out(cout) << "Removed " << data.finished << " object" << (data.finished != 1 ? "s" : "") << std::endl;
+  out(cerr) << "Removed " << data.finished << " object"
+            << (data.finished != 1 ? "s" : "") << std::endl;
 
   return 0;
 
@@ -1430,7 +1433,8 @@ int ObjBencher::clean_up_slow(const std::string& prefix, int concurrentios) {
 
   completions_done();
 
-  out(cout) << "Removed " << data.finished << " object" << (data.finished != 1 ? "s" : "") << std::endl;
+  out(cerr) << "Removed " << data.finished << " object"
+            << (data.finished != 1 ? "s" : "") << std::endl;
 
   return 0;
 

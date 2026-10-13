@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -158,6 +159,11 @@ struct ObjectOperation {
 		    c.release()->complete(r);
 		  });
 
+  }
+
+  OSDOp& pass_thru_op(OSDOp& op) {
+    ops.emplace_back(op);
+    return ops.back();
   }
 
   OSDOp& add_op(int op) {
@@ -673,6 +679,7 @@ struct ObjectOperation {
   struct CB_ObjectOperation_decodevals {
     uint64_t max_entries;
     Vals* pattrs;
+    Vals ignore;
     bool* ptruncated;
     int* prval;
     boost::system::error_code* pec;
@@ -691,7 +698,6 @@ struct ObjectOperation {
 	  if (pattrs)
 	    decode(*pattrs, p);
 	  if (ptruncated) {
-	    Vals ignore;
 	    if (!pattrs) {
 	      decode(ignore, p);
 	      pattrs = &ignore;
@@ -718,6 +724,7 @@ struct ObjectOperation {
   struct CB_ObjectOperation_decodekeys {
     uint64_t max_entries;
     Keys* pattrs;
+    Keys ignore;
     bool *ptruncated;
     int *prval;
     boost::system::error_code* pec;
@@ -736,7 +743,6 @@ struct ObjectOperation {
 	  if (pattrs)
 	    decode(*pattrs, p);
 	  if (ptruncated) {
-	    Keys ignore;
 	    if (!pattrs) {
 	      decode(ignore, p);
 	      pattrs = &ignore;
@@ -1504,6 +1510,14 @@ struct ObjectOperation {
     osd_op.op.assert_ver.ver = ver;
   }
 
+  void get_internal_versions(boost::system::error_code* ec,
+		buffer::list *pbl) {
+  	ceph::buffer::list bl;
+  	add_op(CEPH_OSD_OP_GET_INTERNAL_VERSIONS);
+  	out_bl.back() = pbl;
+  	out_ec.back() = ec;
+  }
+
   void cmpxattr(const char *name, const ceph::buffer::list& val,
 		int op, int mode) {
     add_xattr(CEPH_OSD_OP_CMPXATTR, name, val);
@@ -1685,6 +1699,10 @@ inline std::ostream& operator <<(std::ostream& m, const ObjectOperation& oo) {
 // ----------------
 
 class Objecter : public md_config_obs_t, public Dispatcher {
+  friend class SplitOp;
+  friend class ECSplitOp;
+  friend class ReplicaSplitOp;
+
   using MOSDOp = _mosdop::MOSDOp<osdc_opvec>;
 public:
   using OpSignature = void(boost::system::error_code);
@@ -2017,6 +2035,7 @@ public:
     uint64_t ontimeout = 0;
 
     ceph_tid_t tid = 0;
+    std::unique_ptr<std::vector<ceph_tid_t>> split_op_tids;
     int attempts = 0;
 
     version_t *objver;
@@ -2117,6 +2136,26 @@ public:
 
     bool operator<(const Op& other) const {
       return tid < other.tid;
+    }
+
+    void pass_thru_op(::ObjectOperation &other, unsigned index, bufferlist *bl, int *rval) {
+      ceph_assert(index < ops.size());
+
+      other.pass_thru_op(ops[index]);
+      unsigned p = other.ops.size() - 1;
+      ceph_assert(out_bl.size() == ops.size());
+      ceph_assert(out_rval.size() == ops.size());
+      ceph_assert(out_ec.size() == ops.size());
+      ceph_assert(out_handler.size() == ops.size());
+
+      other.out_bl.resize(p + 1);
+      other.out_rval.resize(p + 1);
+      other.out_ec.resize(p + 1);
+      other.out_handler.resize(p + 1);
+
+      other.out_bl[p] = bl;
+      other.out_rval[p] = rval;
+      // We don't copy the out handler here - it must be run by the copied-from op.
     }
 
   private:
@@ -2515,6 +2554,7 @@ public:
   std::atomic<unsigned> num_homeless_ops{0};
 
   OSDSession* homeless_session = new OSDSession(cct, -1);
+  OSDSession* splitop_session = new OSDSession(cct, -2); // -2 to differentiate from homeless
 
 
   // ops waiting for an osdmap with a new pool or confirmation that
@@ -2530,6 +2570,8 @@ public:
   ceph::timespan mon_timeout;
   ceph::timespan osd_timeout;
 
+  uint64_t min_split_replica_read_size;
+
   // last time osdmap was requested
   ceph::coarse_mono_time last_osdmap_request_time;
 
@@ -2538,6 +2580,8 @@ public:
   void _send_op_account(Op *op);
   void _cancel_linger_op(Op *op);
   void _finish_op(Op *op, int r);
+  boost::system::error_code process_op_reply_handlers(Op *op, std::vector<OSDOp> &out_ops);
+  void complete_op_reply(Op *op, boost::system::error_code handler_error, OSDSession *s, std::unique_lock<std::shared_mutex> &sl, int rc);
   static bool is_pg_changed(
     int oldprimary,
     const std::vector<int>& oldacting,
@@ -2559,8 +2603,7 @@ public:
     Op *op);
 
   bool target_should_be_paused(op_target_t *op);
-  int _calc_target(op_target_t *t, Connection *con,
-		   bool any_change = false);
+  int _calc_target(op_target_t *t, bool any_change = false);
   int _map_session(op_target_t *op, OSDSession **s,
 		   ceph::shunique_lock<ceph::shared_mutex>& lc);
 
@@ -2759,7 +2802,7 @@ private:
 	std::unique_lock l(rwlock);
 	if (osdmap->get_epoch()) {
 	  l.unlock();
-	  boost::asio::post(std::move(handler));
+	  boost::asio::post(service.get_executor(), std::move(handler));
 	} else {
 	  auto e = boost::asio::get_associated_executor(
 	    handler, service.get_executor());
@@ -2802,12 +2845,14 @@ private:
   // low-level
   void _op_submit(Op *op, ceph::shunique_lock<ceph::shared_mutex>& lc,
 		  ceph_tid_t *ptid);
+  void add_op_to_splitop_session(Op *op);
   void _op_submit_with_budget(Op *op,
 			      ceph::shunique_lock<ceph::shared_mutex>& lc,
 			      ceph_tid_t *ptid,
 			      int *ctx_budget = NULL);
   // public interface
 public:
+  void op_post_split_op_complete(Op* op, boost::system::error_code ec, int rc);
   void op_submit(Op *op, ceph_tid_t *ptid = NULL, int *ctx_budget = NULL);
   bool is_active() {
     std::shared_lock l(rwlock);
@@ -2867,7 +2912,8 @@ public:
     return boost::asio::async_initiate<decltype(consigned), OpSignature>(
       [epoch, this](auto handler) {
 	if (osdmap->get_epoch() >= epoch) {
-	  boost::asio::post(boost::asio::append(
+          boost::asio::post(service.get_executor(),
+                            boost::asio::append(
 			      std::move(handler),
 			      boost::system::error_code{}));
 	} else {
@@ -2936,6 +2982,10 @@ public:
     global_op_flags.fetch_and(~flags);
   }
 
+  uint64_t get_min_split_replica_read_size() {
+    return min_split_replica_read_size;
+  }
+
   /// cancel an in-progress request with the given return code
 private:
   int op_cancel(OSDSession *s, ceph_tid_t tid, int r,
@@ -2970,8 +3020,8 @@ public:
   epoch_t op_cancel_writes(int r, int64_t pool=-1);
 
   // commands
-  void osd_command_(int osd, std::vector<std::string> cmd,
-		   ceph::buffer::list inbl, ceph_tid_t *ptid,
+  void osd_command_(int osd, std::vector<std::string>&& cmd,
+		   ceph::buffer::list&& inbl, ceph_tid_t *ptid,
 		   decltype(CommandOp::onfinish)&& onfinish) {
     ceph_assert(osd >= 0);
     auto c = new CommandOp(
@@ -2982,22 +3032,22 @@ public:
     submit_command(c, ptid);
   }
   template<typename CompletionToken>
-  auto osd_command(int osd, std::vector<std::string> cmd,
-		   ceph::buffer::list inbl, ceph_tid_t *ptid,
+  auto osd_command(int osd, std::vector<std::string>&& cmd,
+		   ceph::buffer::list&& inbl, ceph_tid_t *ptid,
 		   CompletionToken&& token) {
     auto consigned = boost::asio::consign(
       std::forward<CompletionToken>(token), boost::asio::make_work_guard(
 	service.get_executor()));
     return boost::asio::async_initiate<decltype(consigned), CommandOp::OpSig>(
       [osd, cmd = std::move(cmd), inbl = std::move(inbl), ptid, this]
-      (auto handler) {
+      (auto handler) mutable {
 	osd_command_(osd, std::move(cmd), std::move(inbl), ptid,
 		     std::move(handler));
       }, consigned);
   }
 
-  void pg_command_(pg_t pgid, std::vector<std::string> cmd,
-		   ceph::buffer::list inbl, ceph_tid_t *ptid,
+  void pg_command_(pg_t pgid, std::vector<std::string>&& cmd,
+		   ceph::buffer::list&& inbl, ceph_tid_t *ptid,
 		   decltype(CommandOp::onfinish)&& onfinish) {
     auto *c = new CommandOp(
       pgid,
@@ -3008,14 +3058,14 @@ public:
   }
 
   template<typename CompletionToken>
-  auto pg_command(pg_t pgid, std::vector<std::string> cmd,
-		  ceph::buffer::list inbl, ceph_tid_t *ptid,
+  auto pg_command(pg_t pgid, std::vector<std::string>&& cmd,
+		  ceph::buffer::list&& inbl, ceph_tid_t *ptid,
 		  CompletionToken&& token) {
     auto consigned = boost::asio::consign(
       std::forward<CompletionToken>(token), boost::asio::make_work_guard(service.get_executor()));
     return async_initiate<decltype(consigned), CommandOp::OpSig> (
       [pgid, cmd = std::move(cmd), inbl = std::move(inbl), ptid, this]
-      (auto handler) {
+      (auto handler) mutable {
 	pg_command_(pgid, std::move(cmd), std::move(inbl), ptid,
 		    std::move(handler));
       }, consigned);

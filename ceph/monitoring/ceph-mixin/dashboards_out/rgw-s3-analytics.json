@@ -4662,7 +4662,8 @@
    "schemaVersion": 22,
    "style": "dark",
    "tags": [
-      "ceph-mixin"
+      "ceph-mixin",
+      "protocol"
    ],
    "templating": {
       "list": [
@@ -4759,7 +4760,7 @@
       ]
    },
    "timezone": "",
-   "title": "RGW S3 Analytics",
+   "title": "Ceph Object - S3 Analytics",
    "uid": "BnxelG7Sz",
    "version": 0
 }

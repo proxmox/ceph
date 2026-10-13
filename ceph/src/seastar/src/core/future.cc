@@ -19,20 +19,11 @@
  * Copyright (C) 2020 ScyllaDB
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#include <exception>
-#include <tuple>
-#include <type_traits>
-#include <utility>
-module seastar;
-#else
 #include <seastar/core/future.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/report_exception.hh>
 #include <seastar/util/backtrace.hh>
-#endif
 #include <seastar/util/assert.hh>
 
 namespace seastar {
@@ -225,6 +216,8 @@ void future_state_base::rethrow_exception() const& {
     std::rethrow_exception(_u.ex);
 }
 
+namespace internal {
+
 void report_failed_future(const std::exception_ptr& eptr) noexcept {
     ++engine()._abandoned_failed_futures;
     seastar_logger.warn("Exceptional future ignored: {}, backtrace: {}", eptr, current_backtrace());
@@ -237,6 +230,8 @@ void report_failed_future(const future_state_base& state) noexcept {
 void report_failed_future(future_state_base::any&& state) noexcept {
     report_failed_future(std::move(state).take_exception());
 }
+
+} // internal namespace
 
 void reactor::test::with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func) {
     auto before = engine()._abandoned_failed_futures;

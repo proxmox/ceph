@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -406,7 +407,7 @@ int main(int argc, const char **argv)
     monmap.strategy = static_cast<MonMap::election_strategy>(
 		  g_conf().get_val<uint64_t>("mon_election_default_strategy"));
     if (min_mon_release == ceph_release_t::unknown) {
-      min_mon_release = ceph_release_t::tentacle;
+      min_mon_release = ceph_release_t::umbrella;
     }
     // TODO: why do we not use build_initial in our normal path here!?!?!
     modified = true;

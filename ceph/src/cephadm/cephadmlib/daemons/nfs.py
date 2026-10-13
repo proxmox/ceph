@@ -61,6 +61,7 @@ class NFSGanesha(ContainerDaemonForm):
         self.extra_args = dict_get(config_json, 'extra_args', [])
         self.files = dict_get(config_json, 'files', {})
         self.rgw = dict_get(config_json, 'rgw', {})
+        self.enable_rdma = dict_get(config_json, 'enable_rdma', False)
 
         # validate the supplied args
         self.validate()
@@ -177,10 +178,23 @@ class NFSGanesha(ContainerDaemonForm):
 
         # create the ganesha conf dir
         config_dir = os.path.join(data_dir, 'etc/ganesha')
+        tls_dir = os.path.join(data_dir, 'etc/ganesha/tls')
         makedirs(config_dir, uid, gid, 0o755)
+        makedirs(tls_dir, uid, gid, 0o755)
 
+        config_files = {
+            fname: content
+            for fname, content in self.files.items()
+            if fname in ['ganesha.conf', 'idmap.conf']
+        }
+        tls_files = {
+            fname: content
+            for fname, content in self.files.items()
+            if fname.startswith('tls')
+        }
         # populate files from the config-json
-        populate_files(config_dir, self.files, uid, gid)
+        populate_files(config_dir, config_files, uid, gid)
+        populate_files(tls_dir, tls_files, uid, gid)
 
         # write the RGW keyring
         if self.rgw:
@@ -225,6 +239,17 @@ class NFSGanesha(ContainerDaemonForm):
         self, ctx: CephadmContext, args: List[str]
     ) -> None:
         args.append(ctx.container_engine.unlimited_pids_option)
+        if self.enable_rdma:
+            # Container args when NFS RDMA is enabled
+            rdma_args: List[str] = [
+                '-v',
+                '/dev/infiniband:/dev/infiniband',
+                '--cap-add=IPC_LOCK',
+                '--ulimit',
+                'memlock=-1:-1',
+                '--privileged',
+            ]
+            args.extend(rdma_args)
 
     def default_entrypoint(self) -> str:
         return self.entrypoint

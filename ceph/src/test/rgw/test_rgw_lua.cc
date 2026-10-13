@@ -7,25 +7,13 @@
 #include "rgw_lua_data_filter.h"
 #include "rgw_sal_config.h"
 #include "rgw_perf_counters.h"
+#include "rgw_tag.h"
 
 using namespace std;
 using namespace rgw;
 using boost::container::flat_set;
 using rgw::auth::Identity;
 using rgw::auth::Principal;
-
-class CctCleaner {
-  CephContext* cct;
-public:
-  CctCleaner(CephContext* _cct) : cct(_cct) {}
-  ~CctCleaner() { 
-#ifdef WITH_CRIMSON
-    delete cct; 
-#else
-    cct->put(); 
-#endif
-  }
-};
 
 class FakeIdentity : public Identity {
 public:
@@ -57,6 +45,10 @@ public:
 
   uint32_t get_identity_type() const override {
     return TYPE_RGW;
+  }
+
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    return std::nullopt;
   }
 
   string get_acct_name() const override {
@@ -164,10 +156,6 @@ public:
   }
 };
 
-auto g_cct = new CephContext(CEPH_ENTITY_TYPE_CLIENT);
-
-CctCleaner cleaner(g_cct);
-
 tracing::Tracer tracer;
 
 class TestLuaManager : public rgw::sal::StoreLuaManager {
@@ -175,12 +163,16 @@ class TestLuaManager : public rgw::sal::StoreLuaManager {
     std::string lua_script;
     unsigned read_time = 0;
     TestLuaManager() {
-      rgw_perf_start(g_cct);
+      rgw_perf_start(g_ceph_context);
     }
     int get_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, std::string& script) override {
       std::this_thread::sleep_for(std::chrono::seconds(read_time));
       script = lua_script;
       return 0;
+    }
+    std::tuple<rgw::lua::LuaCodeType, int> get_script_or_bytecode(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key) override {
+      std::this_thread::sleep_for(std::chrono::seconds(read_time));
+      return std::make_tuple(lua_script, 0);
     }
     int put_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, const std::string& script) override {
       return 0;
@@ -201,7 +193,7 @@ class TestLuaManager : public rgw::sal::StoreLuaManager {
       return 0;
     }
     ~TestLuaManager() {
-      rgw_perf_stop(g_cct);
+      rgw_perf_stop(g_ceph_context);
     }
 };
 
@@ -215,9 +207,9 @@ void set_read_time(rgw::sal::LuaManager* manager, unsigned read_time) {
 #define DEFINE_REQ_STATE RGWProcessEnv pe; \
   pe.lua.manager = std::make_unique<TestLuaManager>(); \
   RGWEnv e; \
-  req_state s(g_cct, pe, &e, 0);
+  req_state s(g_ceph_context, pe, &e, 0);
 
-#define INIT_TRACE tracer.init(g_cct, "test"); \
+#define INIT_TRACE tracer.init(g_ceph_context, "test"); \
                    s.trace = tracer.start_trace("test", true);
 
 TEST(TestRGWLua, EmptyScript)
@@ -880,7 +872,7 @@ class TestBackground : public rgw::lua::Background {
 public:
   TestBackground(rgw::sal::LuaManager* manager) : 
     rgw::lua::Background(
-        g_cct,
+        g_ceph_context,
         manager,
         1 /* run every second */) {
     }
@@ -1456,6 +1448,146 @@ TEST(TestRGWLuaBackground, TableIncrementError)
   ASSERT_NE(rc, 0);
 }
 
+// Regular background iteration test
+TEST(TestRGWLuaBackground, TableIterateBackground)
+{
+  DEFINE_REQ_STATE;
+  
+  // Script counts elements in RGW table, excluding its own "count" key
+  const std::string background_script = R"(
+    local count = 0
+    for k, v in pairs(RGW) do
+      if tostring(k) ~= "count" then
+        count = count + 1
+      end
+    end
+    RGW["count"] = count
+  )";
+
+  // Use the helper function to set the background script
+  set_script(pe.lua.manager.get(), background_script);
+  
+  TestBackground lua_background(pe.lua.manager.get());
+  pe.lua.background = &lua_background;
+  lua_background.start();
+
+  // Wait 1s to ensure background thread is initialized before injecting data
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+
+  // Inject multiple data types via request context to populate the shared RGW table
+  const std::string request_script = R"(
+    RGW["key1"] = "string_value"
+    RGW["key2"] = 100
+    RGW["key3"] = false
+  )";
+
+  // Inject data into the shared table via a request script
+  const auto rc = lua::request::execute(nullptr, nullptr, &s, nullptr, request_script);
+  ASSERT_EQ(rc, 0);
+
+  // Wait 6s to allow at least one full background iteration (interval is 5s)
+  // This verifies that each new VM instance can correctly iterate over the shared RGW table.
+  std::this_thread::sleep_for(std::chrono::seconds(6));
+
+  // Verify that all data types were preserved and correctly counted
+  EXPECT_EQ(get_table_value<std::string>(lua_background, "key1"), "string_value");
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "key2"), 100);
+  EXPECT_FALSE(get_table_value<bool>(lua_background, "key3"));
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "count"), 3);
+
+  lua_background.shutdown();
+}
+
+// Edge case: Test early exit from iteration using 'break'
+TEST(TestRGWLuaBackground, TableIterateBackgroundBreak)
+{
+  DEFINE_REQ_STATE;
+  
+  // Script stops counting after reaching 2 elements to test if partial iteration works
+  const std::string background_script = R"(
+    local count = 0
+    for k, v in pairs(RGW) do
+      if tostring(k) ~= "count" then
+        count = count + 1
+      end
+      if count == 2 then break end 
+    end
+    RGW["count"] = count
+  )";
+
+  // Use the helper function to set the background script
+  set_script(pe.lua.manager.get(), background_script);
+  
+  TestBackground lua_background(pe.lua.manager.get());
+  pe.lua.background = &lua_background;
+  lua_background.start();
+
+  // Wait 1s to ensure background thread is initialized before injecting data
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+
+  // Inject 3 items, but the script above should only count 2
+  const std::string request_script = R"(
+    RGW["key1"] = "string_value"
+    RGW["key2"] = 100
+    RGW["key3"] = false
+  )";
+
+  ASSERT_EQ(lua::request::execute(nullptr, nullptr, &s, nullptr, request_script), 0);
+
+  // Wait 6s to allow at least one full background iteration (interval is 5s)
+  std::this_thread::sleep_for(std::chrono::seconds(6));
+
+  EXPECT_EQ(get_table_value<std::string>(lua_background, "key1"), "string_value");
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "key2"), 100);
+  // Even though 3 items exist, count should be 2 due to the 'break' in Lua
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "count"), 2);
+
+  lua_background.shutdown();
+}
+
+// Incremental test: Verifies that the background thread detects table changes over time
+TEST(TestRGWLuaBackground, TableIterateStepByStep)
+{
+  DEFINE_REQ_STATE;
+  
+  // Background script: Iterates over RGW table and counts elements, excluding the "count" key
+  const std::string background_script = R"(
+    local count = 0
+    for k, v in pairs(RGW) do
+      if tostring(k) ~= "count" then
+        count = count + 1
+      end
+    end
+    RGW["count"] = count
+  )";
+
+  // Use the helper function to set the background script
+  set_script(pe.lua.manager.get(), background_script);
+  
+  TestBackground lua_background(pe.lua.manager.get());
+  pe.lua.background = &lua_background;
+  lua_background.start();
+
+  // --- Step 1: Initial state (Empty table) ---
+  // Wait 1s to ensure background thread is initialized before injecting data
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "count"), 0);
+
+  // --- Step 2: Add first item ---
+  ASSERT_EQ(lua::request::execute(nullptr, nullptr, &s, nullptr, "RGW['key1'] = 'val1'"), 0);
+  std::this_thread::sleep_for(std::chrono::seconds(6)); 
+  EXPECT_EQ(get_table_value<std::string>(lua_background, "key1"), "val1");
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "count"), 1);
+
+  // --- Step 3: Add second item ---
+  ASSERT_EQ(lua::request::execute(nullptr, nullptr, &s, nullptr, "RGW['key2'] = 42"), 0);
+  std::this_thread::sleep_for(std::chrono::seconds(6));
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "key2"), 42);
+  EXPECT_EQ(get_table_value<long long int>(lua_background, "count"), 2);
+
+  lua_background.shutdown();
+}
+
 TEST(TestRGWLua, TracingSetAttribute)
 {
   const std::string script = R"(
@@ -1736,4 +1868,55 @@ TEST(TestRGWLua, NotValidLua)
   const auto rc = lua::request::execute(nullptr, nullptr, &s, nullptr, script, return_code);
   ASSERT_EQ(rc, -1);
   EXPECT_NE(return_code, -EPERM);
+}
+
+TEST(TestRGWLua, BucketTags)
+{
+  const std::string script = R"(
+    assert(Request.Bucket.Tags["Project"] == "Ceph")
+  )";
+
+  DEFINE_REQ_STATE;
+
+  RGWBucketInfo info;
+  info.bucket.tenant = "mytenant";
+  info.bucket.name = "myname";
+
+  RGWObjTags tags;
+  tags.add_tag("Project", "Ceph");
+
+  bufferlist bl;
+  tags.encode(bl);
+
+  s.bucket_attrs[RGW_ATTR_TAGS] = bl;
+  s.bucket.reset(new sal::RadosBucket(nullptr, info));
+
+  const auto rc = lua::request::execute(nullptr, nullptr, &s, nullptr, script);
+  ASSERT_EQ(rc, 0);
+}
+
+TEST(TestRGWLua, BucketTagsCount)
+{
+  const std::string script = R"(
+    assert(#Request.Bucket.Tags == 3)
+  )";
+
+  DEFINE_REQ_STATE;
+
+  RGWBucketInfo info;
+  info.bucket.name = "tag-test-bucket";
+
+  RGWObjTags tags;
+  tags.add_tag("Project", "Ceph");
+  tags.add_tag("Owner", "Ceph Team");
+  tags.add_tag("Status", "Testing");
+
+  bufferlist bl;
+  tags.encode(bl);
+
+  s.bucket_attrs[RGW_ATTR_TAGS] = bl;
+  s.bucket.reset(new sal::RadosBucket(nullptr, info));
+
+  const auto rc = lua::request::execute(nullptr, nullptr, &s, nullptr, script);
+  ASSERT_EQ(rc, 0);
 }

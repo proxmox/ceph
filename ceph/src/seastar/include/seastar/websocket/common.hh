@@ -30,8 +30,6 @@
 
 namespace seastar::experimental::websocket {
 
-extern sstring magic_key_suffix;
-
 using handler_t = std::function<future<>(input_stream<char>&, output_stream<char>&)>;
 
 class server;
@@ -92,10 +90,18 @@ protected:
     public:
         connection_sink_impl(queue<buff_t>* data) : data(data) {}
 
+#if SEASTAR_API_LEVEL >= 9
+        future<> put(std::span<temporary_buffer<char>> d) override {
+            return data_sink_impl::fallback_put(d, [this] (temporary_buffer<char>&& buf) {
+                return data->push_eventually(std::move(buf));
+            });
+        }
+#else
         virtual future<> put(net::packet d) override {
             net::fragment f = d.frag(0);
             return data->push_eventually(temporary_buffer<char>{std::move(f.base), f.size});
         }
+#endif
 
         size_t buffer_size() const noexcept override {
             return data->max_size();
@@ -141,12 +147,10 @@ public:
         , _read_buf(_fd.input())
         , _write_buf(_fd.output())
         , _input_buffer{PIPE_SIZE}
+        , _input(data_source{std::make_unique<connection_source_impl>(&_input_buffer)})
         , _output_buffer{PIPE_SIZE}
+        , _output(data_sink{std::make_unique<connection_sink_impl>(&_output_buffer)})
     {
-        _input = input_stream<char>{data_source{
-                std::make_unique<connection_source_impl>(&_input_buffer)}};
-        _output = output_stream<char>{data_sink{
-                std::make_unique<connection_sink_impl>(&_output_buffer)}};
     }
 
     /*!
@@ -161,7 +165,7 @@ protected:
     /*!
      * \brief Packs buff in websocket frame and sends it to the client.
      */
-    future<> send_data(opcodes opcode, temporary_buffer<char>&& buff);
+    future<> send_data(opcodes opcode, temporary_buffer<char> buff);
 };
 
 std::string sha1_base64(std::string_view source);

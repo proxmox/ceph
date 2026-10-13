@@ -9,12 +9,12 @@
 Synopsis
 ========
 
-| **cephadm**** [-h] [--image IMAGE] [--docker] [--data-dir DATA_DIR]
-|               [--log-dir LOG_DIR] [--logrotate-dir LOGROTATE_DIR]
-|               [--unit-dir UNIT_DIR] [--verbose] [--timeout TIMEOUT]
-|               [--retry RETRY] [--no-container-init]
-|               {version,pull,inspect-image,ls,list-networks,adopt,rm-daemon,rm-cluster,run,shell,enter,ceph-volume,unit,logs,bootstrap,deploy,check-host,prepare-host,add-repo,rm-repo,install,list-images,update-osd-service}
-|               ...
+| **cephadm** [-h] [--image IMAGE] [--docker] [--data-dir DATA_DIR]
+|             [--log-dir LOG_DIR] [--logrotate-dir LOGROTATE_DIR]
+|             [--unit-dir UNIT_DIR] [--verbose] [--timeout TIMEOUT]
+|             [--retry RETRY] [--no-container-init]
+|             {version,pull,inspect-image,ls,list-networks,list-rdma,adopt,rm-daemon,rm-cluster,run,shell,enter,ceph-volume,unit,logs,bootstrap,deploy,check-host,prepare-host,add-repo,rm-repo,install,list-images,update-osd-service}
+|             ...
 
 
 | **cephadm** **pull**
@@ -24,6 +24,8 @@ Synopsis
 | **cephadm** **ls** [-h] [--no-detail] [--legacy-dir LEGACY_DIR]
 
 | **cephadm** **list-networks**
+
+| **cephadm** **list-rdma**
 
 | **cephadm** **adopt** [-h] --name NAME --style STYLE [--cluster CLUSTER]
 |                       [--legacy-dir LEGACY_DIR] [--config-json CONFIG_JSON]
@@ -250,7 +252,7 @@ Arguments:
 * [--allow-overwrite]             allow overwrite of existing --output-* config/keyring/ssh files
 * [--allow-fqdn-hostname]         allow hostname that is fully-qualified (contains ".")
 * [--skip-prepare-host]           Do not prepare host
-* [--orphan-initial-daemons]      Do not create initial mon, mgr, and crash service specs
+* [--orphan-initial-daemons]      Set mon and mgr service to unmanaged and do not create the crash service
 * [--skip-monitoring-stack]       Do not automatically provision monitoring stack] (prometheus, grafana, alertmanager, node-exporter)
 * [--apply-spec APPLY_SPEC]       Apply cluster spec after bootstrap (copy ssh key, add hosts and apply services)
 * [--registry-url REGISTRY_URL]   url of custom registry to login to. e.g. docker.io, quay.io
@@ -347,6 +349,10 @@ list-networks
 
 list IP networks
 
+list-rdma
+---------
+
+list RDMA devices and their netdev interfaces
 
 ls
 --
@@ -437,6 +443,23 @@ Can also use a JSON file containing the login info formatted as::
        "username":"REGISTRY_USERNAME",
        "password":"REGISTRY_PASSWORD"
       }
+
+For multiple registry logins, refer to the format below::
+
+    {
+      "registry_credentials": [
+        {
+          "url": "REGISTRY_URL1",
+          "username": "REGISTRY_USERNAME1",
+          "password": "REGISTRY_PASSWORD1"
+        },
+        {
+          "url": "REGISTRY_URL2",
+          "username": "REGISTRY_USERNAME2",
+          "password": "REGISTRY_PASSWORD2"
+        }
+      ]
+    }
 
 and turn it in with command::
 

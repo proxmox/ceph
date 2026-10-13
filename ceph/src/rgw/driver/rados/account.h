@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -65,6 +65,12 @@ rgw_raw_obj get_roles_obj(const RGWZoneParams& zone,
 /// can be used with the cls_user interface in namespace rgwrados::topics.
 rgw_raw_obj get_topics_obj(const RGWZoneParams& zone,
                            std::string_view account_id);
+
+/// Return the rados object that tracks the given account's OIDC providers. This
+/// can be used with the cls_user interface in namespace rgwrados::oidcs.
+rgw_raw_obj get_oidcs_obj(
+    const RGWZoneParams& zone,
+    std::string_view account_id);
 
 
 /// Read account info by id

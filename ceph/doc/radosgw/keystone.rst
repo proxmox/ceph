@@ -1,3 +1,5 @@
+.. _radosgw-keystone:
+
 =====================================
  Integrating with OpenStack Keystone
 =====================================
@@ -5,7 +7,7 @@
 It is possible to integrate the Ceph Object Gateway with Keystone, the OpenStack
 identity service. This sets up the gateway to accept Keystone as the users
 authority. A user that Keystone authorizes to access the gateway will also be
-automatically created on the Ceph Object Gateway (if didn't exist beforehand). A
+automatically created on the Ceph Object Gateway (if it didn't exist beforehand). A
 token that Keystone validates will be considered as valid by the gateway.
 
 The following configuration options are available for Keystone integration::
@@ -26,11 +28,11 @@ shared secret ``rgw keystone admin token`` in the configuration file, which is
 recommended to be disabled in production environments. The service tenant
 credentials should have admin privileges, for more details refer the `OpenStack
 Keystone documentation`_, which explains the process in detail. The requisite
-configuration options for are::
+configuration options are::
 
    rgw keystone admin user = {keystone service tenant user name}
    rgw keystone admin password = {keystone service tenant user password}
-   rgw keystone admin password = {keystone service tenant user password path} # preferred
+   rgw keystone admin password path = {keystone service tenant user password path} # preferred
    rgw keystone admin tenant = {keystone service tenant name}
 
 
@@ -54,15 +56,20 @@ only use implicit tenants, and the other protocol will
 never use implicit tenants.  Some older versions of ceph
 only supported implicit tenants with swift.
 
-Ocata (and later)
+Ocata (and Later)
 -----------------
 
 Keystone itself needs to be configured to point to the Ceph Object Gateway as an
-object-storage endpoint::
+object-storage endpoint:
 
-  openstack service create --name=swift \
-                           --description="Swift Service" \
-                           object-store
+.. prompt:: bash #
+
+   openstack service create --name=swift \
+                              --description="Swift Service" \
+                              object-store
+
+::
+
   +-------------+----------------------------------+
   | Field       | Value                            |
   +-------------+----------------------------------+
@@ -73,11 +80,16 @@ object-storage endpoint::
   | type        | object-store                     |
   +-------------+----------------------------------+
 
-  openstack endpoint create --region RegionOne \
-       --publicurl   "http://radosgw.example.com:8080/swift/v1" \
-       --adminurl    "http://radosgw.example.com:8080/swift/v1" \
-       --internalurl "http://radosgw.example.com:8080/swift/v1" \
-       swift
+.. prompt:: bash #
+
+   openstack endpoint create --region RegionOne \
+                               --publicurl   "http://radosgw.example.com:8080/swift/v1" \
+                               --adminurl    "http://radosgw.example.com:8080/swift/v1" \
+                               --internalurl "http://radosgw.example.com:8080/swift/v1" \
+                               swift
+
+::
+
   +--------------+------------------------------------------+
   | Field        | Value                                    |
   +--------------+------------------------------------------+
@@ -91,7 +103,12 @@ object-storage endpoint::
   | service_type | object-store                             |
   +--------------+------------------------------------------+
 
-  $ openstack endpoint show object-store
+.. prompt:: bash #
+
+   openstack endpoint show object-store
+
+::
+
   +--------------+------------------------------------------+
   | Field        | Value                                    |
   +--------------+------------------------------------------+
@@ -114,30 +131,35 @@ object-storage endpoint::
 The Keystone URL is the Keystone admin RESTful API URL. The admin token is the
 token that is configured internally in Keystone for admin requests.
 
-OpenStack Keystone may be terminated with a self signed ssl certificate, in
+OpenStack Keystone may be terminated with a self-signed SSL certificate, in
 order for radosgw to interact with Keystone in such a case, you could either
-install Keystone's ssl certificate in the node running radosgw. Alternatively
-radosgw could be made to not verify the ssl certificate at all (similar to
+install Keystone's SSL certificate in the node running radosgw. Alternatively
+radosgw could be made to not verify the SSL certificate at all (similar to
 OpenStack clients with a ``--insecure`` switch) by setting the value of the
 configurable ``rgw keystone verify ssl`` to false.
 
 
 .. _OpenStack Keystone documentation: http://docs.openstack.org/developer/keystone/configuringservices.html#setting-up-projects-users-and-roles
 
-Cross Project(Tenant) Access
-----------------------------
+Cross-Project (Tenant) Access
+-----------------------------
 
 In order to let a project (earlier called a 'tenant') access buckets belonging to a different project, the following config option needs to be enabled::
 
    rgw swift account in url = true
 
-The Keystone object-store endpoint must accordingly be configured to include the AUTH_%(project_id)s suffix::
+The Keystone object-store endpoint must accordingly be configured to include the ``AUTH_%(project_id)s`` suffix:
+
+.. prompt:: bash #
 
    openstack endpoint create --region RegionOne \
-       --publicurl   "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
-       --adminurl    "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
-       --internalurl "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
-       swift
+                               --publicurl   "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
+                               --adminurl    "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
+                               --internalurl "http://radosgw.example.com:8080/swift/v1/AUTH_$(project_id)s" \
+                               swift
+
+::
+
   +--------------+--------------------------------------------------------------+
   | Field        | Value                                                        |
   +--------------+--------------------------------------------------------------+
@@ -151,7 +173,7 @@ The Keystone object-store endpoint must accordingly be configured to include the
   | service_type | object-store                                                 |
   +--------------+--------------------------------------------------------------+
 
-Keystone integration with the S3 API
+Keystone Integration with the S3 API
 ------------------------------------
 
 It is possible to use Keystone for authentication even when using the
@@ -159,7 +181,20 @@ S3 API (with AWS-like access and secret keys), if the ``rgw s3 auth
 use keystone`` option is set. For details, see
 :doc:`s3/authentication`.
 
-Service token support
+Requests authenticated via Keystone (Swift tokens or S3 with Keystone-managed
+credentials) expose the Keystone idenitity in the IAM policy environment
+as the condition keys: ``keystone:role`` (role names) and
+``keystone:userid`` (user UUID). These conditions can be used in bucket
+policies and idenitity policies with ``StringEquals``, ``StringNotEquals`` etc.
+
+- **keystone:role** - Allow or deny by *role* (e.g only users with role
+  ``reader`` get read access). Use for RBAC.
+- **keystone:userid** - Restrict to specific *user*. Use when policy
+  depends on a specific user, not just their role.
+
+See :doc:`bucketpolicy` for list of supported condition keys.
+
+Service Token Support
 ---------------------
 
 Service tokens can be enabled to support RadosGW Keystone integration
@@ -173,7 +208,7 @@ The ``rgw keystone expired token cache expiration`` option can be used to tune t
 expiration for an expired token allowed with a service token, please note that this must
 be lower than the ``[token]/allow_expired_window`` option in the Keystone configuration.
 
-Enabling this will cause an expired token given in the X-Auth-Token header to be allowed
-if coupled with a X-Service-Token header that contains a valid token with the accepted
-roles. This can allow long running processes using a user token in X-Auth-Token to function
+Enabling this will cause an expired token given in the ``X-Auth-Token`` header to be allowed
+if coupled with a ``X-Service-Token`` header that contains a valid token with the accepted
+roles. This can allow long running processes using a user token in ``X-Auth-Token`` to function
 beyond the expiration of the token.

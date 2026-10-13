@@ -1,8 +1,10 @@
+.. _radosgw-config-ref:
+
 ======================================
  Ceph Object Gateway Config Reference
 ======================================
 
-The following settings may added to the Ceph configuration file (i.e., usually
+The following settings may be added to the Ceph configuration file (i.e., usually
 ``ceph.conf``) under the ``[client.radosgw.{instance-name}]`` section. The
 settings may contain default values. If you do not specify each setting in the
 Ceph configuration file, the default value will be set automatically.
@@ -56,7 +58,10 @@ instances or all radosgw-admin options can be put into the ``[global]`` or the
 .. confval:: rgw_account_default_quota_max_objects
 .. confval:: rgw_account_default_quota_max_size
 .. confval:: rgw_verify_ssl
+.. confval:: rgw_rest_conn_connect_to_resolved_ips
+.. confval:: rgw_rest_conn_ip_fail_timeout_secs
 .. confval:: rgw_max_chunk_size
+.. confval:: rgw_multi_obj_del_max_aio
 
 Lifecycle Settings
 ==================
@@ -102,7 +107,7 @@ from the Ceph Storage cluster is known as Garbage Collection or GC.
 
 To view the queue of objects awaiting garbage collection, execute the following
 
-.. prompt:: bash $
+.. prompt:: bash #
 
    radosgw-admin gc list
 
@@ -215,8 +220,6 @@ Keystone Settings
 .. confval:: rgw_keystone_url
 .. confval:: rgw_keystone_admin_domain
 .. confval:: rgw_keystone_admin_project
-.. confval:: rgw_keystone_admin_token
-.. confval:: rgw_keystone_admin_token_path
 .. confval:: rgw_keystone_admin_tenant
 .. confval:: rgw_keystone_admin_user
 .. confval:: rgw_keystone_admin_password
@@ -228,10 +231,11 @@ Keystone Settings
 .. confval:: rgw_keystone_service_token_accepted_roles
 .. confval:: rgw_keystone_expired_token_cache_expiration
 
-Server-side encryption Settings
+Server-side Encryption Settings
 ===============================
 
 .. confval:: rgw_crypt_s3_kms_backend
+.. confval:: rgw_crypt_sse_algorithm
 
 Barbican Settings
 =================
@@ -269,13 +273,23 @@ SSE-S3 Settings
 .. confval:: rgw_crypt_sse_s3_vault_ssl_clientcert
 .. confval:: rgw_crypt_sse_s3_vault_ssl_clientkey
 
+KMS Secrets Cache Settings
+==========================
 
-QoS settings
-------------
+.. confval:: rgw_crypt_s3_kms_cache_enabled
+.. confval:: rgw_crypt_s3_kms_cache_max_size
+.. confval:: rgw_crypt_s3_kms_cache_positive_ttl
+.. confval:: rgw_crypt_s3_kms_cache_transient_error_ttl
+.. confval:: rgw_crypt_s3_kms_cache_negative_ttl
+
+.. _Encryption: ../encryption
+
+QoS Settings
+============
 
 .. versionadded:: Nautilus
 
-The older and now non-default``civetweb`` frontend has a threading model that uses a thread per
+The older and now non-default ``civetweb`` frontend has a threading model that uses a thread per
 connection and hence is automatically throttled by :confval:`rgw_thread_pool_size`
 when accepting connections. The newer and default ``beast`` frontend is
 not limited by the thread pool size when it comes to accepting new
@@ -324,7 +338,7 @@ below.
 
 .. confval:: rgw_d4n_address
 .. confval:: rgw_d4n_l1_datacache_persistent_path
-.. confval:: rgw_d4n_l1_datacache_size
+.. confval:: rgw_d4n_l1_datacache_disk_reserve
 .. confval:: rgw_d4n_l1_evict_cache_on_start
 .. confval:: rgw_d4n_l1_fadvise
 .. confval:: rgw_d4n_libaio_aio_threads
@@ -332,7 +346,7 @@ below.
 .. confval:: rgw_lfuda_sync_frequency
 .. confval:: rgw_d4n_l1_datacache_address
 
-Topic persistency settings
+Topic Persistency Settings
 ==========================
 
 Topic persistency will repeatedly push notifications until they succeed.
@@ -354,7 +368,7 @@ retention is indefinite, and notifications are retried as frequently as possible
 
 .. _Bucket Notifications: ../notifications
    
-Cloud Restore settings
+Cloud Restore Settings
 ======================
 
 Cloud Restore feature currently enables the restoration of objects transitioned to S3-compatible cloud services into Ceph Object Gateway (RGW). The restore requests are asynchronously processed by Restore worker thread in the background. 
@@ -364,3 +378,16 @@ Cloud Restore feature currently enables the restoration of objects transitioned 
 .. confval:: rgw_restore_processor_period
 
 These values can be tuned based upon your specific workload to further increase the aggressiveness of restore processing. 
+
+Global CORS
+===========
+
+Configuration options that allows administrators to define a global CORS policy applied at the gateway level, affecting all buckets served by RGW.
+Previously, CORS (Cross-Origin Resource Sharing) support in RGW is limited to per-bucket configuration using the Get/PutBucketCors API, following the standard AWS S3 behavior.
+While this suffices for most use cases, it becomes a blocker when using browser-based tools that require interaction with gateway-wide resources, such as listing all buckets accessible to a user.
+These configuration options are necessary to enable CORS-based access for tools like S3 Browser, which need to list and create buckets across the gateway from a browser client.
+
+.. confval:: rgw_gcors_allow_origins
+.. confval:: rgw_gcors_allow_headers
+.. confval:: rgw_gcors_allow_methods
+.. confval:: rgw_gcors_expose_headers

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include "crimson/os/seastore/cached_extent.h"
 #include "crimson/os/seastore/seastore_types.h"
 #include "crimson/os/seastore/transaction.h"
+#include "crimson/os/seastore/transaction_interruptor.h"
 
 namespace crimson::os::seastore {
 class Cache;
@@ -111,14 +112,17 @@ struct lba_map_val_t {
 			   //	laddr of a direct lba mapping(see btree_lba_manager.h)
   extent_ref_count_t refcount = 0; ///< refcount
   checksum_t checksum = 0; ///< checksum of original block written at paddr (TODO)
+  extent_types_t type = extent_types_t::NONE;
 
   lba_map_val_t() = default;
   lba_map_val_t(
     extent_len_t len,
     pladdr_t pladdr,
     extent_ref_count_t refcount,
-    checksum_t checksum)
-    : len(len), pladdr(pladdr), refcount(refcount), checksum(checksum) {}
+    checksum_t checksum,
+    extent_types_t type)
+    : len(len), pladdr(pladdr), refcount(refcount),
+      checksum(checksum), type(type) {}
   bool operator==(const lba_map_val_t&) const = default;
 };
 
@@ -134,6 +138,7 @@ struct __attribute__((packed)) lba_map_val_le_t {
   pladdr_le_t pladdr;
   extent_ref_count_le_t refcount{0};
   checksum_le_t checksum{0};
+  extent_types_le_t type{EXTENT_TYPES_MAX};
 
   lba_map_val_le_t() = default;
   lba_map_val_le_t(const lba_map_val_le_t &) = default;
@@ -141,10 +146,16 @@ struct __attribute__((packed)) lba_map_val_le_t {
     : len(init_extent_len_le(val.len)),
       pladdr(pladdr_le_t(val.pladdr)),
       refcount(val.refcount),
-      checksum(val.checksum) {}
+      checksum(val.checksum),
+      type(static_cast<extent_types_le_t>(val.type)) {}
 
   operator lba_map_val_t() const {
-    return lba_map_val_t{ len, pladdr, refcount, checksum };
+    return lba_map_val_t{
+      len,
+      pladdr,
+      refcount,
+      checksum,
+      static_cast<extent_types_t>(type)};
   }
 };
 
@@ -197,21 +208,22 @@ struct __attribute__((packed)) backref_map_val_le_t {
  * a key-value mapping's location and the snapshot of its data at construction
  * time.
  */
-template <typename key_t, typename val_t>
-struct BtreeCursor {
+template <typename key_t, typename val_t, typename ParentT>
+struct BtreeCursor
+  : public boost::intrusive_ref_counter<
+      BtreeCursor<key_t, val_t, ParentT>, boost::thread_unsafe_counter> {
   BtreeCursor(
     op_context_t &ctx,
-    CachedExtentRef parent,
+    TCachedExtentRef<ParentT> parent,
     uint64_t modifications,
-    key_t key,
-    std::optional<val_t> val,
-    btreenode_pos_t pos)
+    ParentT::iterator &&iter)
       : ctx(ctx),
 	parent(std::move(parent)),
 	modifications(modifications),
-	key(key),
-	val(std::move(val)),
-	pos(pos)
+	iter(std::move(iter)),
+	key(iter == this->parent->end()
+	    ? min_max_t<key_t>::max
+	    : iter.get_key())
   {
     if constexpr (std::is_same_v<key_t, laddr_t>) {
       static_assert(std::is_same_v<val_t, lba::lba_map_val_t>,
@@ -225,11 +237,10 @@ struct BtreeCursor {
   }
 
   op_context_t ctx;
-  CachedExtentRef parent;
+  TCachedExtentRef<ParentT> parent;
   uint64_t modifications;
-  key_t key;
-  std::optional<val_t> val;
-  btreenode_pos_t pos;
+  ParentT::iterator iter;
+  key_t key = min_max_t<key_t>::null;
 
   // NOTE: The overhead of calling is_viewable() might be not negligible in the
   // case of the parent extent is stable and shared by multiple transactions.
@@ -238,73 +249,28 @@ struct BtreeCursor {
   bool is_viewable() const;
 
   bool is_end() const {
-    auto max_key = min_max_t<key_t>::max;
-    assert((key != max_key) == (bool)val);
-    return key == max_key;
+    assert(is_viewable());
+    return iter == parent->end();
   }
 
   extent_len_t get_length() const {
+    assert(is_viewable());
     assert(!is_end());
-    return val->len;
+    return iter.get_val().len;
   }
-};
 
-struct LBACursor : BtreeCursor<laddr_t, lba::lba_map_val_t> {
-  using Base = BtreeCursor<laddr_t, lba::lba_map_val_t>;
-  using Base::BtreeCursor;
-  bool is_indirect() const {
-    assert(!is_end());
-    return val->pladdr.is_laddr();
+  uint16_t get_pos() const {
+    return iter.get_offset();
   }
-  laddr_t get_laddr() const {
+
+  key_t get_key() const {
     return key;
   }
-  paddr_t get_paddr() const {
-    assert(!is_indirect());
-    assert(!is_end());
-    return val->pladdr.get_paddr();
-  }
-  laddr_t get_intermediate_key() const {
-    assert(is_indirect());
-    assert(!is_end());
-    return val->pladdr.get_laddr();
-  }
-  checksum_t get_checksum() const {
-    assert(!is_end());
-    assert(!is_indirect());
-    return val->checksum;
-  }
-  extent_ref_count_t get_refcount() const {
-    assert(!is_end());
-    assert(!is_indirect());
-    return val->refcount;
-  }
-  std::unique_ptr<LBACursor> duplicate() const {
-    return std::make_unique<LBACursor>(*this);
-  }
 };
-using LBACursorRef = std::unique_ptr<LBACursor>;
 
-struct BackrefCursor : BtreeCursor<paddr_t, backref::backref_map_val_t> {
-  using Base = BtreeCursor<paddr_t, backref::backref_map_val_t>;
-  using Base::BtreeCursor;
-  paddr_t get_paddr() const {
-    return key;
-  }
-  laddr_t get_laddr() const {
-    assert(!is_end());
-    return val->laddr;
-  }
-  extent_types_t get_type() const {
-    assert(!is_end());
-    return val->type;
-  }
-};
-using BackrefCursorRef = std::unique_ptr<BackrefCursor>;
-
-template <typename key_t, typename val_t>
+template <typename key_t, typename val_t, typename ParentT>
 std::ostream &operator<<(
-  std::ostream &out, const BtreeCursor<key_t, val_t> &cursor)
+  std::ostream &out, const BtreeCursor<key_t, val_t, ParentT> &cursor)
 {
   if constexpr (std::is_same_v<key_t, laddr_t>) {
     out << "LBACursor(";
@@ -312,20 +278,18 @@ std::ostream &operator<<(
     out << "BackrefCursor(";
   }
   out << (void*)cursor.parent.get()
-      << "@" << cursor.pos
-      << "#" << cursor.modifications
-      << ",";
-  if (cursor.is_end()) {
-    return out << "END)";
+      << "@" << cursor.iter.get_offset()
+      << "#" << cursor.modifications;
+  if (cursor.is_viewable()) {
+    out << ",";
+    if (cursor.is_end()) {
+      return out << "END)";
+    }
+    return out << "," << cursor.iter.get_key()
+	       << "~" << cursor.iter.get_val()
+	       << ")";
   }
-  return out << "," << cursor.key
-	     << "~" << *cursor.val
-	     << ")";
+  return out;
 }
 
 } // namespace crimson::os::seastore
-
-#if FMT_VERSION >= 90000
-template <> struct fmt::formatter<crimson::os::seastore::LBACursor> : fmt::ostream_formatter {};
-template <> struct fmt::formatter<crimson::os::seastore::BackrefCursor> : fmt::ostream_formatter {};
-#endif

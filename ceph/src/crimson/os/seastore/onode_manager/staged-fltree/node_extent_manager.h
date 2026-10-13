@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -61,7 +61,6 @@ class NodeExtent : public LogicalChildNode {
 
 using crimson::os::seastore::TransactionManager;
 class NodeExtentManager {
-  using base_iertr = TransactionManager::base_iertr;
  public:
   virtual ~NodeExtentManager() = default;
 
@@ -76,7 +75,7 @@ class NodeExtentManager {
 
   using alloc_iertr = base_iertr;
   virtual alloc_iertr::future<NodeExtentRef> alloc_extent(
-      Transaction&, laddr_t hint, extent_len_t) = 0;
+      Transaction&, laddr_hint_t hint, extent_len_t) = 0;
 
   using retire_iertr = base_iertr::extend<
     crimson::ct_error::enoent>;

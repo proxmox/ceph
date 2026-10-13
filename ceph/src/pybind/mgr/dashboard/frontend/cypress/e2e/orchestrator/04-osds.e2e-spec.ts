@@ -1,18 +1,12 @@
 import { OSDsPageHelper } from '../cluster/osds.po';
-import { DashboardPageHelper } from '../ui/dashboard.po';
-import { ManagerModulesPageHelper } from '../cluster/mgr-modules.po';
+import { OverviewPagehelper } from '../ui/overview.po';
 
 describe('OSDs page', () => {
   const osds = new OSDsPageHelper();
-  const overview = new DashboardPageHelper();
-  const mgrmodules = new ManagerModulesPageHelper();
+  const overview = new OverviewPagehelper();
 
   before(() => {
     cy.login();
-    mgrmodules.navigateTo();
-    mgrmodules.navigateEdit('overview');
-    cy.get('#FEATURE_TOGGLE_DASHBOARD').uncheck();
-    cy.contains('button', 'Update').click();
   });
 
   beforeEach(() => {
@@ -35,9 +29,11 @@ describe('OSDs page', () => {
 
           // landing page is easier to check OSD status
           overview.navigateTo();
-          overview.infoCardBody('OSDs').should('contain.text', `${expectedCount} total`);
-          overview.infoCardBody('OSDs').should('contain.text', `${expectedCount} up`);
-          overview.infoCardBody('OSDs').should('contain.text', `${expectedCount} in`);
+          overview.clickSystemsTab();
+          cy.get(`[data-test-id="OSD-value"]`).should(
+            'contain.text',
+            `${expectedCount}/${expectedCount} in/up`
+          );
 
           cy.wait(30000);
           expect(Number(newCount)).to.be.gte(2);

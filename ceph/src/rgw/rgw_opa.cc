@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "rgw_opa.h"
 #include "rgw_http_client.h"
@@ -28,7 +28,7 @@ int rgw_opa_authorize(RGWOp *& op,
 
   int ret;
   bufferlist bl;
-  RGWHTTPTransceiver req(s->cct, "POST", opa_url.c_str(), &bl);
+  RGWHTTPTransceiver req(s->cct, "POST", opa_url, &bl);
 
   /* set required headers for OPA request */
   req.append_header("X-Auth-Token", opa_token);

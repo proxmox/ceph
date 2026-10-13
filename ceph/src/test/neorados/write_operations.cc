@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -31,6 +32,8 @@
 #include "test/neorados/common_tests.h"
 
 #include "gtest/gtest.h"
+
+#include "cls/hello/cls_hello_ops.h"
 
 namespace sys = boost::system;
 
@@ -128,8 +131,7 @@ CORO_TEST_F(NeoRadosWriteOps, Write, NeoRadosTest) {
 
 CORO_TEST_F(NeoRadosWriteOps, Exec, NeoRadosTest) {
   co_await execute(oid, WriteOp{}
-		   .exec("hello"sv, "record_hello"sv,
-			 to_buffer_list("test")));
+		   .exec(::cls::hello::method::record_hello, to_buffer_list("test")));
   const auto bl = co_await read(oid);
   EXPECT_EQ(to_buffer_list("Hello, test!"), bl);
   co_return;

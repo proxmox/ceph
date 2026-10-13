@@ -1,9 +1,10 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
-#include "rgw_service.h"
+#include "driver/rados/rgw_service.h"
+#include <memory>
 
 
 class RGWSI_SysObj;
@@ -22,6 +23,7 @@ class RGWBucketSyncPolicyHandler;
 class RGWRESTConn;
 
 struct rgw_sync_policy_info;
+class RGWSI_Zone_ASocketHook;
 
 class RGWSI_Zone : public RGWServiceInstance
 {
@@ -55,7 +57,9 @@ class RGWSI_Zone : public RGWServiceInstance
   std::map<rgw_zone_id, RGWZone> zone_by_id;
 
   std::unique_ptr<rgw_sync_policy_info> sync_policy;
+  rgw::sal::ConfigStore *cfgstore{nullptr};
   const rgw::SiteConfig* site{nullptr};
+  std::unique_ptr<RGWSI_Zone_ASocketHook> asocket_hook;
 
   void init(RGWSI_SysObj *_sysobj_svc,
 	    librados::Rados* rados_,
@@ -68,13 +72,13 @@ class RGWSI_Zone : public RGWServiceInstance
   int init_zg_from_local(const DoutPrefixProvider *dpp, optional_yield y);
 
 public:
-  RGWSI_Zone(CephContext *cct, const rgw::SiteConfig* _site);
+  RGWSI_Zone(CephContext *cct, rgw::sal::ConfigStore* cfgstore, const rgw::SiteConfig* _site);
   ~RGWSI_Zone();
 
   const RGWZoneParams& get_zone_params() const;
   const RGWPeriod& get_current_period() const;
   const RGWRealm& get_realm() const;
-  const RGWZoneGroup& get_zonegroup() const;
+  const RGWZoneGroup& get_zonegroup() const { return *zonegroup; };
   int get_zonegroup(const std::string& id, RGWZoneGroup& zonegroup) const;
   const RGWZone& get_zone() const;
 
@@ -91,7 +95,7 @@ public:
   bool zone_is_writeable();
   bool zone_syncs_from(const RGWZone& target_zone, const RGWZone& source_zone) const;
   bool zone_syncs_from(const RGWZone& source_zone) const;
-  bool get_redirect_zone_endpoint(std::string *endpoint);
+  bool get_redirect_zone_endpoint_url(std::string *url);
   bool sync_module_supports_writes() const { return writeable_zone; }
   bool sync_module_exports_data() const { return exports_data; }
 
@@ -133,7 +137,7 @@ public:
   bool is_meta_master() const;
 
   bool need_to_sync() const;
-  bool need_to_log_data() const;
+  bool need_to_log_data() const { return (zone_public_config->log_data && sync_module_exports_data()); };
   bool need_to_log_metadata() const;
   bool can_reshard() const;
   bool is_syncing_bucket_meta() const;

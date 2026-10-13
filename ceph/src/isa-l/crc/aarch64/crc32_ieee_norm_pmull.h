@@ -27,31 +27,33 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #########################################################################
 
-.equ	p4_low_b0, 0x8b11
-.equ	p4_low_b1, 0xe622
-.equ	p4_high_b0, 0x794c
-.equ	p4_high_b1, 0x8833
-.equ	p1_low_b0, 0x5605
-.equ	p1_low_b1, 0xe8a4
-.equ	p1_high_b0, 0xcd4c
-.equ	p1_high_b1, 0xc5b9
-.equ	p0_low_b0, 0x678d
-.equ	p0_low_b1, 0x490d
-.equ	p0_high_b0, 0xaa66
-.equ	p0_high_b1, 0xf200
-.equ	br_low_b0, 0x01df
-.equ	br_low_b1, 0x04d1
-.equ	br_low_b2, 0x1
-.equ	br_high_b0, 0x1db7
-.equ	br_high_b1, 0x04c1
-.equ	br_high_b2, 0x1
+#define	p4_low_b0 0x8b11
+#define	p4_low_b1 0xe622
+#define	p4_high_b0 0x794c
+#define	p4_high_b1 0x8833
+#define	p1_low_b0 0x5605
+#define	p1_low_b1 0xe8a4
+#define	p1_high_b0 0xcd4c
+#define	p1_high_b1 0xc5b9
+#define	p0_low_b0 0x678d
+#define	p0_low_b1 0x490d
+#define	p0_high_b0 0xaa66
+#define	p0_high_b1 0xf200
+#define	br_low_b0 0x01df
+#define	br_low_b1 0x04d1
+#define	br_low_b2 0x1
+#define	br_high_b0 0x1db7
+#define	br_high_b1 0x04c1
+#define	br_high_b2 0x1
 
 	.text
-	.section	.rodata
+ASM_DEF_RODATA
 	.align	4
 	.set	.lanchor_crc_tab,. + 0
+#ifndef __APPLE__
 	.type	crc32_table_ieee_norm, %object
 	.size	crc32_table_ieee_norm, 1024
+#endif
 crc32_table_ieee_norm:
 	.word 0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b, 0x1a864db2, 0x1e475005
 	.word 0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61, 0x350c9b64, 0x31cd86d3, 0x3c8ea00a, 0x384fbdbd

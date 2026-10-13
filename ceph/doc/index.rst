@@ -116,10 +116,12 @@ about Ceph, see our `Architecture`_ section.
    Developer Guide <dev/developer_guide/index>
    dev/internals
    governance
+   Technical Charter <technical-charter>
    foundation
    ceph-volume/index
-   releases/general
-   releases/index
+   crimson/crimson
+   Ceph Releases (general) <https://docs.ceph.com/en/latest/releases/general/>
+   Ceph Releases (index) <https://docs.ceph.com/en/latest/releases/>
    security/index
    hardware-monitoring/index
    Glossary <glossary>

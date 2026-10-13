@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #include "include/int_types.h"
 
 #include <errno.h>
@@ -8,6 +9,7 @@
 #include "include/types.h"
 #include "include/uuid.h"
 #include "common/ceph_context.h"
+#include "common/Cond.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/Throttle.h"

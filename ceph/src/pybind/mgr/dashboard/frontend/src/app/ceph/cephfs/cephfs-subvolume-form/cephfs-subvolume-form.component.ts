@@ -27,7 +27,8 @@ import { catchError, map, switchMap } from 'rxjs/operators';
 @Component({
   selector: 'cd-cephfs-subvolume-form',
   templateUrl: './cephfs-subvolume-form.component.html',
-  styleUrls: ['./cephfs-subvolume-form.component.scss']
+  styleUrls: ['./cephfs-subvolume-form.component.scss'],
+  standalone: false
 })
 export class CephfsSubvolumeFormComponent extends CdForm implements OnInit {
   subvolumeForm: CdFormGroup;
@@ -128,8 +129,9 @@ export class CephfsSubvolumeFormComponent extends CdForm implements OnInit {
 
   private isSnapshotVisibilityEnabled(option?: ConfigFormModel) {
     const values = option?.value ?? [];
-    const clientValue = values.find((entry) => entry.section === SNAPSHOT_VISIBILITY_CONFIG_SECTION)
-      ?.value;
+    const clientValue = values.find(
+      (entry) => entry.section === SNAPSHOT_VISIBILITY_CONFIG_SECTION
+    )?.value;
     return String(clientValue).toLowerCase() === 'true';
   }
 

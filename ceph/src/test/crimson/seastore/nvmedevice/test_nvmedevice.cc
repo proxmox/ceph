@@ -1,5 +1,5 @@
-//-*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+//-*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "include/buffer.h"
 #include "crimson/os/seastore/random_block_manager/rbm_device.h"
@@ -58,7 +58,7 @@ TEST_F(nvdev_test_t, write_and_verify_test)
   run_async([this] {
     device.reset(new random_block_device::nvme::NVMeBlockDevice(dev_path));
     local_conf().set_val("seastore_cbjournal_size", "1048576").get();
-    device->start().get();
+    device->start(seastar::smp::count).get();
     device->mkfs(
       device_config_t{
 	true,

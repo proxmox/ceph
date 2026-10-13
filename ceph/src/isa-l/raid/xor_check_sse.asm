@@ -28,10 +28,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; Optimized xor of N source vectors using SSE
-;;; int xor_gen_sse(int vects, int len, void **array)
+;;; int xor_check_sse(int vects, int len, void **array)
 
-;;; Generates xor parity vector from N (vects-1) sources in array of pointers
-;;; (**array).  Last pointer is the dest.
+;;; Checks that array has XOR parity sum of 0 across all vectors in **array.
 ;;; Vectors must be aligned to 16 bytes.  Length can be any value.
 
 %include "reg_sizes.asm"
@@ -79,39 +78,6 @@
 	add	rsp, stack_size
  %endmacro
 
-
-%elifidn __OUTPUT_FORMAT__, elf32
- %define arg0   arg(0)
- %define arg1   ecx
- %define tmp2   eax
- %define tmp2.b  al
- %define tmp3   edx
- %define return eax
- %define PS 4
- %define func(x) x: endbranch
- %define arg(x) [ebp+8+PS*x]
- %define arg2  edi	; must sav/restore
- %define arg3  esi
- %define tmp   ebx
-
- %macro FUNC_SAVE 0
-	push	ebp
-	mov	ebp, esp
-	push	esi
-	push	edi
-	push	ebx
-	mov	arg1, arg(1)
-	mov	arg2, arg(2)
- %endmacro
-
- %macro FUNC_RESTORE 0
-	pop	ebx
-	pop	edi
-	pop	esi
-	mov	esp, ebp	;if has frame pointer
-	pop	ebp
- %endmacro
-
 %endif	; output formats
 
 
@@ -120,10 +86,8 @@
 %define ptr arg3
 %define pos tmp3
 
-%ifidn PS,8			; 64-bit code
- default rel
- [bits 64]
-%endif
+default rel
+[bits 64]
 
 ;;; Use Non-temporal load/stor
 %ifdef NO_NT_LDST
@@ -140,13 +104,7 @@ align 16
 mk_global  xor_check_sse, function
 func(xor_check_sse)
 	FUNC_SAVE
-%ifidn PS,8				;64-bit code
 	sub	vec, 1			; Keep as offset to last source
-%else					;32-bit code
-	mov	tmp, arg(0)		; Update vec length arg to last source
-	sub	tmp, 1
-	mov	arg(0), tmp
-%endif
 
 	jng	return_fail		;Must have at least 2 sources
 	cmp	len, 0
@@ -186,15 +144,15 @@ next_vect:
 ;;;  	prefetch [ptr+pos+(8*16)]
 	jge	next_vect		;Loop for each vect
 
-	;; End of vects, chech that all parity regs = 0
+	;; End of vects, check that all parity regs = 0
 	mov	tmp, vec		;Back to last vector
 	por	xmm0, xmm1
+	por	xmm2, xmm3
+	por	xmm4, xmm5
+	por	xmm6, xmm7
 	por	xmm0, xmm2
-	por	xmm0, xmm3
+	por	xmm4, xmm6
 	por	xmm0, xmm4
-	por	xmm0, xmm5
-	por	xmm0, xmm6
-	por	xmm0, xmm7
 	ptest	xmm0, xmm0
 	jnz	return_fail
 
@@ -277,9 +235,3 @@ return_fail:
 	ret
 
 endproc_frame
-
-section .data
-
-;;;       func           core, ver, snum
-slversion xor_check_sse, 00,   03,  0031
-

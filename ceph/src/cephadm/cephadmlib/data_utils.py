@@ -56,57 +56,38 @@ def dict_get_join(d: Dict[str, Any], key: str) -> Any:
     return value
 
 
-def bytes_to_human(num, mode='decimal'):
-    # type: (float, str) -> str
-    """Convert a bytes value into it's human-readable form.
-
-    :param num: number, in bytes, to convert
-    :param mode: Either decimal (default) or binary to determine divisor
-    :returns: string representing the bytes value in a more readable format
-    """
-    unit_list = ['', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB']
-    divisor = 1000.0
-    yotta = 'YB'
-
-    if mode == 'binary':
-        unit_list = ['', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB']
-        divisor = 1024.0
-        yotta = 'YiB'
-
-    for unit in unit_list:
-        if abs(num) < divisor:
-            return '%3.1f%s' % (num, unit)
-        num /= divisor
-    return '%.1f%s' % (num, yotta)
-
-
-def with_units_to_int(v: str) -> int:
-    if v.endswith('iB'):
-        v = v[:-2]
-    elif v.endswith('B'):
-        v = v[:-1]
-    mult = 1
-    if v[-1].upper() == 'K':
-        mult = 1024
-        v = v[:-1]
-    elif v[-1].upper() == 'M':
-        mult = 1024 * 1024
-        v = v[:-1]
-    elif v[-1].upper() == 'G':
-        mult = 1024 * 1024 * 1024
-        v = v[:-1]
-    elif v[-1].upper() == 'T':
-        mult = 1024 * 1024 * 1024 * 1024
-        v = v[:-1]
-    return int(float(v) * mult)
-
-
 def read_config(fn):
     # type: (Optional[str]) -> ConfigParser
     cp = ConfigParser()
     if fn:
         cp.read(fn)
     return cp
+
+
+def parse_ini_section(
+    text: str, entity: str, option: Optional[str] = None
+) -> Optional[Any]:
+    """Parse text as INI and return data from entity.
+
+    If option is given, return the value of that option (str or
+    None when not found).  If option is omitted, return a plain
+    dict of all options in the section (empty dict when the section
+    exists but has no options), or None when the section is absent
+    or the text cannot be parsed.
+    """
+    parser = ConfigParser(interpolation=None)
+    try:
+        parser.read_string(text)
+    except Exception:
+        return None
+
+    if not parser.has_section(entity):
+        return None
+
+    if option is not None:
+        return parser.get(entity, option, fallback=None)
+
+    return dict(parser.items(entity))
 
 
 def try_convert_datetime(s):

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -45,13 +46,13 @@ namespace fifo = rados::cls::fifo;
 class FIFOtest {
 public:
   template<typename... Args>
-  static auto create_meta(neorados::RADOS rados, Args&&... args) {
+  static auto create_meta(neorados::RADOS& rados, Args&&... args) {
     return detail::FIFOImpl::create_meta(rados,
 					 std::forward<Args>(args)...);
   }
 
   template<typename... Args>
-  static auto get_meta(neorados::RADOS rados, Args&&... args) {
+  static auto get_meta(neorados::RADOS& rados, Args&&... args) {
     return FIFO::get_meta(rados, std::forward<Args>(args)...);
   }
 

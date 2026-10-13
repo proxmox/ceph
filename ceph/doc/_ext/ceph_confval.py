@@ -10,10 +10,12 @@ from docutils.statemachine import StringList
 
 from sphinx import addnodes
 from sphinx.directives import ObjectDescription
-from sphinx.domains.python import PyField
-from sphinx.environment import BuildEnvironment
 from sphinx.locale import _
-from sphinx.util import logging, status_iterator, ws_re
+from sphinx.util import logging, ws_re
+try:
+    from sphinx.util.display import status_iterator
+except ImportError:
+    from sphinx.util import status_iterator
 from sphinx.util.docutils import switch_source_input, SphinxDirective
 from sphinx.util.docfields import Field
 from sphinx.util.nodes import make_id
@@ -29,6 +31,7 @@ TEMPLATE = '''
    {{ desc | wordwrap(70) | indent(3) }}
 {% endif %}
    :type: ``{{opt.type}}``
+   :runtime updatable: ``{{ runtime_updatable | string | lower }}``
 {%- if default is not none %}
   {%- if opt.type == 'size' %}
    :default: ``{{ default | eval_size | iec_size }}``
@@ -82,7 +85,7 @@ TEMPLATE = '''
 def eval_size(value) -> int:
     try:
         return int(value)
-    except ValueError:
+    except ValueError as ex:
         times = dict(_K=1 << 10,
                      _M=1 << 20,
                      _G=1 << 30,
@@ -90,7 +93,7 @@ def eval_size(value) -> int:
         for unit, m in times.items():
             if value.endswith(unit):
                 return int(value[:-len(unit)]) * m
-        raise ValueError(f'unknown value: {value}')
+        raise ValueError(f'unknown value: {value}') from ex
 
 
 def readable_duration(value: str, typ: str) -> str:
@@ -103,7 +106,7 @@ def readable_duration(value: str, typ: str) -> str:
             return str(float(value))
         else:
             return str(int(value))
-    except ValueError:
+    except ValueError as ex:
         times = dict(_min=['minute', 'minutes'],
                      _hr=['hour', 'hours'],
                      _day=['day', 'days'])
@@ -112,7 +115,7 @@ def readable_duration(value: str, typ: str) -> str:
                 v = int(value[:-len(unit)])
                 postfix = readables[0 if v == 1 else 1]
                 return f'{v} {postfix}'
-        raise ValueError(f'unknown value: {value}')
+        raise ValueError(f'unknown value: {value}') from ex
 
 
 def do_plain_num(value: str, typ: str) -> str:
@@ -161,7 +164,7 @@ def literal(name) -> str:
     if name:
         return f'``{name}``'
     else:
-        return f'<empty string>'
+        return '<empty string>'
 
 
 def ref_confval(name) -> str:
@@ -180,6 +183,22 @@ def jinja_template() -> jinja2.Template:
 
 
 FieldValueT = Union[bool, float, int, str]
+
+RUNTIME_UPDATABLE_TYPES = {
+    'bool',
+    'float',
+    'int',
+    'millisecs',
+    'secs',
+    'size',
+    'uint',
+}
+
+NON_RUNTIME_FLAGS = {
+    'cluster_create',
+    'create',
+    'startup',
+}
 
 
 class CephModule(SphinxDirective):
@@ -219,6 +238,10 @@ class CephOption(ObjectDescription):
               label=_('Default'),
               has_arg=False,
               names=('default',)),
+        Field('runtime_updatable',
+              label=_('Runtime updatable'),
+              has_arg=False,
+              names=('runtime updatable',)),
         Field('type',
               label=_('Type'),
               has_arg=False,
@@ -346,6 +369,23 @@ class CephOption(ObjectDescription):
         return self.options.get('module',
                                 self.env.ref_context.get('ceph:module'))
 
+    @staticmethod
+    def _can_update_at_runtime(opt: Dict[str, FieldValueT],
+                               cur_module: str = '') -> bool:
+        flags = set(opt.get('flags', []))
+        if opt.get('runtime') is True:
+            flags.add('runtime')
+        if cur_module:
+            flags.add('mgr')
+        # Keep this in sync with src/common/options.h: Option::can_update_at_runtime().
+        if flags & NON_RUNTIME_FLAGS:
+            return False
+        if 'runtime' in flags:
+            return True
+        if 'mgr' in flags:
+            return False
+        return opt.get('type') in RUNTIME_UPDATABLE_TYPES
+
     def _render_option(self, name) -> str:
         cur_module = self._current_module()
         if cur_module:
@@ -364,10 +404,12 @@ class CephOption(ObjectDescription):
         desc = opt.get('fmt_desc') or opt.get('long_desc') or opt.get('desc')
         opt_default = opt.get('default')
         default = self.options.get('default', opt_default)
+        runtime_updatable = self._can_update_at_runtime(opt, cur_module)
         try:
             return self.template.render(opt=opt,
                                         desc=desc,
-                                        default=default)
+                                        default=default,
+                                        runtime_updatable=runtime_updatable)
         except Exception as e:
             message = (f'Unable to render option "{name}": {e}. ',
                        f'opt={opt}, desc={desc}, default={default}')

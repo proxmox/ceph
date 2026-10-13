@@ -1,7 +1,7 @@
 @use '@carbon/styles/scss/config' with (
-  $font-path: '~@ibm/plex',
+  $font-path: '@ibm/plex',
   $flex-grid-columns: 16,
-  $use-flexbox-grid: true,
+  $use-flexbox-grid: true
 );
 @use '@carbon/layout';
 @use '@carbon/colors';
@@ -11,8 +11,8 @@
 @use '@carbon/styles/scss/themes';
 @use '@carbon/styles/scss/theme' with (
   $theme: default.$theme,
-  $fallback: compat.$g90,
-  );
+  $fallback: compat.$g90
+);
 
 /******************************************
   Component token overrides should go here
@@ -29,9 +29,9 @@
   $button-tertiary-hover: darken(vv.$primary, 5%),
   $button-tertiary-active: darken(vv.$primary, 10%)
 );
-
 @use '@carbon/styles';
 @use '@carbon/type';
+@use '@carbon/styles/scss/utilities/text-truncate' as textTruncate;
 
 /******************************************
 Custom theme
@@ -45,7 +45,6 @@ Custom theme
 /******************************************
 Datatable
 ******************************************/
-
 :root {
   @include type.type-classes();
 }
@@ -146,6 +145,7 @@ Forms
 .form-header,
 .panel-header {
   @include type.type-style('heading-04');
+
   margin-bottom: 40px;
 }
 
@@ -153,6 +153,7 @@ Forms
   @extend .pb-1;
   @extend .mt-4;
   @extend .mb-4;
+
   @include type.type-style('heading-03');
 }
 
@@ -168,6 +169,10 @@ Forms
   padding-inline: 0;
 }
 
+.padding-inline-0 {
+  padding-inline: 0;
+}
+
 /******************************************
 Breadcrumbs
 ******************************************/
@@ -177,70 +182,73 @@ Breadcrumbs
 }
 
 /******************************************
-Modals
-******************************************/
-.cds--modal-container {
-  background-color: colors.$gray-10;
-
-  .cds--modal-close {
-    background-color: transparent;
-
-    &:hover {
-      background-color: colors.$gray-10-hover;
-    }
-
-    &:focus,
-    &:active {
-      background-color: transparent;
-    }
-  }
-
-  .cds--modal-scroll-content {
-    max-height: 70vh;
-    overflow-y: auto;
-  }
-}
-
-/******************************************
-Dashboard page
-******************************************/
-// keeping this on 12px for now until we have responsive design
-// based on carbon
-cd-dashboard {
-  font-size: 12px;
-}
-
-/******************************************
 Code snippet
 ******************************************/
+
 .cds--snippet {
   width: fit-content;
-}
-
-/******************************************
-Tooltip
-******************************************/
-.cds--tooltip-content {
-  background-color: theme.$layer-02;
-}
-
-/******************************************
-Carbon Popover
-******************************************/
-.cds--popover-content {
-  background-color: theme.$background;
-  padding: layout.$spacing-05;
-}
-
-// inner container class for overflow
-.cds--popover-scroll-container {
-  max-height: layout.$spacing-13;
-  overflow: auto;
 }
 
 /******************************************
 Tabs
 ******************************************/
 .cds--tab-content {
-  background: var(--cds-layer-01);
+  padding: 0;
+}
+
+.cds--data-table-container {
+  padding: 0;
+}
+
+.cds-success-color {
+  fill: theme.$support-success;
+}
+
+.cds-danger-color {
+  fill: theme.$support-error;
+}
+
+.cds-info-color {
+  fill: theme.$support-info;
+}
+
+.cds-warning-color {
+  fill: theme.$support-caution-major;
+}
+
+.cds-white {
+  fill: theme.$icon-on-color;
+}
+
+.cds-icon--size-07 {
+  height: layout.$spacing-07;
+  width: layout.$spacing-07;
+}
+
+.cds-icon--size-10 {
+  display: block;
+  height: layout.$spacing-10;
+  margin: auto;
+  width: layout.$spacing-10;
+}
+
+.cds--text-truncate--end {
+  @include textTruncate.text-truncate-end;
+}
+
+/******************************************
+Modals
+******************************************/
+
+/* Temporary workaround for Carbon modal form field background bug.
+ https://github.com/carbon-design-system/carbon-components-angular/issues/3340
+ */
+.cds--modal {
+  .cds--select-input,
+  .cds--text-input,
+  .cds--list-box,
+  .cds--number input[type='number'],
+  .cds--text-area {
+    background-color: var(--cds-layer-02);
+  }
 }

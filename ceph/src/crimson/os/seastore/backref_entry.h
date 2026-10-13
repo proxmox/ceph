@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -97,8 +97,7 @@ struct backref_entry_t {
       const paddr_t& paddr,
       extent_len_t len,
       extent_types_t type) {
-    assert(is_backref_mapped_type(type) ||
-	   is_retired_placeholder_type(type));
+    assert(is_backref_mapped_type(type));
     return std::make_unique<backref_entry_t>(
       paddr, L_ADDR_NULL, len, type);
   }

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -44,6 +45,16 @@ class co_waiter {
   };
  public:
   co_waiter() = default;
+
+  ~co_waiter() {
+    // Clear the cancellation slot to prevent use-after-scope
+    if (handler) {
+      auto slot = boost::asio::get_associated_cancellation_slot(*handler);
+      if (slot.is_connected()) {
+        slot.clear();
+      }
+    }
+  }
 
   // copy and move are disabled because the cancellation handler captures 'this'
   co_waiter(const co_waiter&) = delete;
@@ -114,6 +125,16 @@ class co_waiter<void, Executor> {
   };
  public:
   co_waiter() = default;
+
+  ~co_waiter() {
+    // Clear the cancellation slot to prevent use-after-scope
+    if (handler) {
+      auto slot = boost::asio::get_associated_cancellation_slot(*handler);
+      if (slot.is_connected()) {
+        slot.clear();
+      }
+    }
+  }
 
   // copy and move are disabled because the cancellation handler captures 'this'
   co_waiter(const co_waiter&) = delete;

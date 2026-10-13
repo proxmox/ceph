@@ -18,7 +18,8 @@ import { PasswordPolicyService } from '~/app/shared/services/password-policy.ser
 @Component({
   selector: 'cd-user-password-form',
   templateUrl: './user-password-form.component.html',
-  styleUrls: ['./user-password-form.component.scss']
+  styleUrls: ['./user-password-form.component.scss'],
+  standalone: false
 })
 export class UserPasswordFormComponent {
   userForm: CdFormGroup;
@@ -87,9 +88,8 @@ export class UserPasswordFormComponent {
                  * These values are not needed in this component after carbonization.
                  * @TODO: Need to remove once the LoginPasswordFormComponent is carbonized.
                  */
-                this.passwordStrengthLevelClass = this.passwordPolicyService.mapCreditsToCssClass(
-                  credits
-                );
+                this.passwordStrengthLevelClass =
+                  this.passwordPolicyService.mapCreditsToCssClass(credits);
                 this.passwordValuation = _.defaultTo(valuation, '');
 
                 this.INVALID_TEXTS['passwordPolicy'] = _.defaultTo(valuation, '');

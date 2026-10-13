@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "BtreeAllocator.h"
 
@@ -241,7 +241,7 @@ int64_t BtreeAllocator::_allocate(
     extents->emplace_back(offset, length);
     allocated += length;
   }
-  assert(range_size_tree.size() == range_tree.size());
+  ceph_assert(range_size_tree.size() == range_tree.size());
   return allocated ? allocated : -ENOSPC;
 }
 

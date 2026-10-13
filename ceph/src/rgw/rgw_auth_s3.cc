@@ -1,10 +1,11 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
 #include <map>
 #include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -105,7 +106,7 @@ get_canon_resource(const DoutPrefixProvider *dpp, const char* const request_uri,
     if (iter == std::end(sub_resources)) {
       continue;
     }
-    
+
     if (initial) {
       dest.append("?");
       initial = false;
@@ -146,7 +147,7 @@ void rgw_create_s3_canonical_header(
     dest = method;
   }
   dest.append("\n");
-  
+
   if (content_md5) {
     dest.append(content_md5);
   }
@@ -472,6 +473,7 @@ static inline int parse_v4_auth_header(const req_info& info,               /* in
 bool is_non_s3_op(RGWOpType op_type)
 {
   switch (op_type) {
+  case RGW_STS_GET_CALLER_IDENTITY:
   case RGW_STS_GET_SESSION_TOKEN:
   case RGW_STS_ASSUME_ROLE:
   case RGW_STS_ASSUME_ROLE_WEB_IDENTITY:
@@ -510,6 +512,7 @@ bool is_non_s3_op(RGWOpType op_type)
   case RGW_OP_LIST_ROLE_TAGS:
   case RGW_OP_UNTAG_ROLE:
   case RGW_OP_UPDATE_ROLE:
+  case RGW_OP_GET_ACCOUNT_SUMMARY:
 
   case RGW_OP_CREATE_USER:
   case RGW_OP_GET_USER:
@@ -771,12 +774,28 @@ get_v4_canonical_headers(CephContext* cct,
         dout(5) << "Signature rejected: CanonicalHeaders must contain `host`." << dendl;
         return boost::none;
     }
-    // If `content-type` is present, it must be in CanonicalHeaders
-    if (info.env->exists("CONTENT_TYPE") &&
-        !canonical_hdrs_map.contains("content-type")) {
-        dout(5) << "Signature rejected: 'content-type' supplied but not in CanonicalHeaders." << dendl;
-        return boost::none;
-    }
+    // Content-type is deliberately NOT required here. That page has a bullet
+    // saying that a content-type present in the request "must" be added to
+    // CanonicalHeaders, but the same page contradicts it twice:
+    //
+    //   "You must include the host header (HTTP/1.1) or the :authority
+    //    header (HTTP/2), and any `x-amz-*` headers in the signature. You
+    //    can optionally include other standard headers in the signature,
+    //    such as content-type."
+    //
+    //   "For the purpose of calculating an authorization signature, only
+    //    the host and any `x-amz-*` headers are required[.]"
+    //
+    // Real S3 accepts requests where content-type wasnt signed, and SDKs rely
+    // on that. minio-go's streaming signer straight up drops content-type from
+    // SignedHeaders every time (see pkg/signer/request-signature-streaming.go,
+    // `ignoredStreamingHeaders`), and thats the path every minio-go PutObject
+    // over plain HTTP takes. Rejecting these requests broke Mimir, Loki,
+    // Thanos and basically everything else built on thanos-io/objstore.
+    //
+    // The privilege escalation that CVE-2026-54330 describes comes from
+    // unsigned `x-amz-*` headers, and those are still rejected below.
+
     // Any header starting with `x-amz-` must be in CanonicalHeaders
     const auto& emap = info.env->get_map();
     static const std::string xamz{"HTTP_X_AMZ_"};
@@ -788,6 +807,12 @@ get_v4_canonical_headers(CephContext* cct,
         boost::container::small_vector<char, 64> buf(env_key.size());
         lowercase_dash_transform(env_key, buf.begin(), true);
         std::string_view lower_key{buf.data(), buf.size()};
+        // S3 has an exception for x-amz-content-sha256 because it's already
+        // signed as part of the HashedPayload
+        // TODO: make this specific to CredentialScope:service == s3
+        if (lower_key == "x-amz-content-sha256") {
+          continue;
+        }
         if (!canonical_hdrs_map.contains(lower_key)) {
         dout(5) << "Signature rejected: '" << lower_key
         << "' supplied, but not in CanonicalHeaders." << dendl;
@@ -1035,7 +1060,7 @@ get_v4_signature(const std::string_view& credential_scope,
   using srv_signature_t = AWSEngine::VersionAbstractor::server_signature_t;
   srv_signature_t signature(srv_signature_t::initialized_later(),
                             digest.SIZE * 2);
-  buf_to_hex(digest.v, digest.SIZE, signature.begin());
+  buf_to_hex(std::span{digest.v, digest.SIZE}, signature.begin());
 
   ldpp_dout(dpp, 10) << "generated signature = " << signature << dendl;
 
@@ -1053,12 +1078,13 @@ get_v2_signature(CephContext* const cct,
 
   const auto digest = calc_hmac_sha1(secret_key, string_to_sign);
 
-  /* 64 is really enough */;
-  char buf[64];
-  const int ret = ceph_armor(std::begin(buf),
-                             std::begin(buf) + 64,
-                             reinterpret_cast<const char *>(digest.v),
-                             reinterpret_cast<const char *>(digest.v + digest.SIZE));
+  /* Sized for signature */;
+  char buf[AWSEngine::VersionAbstractor::SIGNATURE_MAX_SIZE];
+  const int ret = ceph_armor(
+      std::begin(buf),
+      std::begin(buf) + AWSEngine::VersionAbstractor::SIGNATURE_MAX_SIZE,
+      reinterpret_cast<const char*>(digest.v),
+      reinterpret_cast<const char*>(digest.v + digest.SIZE));
   if (ret < 0) {
     ldout(cct, 10) << "ceph_armor failed" << dendl;
     throw ret;
@@ -1105,7 +1131,7 @@ AWSv4ComplMulti::ChunkMeta::create_next(CephContext* const cct,
   if (data_length == 0 && data_field_end == metabuf) {
     ldout(cct, 20) << "AWSv4ComplMulti: cannot parse the data size"
                    << dendl;
-    throw rgw::io::Exception(EINVAL, std::system_category());
+    /* this case is no longer treated as an exception */
   }
 
   if (expect_chunk_signature) {
@@ -1317,7 +1343,7 @@ AWSv4ComplMulti::ReceiveChunkResult AWSv4ComplMulti::recv_chunk(
   size_t to_extract = \
     std::min(chunk_meta.get_data_size(stream_pos_was), buf_max);
   dout(30) << "AWSv4ComplMulti: stream_pos_was=" << stream_pos_was << ", to_extract=" << to_extract << dendl;
-  
+
   /* It's quite probable we have a couple of real data bytes stored together
    * with meta-data in the parsing_buf. We need to extract them and move to
    * the final buffer. This is a trade-off between frontend's read overhead
@@ -1511,9 +1537,7 @@ void AWSv4ComplMulti::modify_request_state(const DoutPrefixProvider* dpp, req_st
   const char* const decoded_length = \
     s_rw->info.env->get("HTTP_X_AMZ_DECODED_CONTENT_LENGTH");
 
-  if (!decoded_length) {
-    throw -EINVAL;
-  } else {
+  if (decoded_length) {
     /* XXXX oh my, we forget the original content length */
     s_rw->length = decoded_length;
     s_rw->content_length = parse_content_length(decoded_length);

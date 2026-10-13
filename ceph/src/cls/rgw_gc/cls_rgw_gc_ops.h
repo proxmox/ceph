@@ -1,9 +1,11 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
 #include "cls/rgw/cls_rgw_types.h"
+#include "cls_rgw_gc_const.h"
+#include "include/rados/cls_traits.hpp"
 
 struct cls_rgw_gc_queue_init_op {
   uint64_t size;
@@ -30,10 +32,12 @@ struct cls_rgw_gc_queue_init_op {
     f->dump_unsigned("num_deferred_entries", num_deferred_entries);
   }
 
-  static void generate_test_instances(std::list<cls_rgw_gc_queue_init_op*>& o) {
-    o.push_back(new cls_rgw_gc_queue_init_op);
-    o.back()->size = 1024;
-    o.back()->num_deferred_entries = 512;
+  static std::list<cls_rgw_gc_queue_init_op> generate_test_instances() {
+    std::list<cls_rgw_gc_queue_init_op> o;
+    o.emplace_back();
+    o.back().size = 1024;
+    o.back().num_deferred_entries = 512;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(cls_rgw_gc_queue_init_op)
@@ -77,3 +81,16 @@ struct cls_rgw_gc_queue_defer_entry_op {
   }
 };
 WRITE_CLASS_ENCODER(cls_rgw_gc_queue_defer_entry_op)
+
+namespace cls::rgw_gc {
+struct ClassId {
+  static constexpr auto name = RGW_GC_CLASS;
+};
+namespace method {
+constexpr auto init = ClsMethod<RdWrTag, ClassId>(RGW_GC_QUEUE_INIT);
+constexpr auto enqueue = ClsMethod<RdWrTag, ClassId>(RGW_GC_QUEUE_ENQUEUE);
+constexpr auto list_entries = ClsMethod<RdTag, ClassId>(RGW_GC_QUEUE_LIST_ENTRIES);
+constexpr auto remove_entries = ClsMethod<RdWrTag, ClassId>(RGW_GC_QUEUE_REMOVE_ENTRIES);
+constexpr auto update_entry = ClsMethod<RdWrTag, ClassId>(RGW_GC_QUEUE_UPDATE_ENTRY);
+}
+}

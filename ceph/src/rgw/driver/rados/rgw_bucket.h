@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -31,7 +31,9 @@
 // define as static when RGWBucket implementation completes
 extern void rgw_get_buckets_obj(const rgw_user& user_id, std::string& buckets_obj_id);
 
+#ifdef WITH_RADOSGW_RADOS
 class RGWBucketMetadataHandler;
+#endif
 class RGWBucketInstanceMetadataHandler;
 class RGWUserCtl;
 class RGWBucketCtl;
@@ -237,6 +239,7 @@ struct RGWBucketAdminOpState {
   bool sync_bucket;
   bool dump_keys;
   bool hide_progress;
+  bool restore_stats;
   int max_aio = 0;
   ceph::timespan min_age = std::chrono::hours::zero();
 
@@ -246,6 +249,7 @@ struct RGWBucketAdminOpState {
   RGWRateLimitInfo ratelimit_info;
 
   void set_fetch_stats(bool value) { stat_buckets = value; }
+  void set_restore_stats(bool value) { restore_stats = value; }
   void set_check_objects(bool value) { check_objects = value; }
   void set_fix_index(bool value) { fix_index = value; }
   void set_delete_children(bool value) { delete_child_objects = value; }

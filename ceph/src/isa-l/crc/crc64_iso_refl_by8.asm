@@ -37,7 +37,18 @@
 ;
 %include "reg_sizes.asm"
 
-%define	fetch_dist	1024
+%ifndef FUNCTION_NAME
+%define FUNCTION_NAME crc64_iso_refl_by8
+%endif
+
+%ifndef fetch_dist
+%define	fetch_dist	4096
+%endif
+
+%ifndef PREFETCH
+%define PREFETCH        prefetcht1
+%endif
+
 
 [bits 64]
 default rel
@@ -65,8 +76,8 @@ section .text
 
 
 align 16
-mk_global crc64_iso_refl_by8, function
-crc64_iso_refl_by8:
+mk_global 	FUNCTION_NAME, function
+FUNCTION_NAME:
 	endbranch
         ; uint64_t c = crc ^ 0xffffffff,ffffffffL;
 	not arg1
@@ -114,14 +125,19 @@ crc64_iso_refl_by8:
         ; at this section of the code, there is 128*x+y (0<=y<128) bytes of buffer. The _fold_128_B_loop
         ; loop will fold 128B at a time until we have 128+y Bytes of buffer
 
+%if fetch_dist != 0
+	; check if there is at least 4KB (fetch distance) + 128B in the buffer
+        cmp             arg3, (fetch_dist + 128)
+        jb              _fold_128_B_loop
 
         ; fold 128B at a time. This section of the code folds 8 xmm registers in parallel
-_fold_128_B_loop:
+align 16
+_fold_and_prefetch_128_B_loop:
 
         ; update the buffer pointer
         add     arg2, 128
 
-	prefetchnta [arg2+fetch_dist+0]
+	PREFETCH [arg2+fetch_dist+0]
         movdqu  xmm9, [arg2+16*0]
         movdqu  xmm12, [arg2+16*1]
         movdqa  xmm8, xmm0
@@ -135,7 +151,6 @@ _fold_128_B_loop:
         pxor    xmm1, xmm12
         xorps   xmm1, xmm13
 
-	prefetchnta [arg2+fetch_dist+32]
         movdqu  xmm9, [arg2+16*2]
         movdqu  xmm12, [arg2+16*3]
         movdqa  xmm8, xmm2
@@ -149,7 +164,7 @@ _fold_128_B_loop:
         pxor    xmm3, xmm12
         xorps   xmm3, xmm13
 
-	prefetchnta [arg2+fetch_dist+64]
+	PREFETCH [arg2+fetch_dist+64]
         movdqu  xmm9, [arg2+16*4]
         movdqu  xmm12, [arg2+16*5]
         movdqa  xmm8, xmm4
@@ -163,7 +178,72 @@ _fold_128_B_loop:
         pxor    xmm5, xmm12
         xorps   xmm5, xmm13
 
-	prefetchnta [arg2+fetch_dist+96]
+        movdqu  xmm9, [arg2+16*6]
+        movdqu  xmm12, [arg2+16*7]
+        movdqa  xmm8, xmm6
+        movdqa  xmm13, xmm7
+        pclmulqdq       xmm6, xmm10, 0x10
+        pclmulqdq       xmm8, xmm10 , 0x1
+        pclmulqdq       xmm7, xmm10, 0x10
+        pclmulqdq       xmm13, xmm10 , 0x1
+        pxor    xmm6, xmm9
+        xorps   xmm6, xmm8
+        pxor    xmm7, xmm12
+        xorps   xmm7, xmm13
+
+        sub     arg3, 128
+
+	; check if there is another 4KB (fetch distance) + 128B in the buffer
+        cmp     arg3, (fetch_dist + 128)
+	jge	_fold_and_prefetch_128_B_loop
+%endif ; fetch_dist != 0
+
+        ; fold 128B at a time. This section of the code folds 8 xmm registers in parallel
+align 16
+_fold_128_B_loop:
+
+        ; update the buffer pointer
+        add     arg2, 128
+
+        movdqu  xmm9, [arg2+16*0]
+        movdqu  xmm12, [arg2+16*1]
+        movdqa  xmm8, xmm0
+        movdqa  xmm13, xmm1
+        pclmulqdq       xmm0, xmm10, 0x10
+        pclmulqdq       xmm8, xmm10 , 0x1
+        pclmulqdq       xmm1, xmm10, 0x10
+        pclmulqdq       xmm13, xmm10 , 0x1
+        pxor    xmm0, xmm9
+        xorps   xmm0, xmm8
+        pxor    xmm1, xmm12
+        xorps   xmm1, xmm13
+
+        movdqu  xmm9, [arg2+16*2]
+        movdqu  xmm12, [arg2+16*3]
+        movdqa  xmm8, xmm2
+        movdqa  xmm13, xmm3
+        pclmulqdq       xmm2, xmm10, 0x10
+        pclmulqdq       xmm8, xmm10 , 0x1
+        pclmulqdq       xmm3, xmm10, 0x10
+        pclmulqdq       xmm13, xmm10 , 0x1
+        pxor    xmm2, xmm9
+        xorps   xmm2, xmm8
+        pxor    xmm3, xmm12
+        xorps   xmm3, xmm13
+
+        movdqu  xmm9, [arg2+16*4]
+        movdqu  xmm12, [arg2+16*5]
+        movdqa  xmm8, xmm4
+        movdqa  xmm13, xmm5
+        pclmulqdq       xmm4, xmm10, 0x10
+        pclmulqdq       xmm8, xmm10 , 0x1
+        pclmulqdq       xmm5, xmm10, 0x10
+        pclmulqdq       xmm13, xmm10 , 0x1
+        pxor    xmm4, xmm9
+        xorps   xmm4, xmm8
+        pxor    xmm5, xmm12
+        xorps   xmm5, xmm13
+
         movdqu  xmm9, [arg2+16*6]
         movdqu  xmm12, [arg2+16*7]
         movdqa  xmm8, xmm6
@@ -471,6 +551,7 @@ section .data
 align 16
 ; rk7 = floor(2^128/Q)
 ; rk8 = Q
+%ifndef USE_CONSTS
 rk1:
 DQ 0xf500000000000001
 rk2:
@@ -511,6 +592,9 @@ rk19:
 DQ 0xa011000000000001
 rk20:
 DQ 0x1b1ab00000000001
+%else
+INCLUDE_CONSTS
+%endif
 
 pshufb_shf_table:
 ; use these values for shift constants for the pshufb instruction
@@ -540,6 +624,3 @@ mask2:
 dq     0xFFFFFFFF00000000, 0xFFFFFFFFFFFFFFFF
 mask3:
 dq     0x8080808080808080, 0x8080808080808080
-
-;;;       func        core, ver, snum
-slversion crc64_iso_refl_by8, 01,   00,  0023

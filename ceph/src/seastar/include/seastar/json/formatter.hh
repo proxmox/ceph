@@ -21,7 +21,6 @@
 
 #pragma once
 
-#ifndef SEASTAR_MODULE
 #include <ranges>
 #include <string>
 #include <tuple>
@@ -30,12 +29,10 @@
 #include <map>
 #include <time.h>
 #include <sstream>
-#endif
 
 #include <seastar/core/loop.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/iostream.hh>
-#include <seastar/util/modules.hh>
 
 namespace seastar {
 
@@ -43,7 +40,7 @@ namespace internal {
 
 template<typename T>
 concept is_map = requires {
-    typename T::mapped_type;
+    typename std::remove_reference_t<T>::mapped_type;
 };
 
 template<typename T>
@@ -56,7 +53,7 @@ template<typename T>
 concept is_string_like =
     std::convertible_to<const T&, std::string_view> &&
     requires (T s) {
-        { s.data() } -> std::same_as<char*>;
+        { s.data() } -> std::convertible_to<const char*>;
         // sstring::length() and sstring::find() return size_t instead of
         // size_type (i.e., uint32_t), so we cannot check their return type
         // with T::size_type
@@ -68,7 +65,6 @@ concept is_string_like =
 
 namespace json {
 
-SEASTAR_MODULE_EXPORT
 class jsonable;
 
 typedef struct tm date_time;
@@ -78,7 +74,6 @@ typedef struct tm date_time;
  * it overload to_json method for each of the supported format
  * all to_json parameters are passed as a pointer
  */
-SEASTAR_MODULE_EXPORT
 class formatter {
     enum class state {
         none, array, map
@@ -182,10 +177,10 @@ public:
 
     /**
      * return a json formatted string
-     * @param str the string to format
+     * @param str the string_view to format
      * @return the given string in a json format
      */
-    static sstring to_json(const sstring& str);
+    static sstring to_json(std::string_view str);
 
     /**
      * return a json formatted int
@@ -281,14 +276,12 @@ public:
      */
     static sstring to_json(unsigned long l);
 
-
-
     /**
      * return a json formatted string
-     * @param str the string to format
+     * @param str the string_view to format
      * @return the given string in a json format
      */
-    static future<> write(output_stream<char>& s, const sstring& str) {
+    static future<> write(output_stream<char>& s, std::string_view str) {
         return s.write(to_json(str));
     }
 
@@ -357,8 +350,8 @@ public:
      */
     template<std::ranges::input_range Range>
     requires (!internal::is_string_like<Range>)
-    static future<> write(output_stream<char>& s, const Range& range) {
-        return do_with(std::move(range), [&s] (const auto& range) {
+    static future<> write(output_stream<char>& s, Range&& range) {
+        return do_with(std::forward<Range>(range), [&s] (const auto& range) {
             if constexpr (internal::is_map<Range>) {
                 return write(s, state::map, std::ranges::begin(range), std::ranges::end(range));
             } else {

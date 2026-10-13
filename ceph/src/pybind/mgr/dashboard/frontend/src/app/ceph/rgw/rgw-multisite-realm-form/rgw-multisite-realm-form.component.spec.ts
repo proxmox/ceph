@@ -6,7 +6,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
 import { of as observableOf } from 'rxjs';
-import { ToastrModule } from 'ngx-toastr';
+
 import { RgwRealmService } from '~/app/shared/api/rgw-realm.service';
 import { NotificationType } from '~/app/shared/enum/notification-type.enum';
 import { NotificationService } from '~/app/shared/services/notification.service';
@@ -27,7 +27,6 @@ describe('RgwMultisiteRealmFormComponent', () => {
       ReactiveFormsModule,
       RouterTestingModule,
       HttpClientTestingModule,
-      ToastrModule.forRoot(),
       ModalModule,
       InputModule,
       CheckboxModule
@@ -61,20 +60,21 @@ describe('RgwMultisiteRealmFormComponent', () => {
     });
 
     it('should validate name', () => {
-      component.action = 'create';
+      component.action = 'Create';
       component.createForm();
       const control = component.multisiteRealmForm.get('realmName');
       expect(_.isFunction(control.validator)).toBeTruthy();
     });
 
     it('should not validate name', () => {
-      component.action = 'edit';
+      component.action = 'Edit';
       component.createForm();
       const control = component.multisiteRealmForm.get('realmName');
       expect(control.asyncValidator).toBeNull();
     });
 
     it('tests create success notification', () => {
+      component.action = 'Create';
       spyOn(rgwRealmService, 'create').and.returnValue(observableOf([]));
       component.multisiteRealmForm.markAsDirty();
       component.submit();
@@ -86,7 +86,7 @@ describe('RgwMultisiteRealmFormComponent', () => {
 
     it('tests update success notification', () => {
       spyOn(rgwRealmService, 'update').and.returnValue(observableOf([]));
-      component.action = 'edit';
+      component.action = 'Edit';
       component.info = {
         data: { name: 'null' }
       };

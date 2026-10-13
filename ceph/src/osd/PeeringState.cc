@@ -1,11 +1,12 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "PeeringState.h"
 #include "PGPeeringEvent.h"
 #include "osd_perf_counters.h"
 #include "common/ceph_releases.h"
 #include "common/debug.h"
+#include "common/JSONFormatter.h"
 #include "common/ostream_temp.h"
 #include "crush/crush.h" // for CRUSH_ITEM_NONE
 #include "crush/CrushWrapper.h"
@@ -30,6 +31,7 @@ using std::hex;
 using std::make_pair;
 using std::map;
 using std::ostream;
+using std::ostringstream;
 using std::pair;
 using std::set;
 using std::string;
@@ -38,6 +40,19 @@ using std::vector;
 
 using ceph::Formatter;
 using ceph::make_message;
+
+static int get_max_prio_for_base(int base) {
+  static const std::map<int, int> max_prio_map = {
+    {OSD_BACKFILL_PRIORITY_BASE, OSD_BACKFILL_DEGRADED_PRIORITY_BASE - 1},
+    {OSD_BACKFILL_DEGRADED_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_BASE - 1},
+    {OSD_RECOVERY_PRIORITY_BASE, OSD_BACKFILL_INACTIVE_PRIORITY_BASE - 1},
+    {OSD_RECOVERY_INACTIVE_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_MAX},
+    {OSD_BACKFILL_INACTIVE_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_MAX}
+  };
+  auto it = max_prio_map.find(base);
+  ceph_assert(it != max_prio_map.end());
+  return it->second;
+}
 
 BufferedRecoveryMessages::BufferedRecoveryMessages(PeeringCtx &ctx)
   // steal messages from ctx
@@ -823,6 +838,18 @@ void PeeringState::start_peering_interval(
   } else if (was_old_nonprimary || is_nonprimary()) {
     pl->clear_want_pg_temp();
   }
+
+  // Only reset the rebuild-time latch when the primary role actually
+  // changes across this interval transition. Routine peering restarts
+  // (e.g. acting-set churn from backfill peers being added/removed)
+  // that leave this OSD as primary throughout must not wipe an
+  // in-progress rebuild's start time.
+  if (!(was_old_primary && is_primary())) {
+    rebuild_start_time = utime_t();
+    rebuild_base_recovered = 0;
+    rebuild_had_redundancy_loss = false;
+  }
+
   clear_primary_state();
 
   pl->on_change(t);
@@ -1047,10 +1074,6 @@ void PeeringState::clear_primary_state()
 
   clear_recovery_state();
 
-  rebuild_start_time = utime_t();
-  rebuild_base_recovered = 0;
-  rebuild_had_redundancy_loss = false;
-
   pg_committed_to = eversion_t();
   missing_loc.clear();
   pl->clear_primary_state();
@@ -1169,7 +1192,7 @@ unsigned PeeringState::get_recovery_priority()
     int64_t pool_recovery_priority = 0;
     pool.info.opts.get(pool_opts_t::RECOVERY_PRIORITY, &pool_recovery_priority);
 
-    ret = clamp_recovery_priority(ret, pool_recovery_priority, max_prio_map[base]);
+    ret = clamp_recovery_priority(ret, pool_recovery_priority, get_max_prio_for_base(base));
   }
   psdout(20) << "recovery priority is " << ret << dendl;
   return static_cast<unsigned>(ret);
@@ -1204,7 +1227,7 @@ unsigned PeeringState::get_backfill_priority()
     int64_t pool_recovery_priority = 0;
     pool.info.opts.get(pool_opts_t::RECOVERY_PRIORITY, &pool_recovery_priority);
 
-    ret = clamp_recovery_priority(ret, pool_recovery_priority, max_prio_map[base]);
+    ret = clamp_recovery_priority(ret, pool_recovery_priority, get_max_prio_for_base(base));
   }
 
   psdout(20) << "backfill priority is " << ret << dendl;
@@ -1303,7 +1326,7 @@ void PeeringState::send_lease()
 
 void PeeringState::proc_lease(const pg_lease_t& l)
 {
-  assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
   if (!is_nonprimary()) {
     psdout(20) << "no-op, !nonprimary" << dendl;
     return;
@@ -1345,7 +1368,7 @@ void PeeringState::proc_lease(const pg_lease_t& l)
 
 void PeeringState::proc_lease_ack(int from, const pg_lease_ack_t& a)
 {
-  assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
   auto now = pl->get_mnow();
   bool was_min = false;
   for (unsigned i = 0; i < acting.size(); ++i) {
@@ -1371,7 +1394,7 @@ void PeeringState::proc_lease_ack(int from, const pg_lease_ack_t& a)
 
 void PeeringState::proc_renew_lease()
 {
-  assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
   renew_lease(pl->get_mnow());
   if (actingset.size() > 1) {
     send_lease();
@@ -1383,7 +1406,7 @@ void PeeringState::proc_renew_lease()
 
 void PeeringState::recalc_readable_until()
 {
-  assert(is_primary());
+  ceph_assert(is_primary());
   ceph::signedspan min = readable_until_ub_sent;
   for (unsigned i = 0; i < acting.size(); ++i) {
     if (acting[i] == pg_whoami.osd || acting[i] == CRUSH_ITEM_NONE) {
@@ -1403,7 +1426,7 @@ void PeeringState::recalc_readable_until()
 
 bool PeeringState::check_prior_readable_down_osds(const OSDMapRef& map)
 {
-  assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
   bool changed = false;
   auto p = prior_readable_down_osds.begin();
   while (p != prior_readable_down_osds.end()) {
@@ -1519,8 +1542,18 @@ bool PeeringState::needs_recovery() const
       continue;
     }
     if (pm->second.num_missing()) {
-      psdout(10) << "osd." << peer << " has "
-		 << pm->second.num_missing() << " missing" << dendl;
+      std::ostringstream ss;
+      ss << "osd." << peer << " has "
+         << pm->second.num_missing() << " missing";
+
+      const auto &items = pm->second.get_items();
+      if (!items.empty()) {
+        const auto &first = *items.begin();
+        const hobject_t &oid = first.first;
+        ss << ", first missing oid=" << oid;
+      }
+
+      psdout(10) << ss.str() << dendl;
       return true;
     }
   }
@@ -1550,17 +1583,21 @@ bool PeeringState::needs_backfill() const
 }
 
 /**
-* Returns whether a particular object can be safely read on this replica
+* Returns whether a particular object can be safely read
 */
-bool PeeringState::can_serve_replica_read(const hobject_t &hoid)
+bool PeeringState::can_serve_read(const hobject_t &hoid)
 {
   ceph_assert(!is_primary());
+  std::string_view storage_object = "replica";
+  if (pool.info.is_erasure()) {
+    storage_object = "shard";
+  }
   if (!pg_log.get_log().has_write_since(
       hoid, pg_committed_to)) {
-    psdout(20) << "can be safely read on this replica" << dendl;
+    psdout(20) << "can be safely read on this " << storage_object << dendl;
     return true;
   } else {
-    psdout(20) << "can't read object on this replica" << dendl;
+    psdout(20) << "can't read object on this " << storage_object << dendl;
     return false;
   }
 }
@@ -1846,7 +1883,7 @@ PeeringState::select_replicated_primary(
       !primary->second.is_incomplete() &&
       primary->second.last_update >=
         auth_log_shard->second.log_tail) {
-    assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
+    ceph_assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
     auto approx_missing_objects =
       primary->second.stats.stats.sum.num_objects_missing;
     auto auth_version = auth_log_shard->second.last_update.version;
@@ -2045,7 +2082,7 @@ class bucket_candidates_t {
 public:
   void add_osd(osd_ord_t ord, osd_id_t osd) {
     // osds will be added in smallest to largest order
-    assert(osds.empty() || osds.back().first <= ord);
+    ceph_assert(osds.empty() || osds.back().first <= ord);
     osds.push_back(std::make_pair(ord, osd));
   }
   osd_id_t pop_osd() {
@@ -2379,7 +2416,7 @@ void PeeringState::choose_async_recovery_ec(
     // past the authoritative last_update the same as those equal to it.
     version_t auth_version = auth_info.last_update.version;
     version_t candidate_version = shard_info.last_update.version;
-    assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
+    ceph_assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
     auto approx_missing_objects =
       shard_info.stats.stats.sum.num_objects_missing;
     if (auth_version > candidate_version) {
@@ -2437,7 +2474,7 @@ void PeeringState::choose_async_recovery_replicated(
     // logs plus historical missing objects as the cost of recovery
     version_t auth_version = auth_info.last_update.version;
     version_t candidate_version = shard_info.last_update.version;
-    assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
+    ceph_assert(HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS));
     auto approx_missing_objects =
       shard_info.stats.stats.sum.num_objects_missing;
     if (auth_version > candidate_version) {
@@ -2978,7 +3015,7 @@ void PeeringState::activate(
     purged.intersection_of(to_trim, info.purged_snaps);
     to_trim.subtract(purged);
 
-    assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
+    ceph_assert(HAVE_FEATURE(upacting_features, SERVER_OCTOPUS));
     renew_lease(pl->get_mnow());
     // do not schedule until we are actually activated
 
@@ -3370,6 +3407,7 @@ void PeeringState::proc_master_log(
 	       &olog);
   }
 
+  const pg_log_entry_t* head_log_entry = nullptr;
   bool invalidate_stats = false;
 
   // For partial writes we may be able to keep some of the divergent entries
@@ -3379,7 +3417,10 @@ void PeeringState::proc_master_log(
     while (p != pg_log.get_log().log.begin()) {
       --p;
       if (p->version <= olog.head) {
-	break;
+        if (p->version == olog.head) {
+          head_log_entry = &(*p);
+        }
+        break;
       }
     }
     if (p == pg_log.get_log().log.end()) {
@@ -3477,22 +3518,75 @@ void PeeringState::proc_master_log(
       }
       rollbacker.get()->partial_write(&info, previous_version, *p);
       olog.head = p->version;
+      head_log_entry = &(*p);
 
       // Process the next entry
       ++p;
     }
   }
+
+  // Find the version we want to roll forwards to
+  // Iterate over all shards and see if any have a last_update equal to where we want to roll to
+  // Copy the stats for this shard into oinfo
+  // Set invalidate_stats to false again if we do copy these stats
+  // We will only copy stats if they are copied from a primary, or if they are
+  // copied from a non-primary where the last write was a non-partial write
+  // as the stats of non-primaries are stale after partial writes on objects with clones
+  if (invalidate_stats && pool.info.allows_ecoptimizations()) {
+    for (const auto& [shard, my_info] : peer_info) {
+      if (invalidate_stats && my_info.stats.version == olog.head &&
+          (!pool.info.is_nonprimary_shard(shard.shard) ||
+           (head_log_entry &&
+            head_log_entry->is_written_shard(shard.shard)))) {
+        oinfo.stats = my_info.stats;
+        invalidate_stats = false;
+        psdout(10) << "keeping stats for " << shard
+                   << " (wanted last update: " << olog.head
+                   << ", stats version: " << my_info.stats.version
+                   << ", shard last update: " << my_info.last_update << ")."
+                   << " Stats: ";
+
+        JSONFormatter f;
+        oinfo.stats.dump(&f);
+        f.flush(*_dout);
+
+        *_dout << dendl;
+      } else {
+        psdout(20) << "not using stats for " << shard
+                   << " (wanted last update: " << olog.head
+                   << ", stats version: " << my_info.stats.version
+                   << ", shard last update: " << my_info.last_update << ")."
+                   << " Stats: ";
+
+        JSONFormatter f;
+        my_info.stats.dump(&f);
+        f.flush(*_dout);
+
+        *_dout << dendl;
+      }
+    }
+  }
+
   // merge log into our own log to build master log.  no need to
   // make any adjustments to their missing map; we are taking their
   // log to be authoritative (i.e., their entries are by definitely
   // non-divergent).
   merge_log(t, oinfo, std::move(olog), from);
   if (info.last_backfill.is_max() &&
-      pool.info.is_nonprimary_shard(from.shard)) {
+      (pool.info.allows_ecoptimizations() &&
+       pool.info.is_nonprimary_shard(from.shard) &&
+      (!head_log_entry ||
+       !head_log_entry->is_written_shard(from.shard)))){
     invalidate_stats = true;
   }
+
   info.stats.stats_invalid |= invalidate_stats;
-  increment_stats_invalidations_counter(invalidate_stats);
+  increment_stats_invalidations_counter(rs_process_log_stats_invalidated,
+                                        invalidate_stats);
+  if (invalidate_stats)
+  {
+    psdout(10) << "invalidating stats for " << pg_whoami << dendl;
+  }
   peer_info[from] = oinfo;
   psdout(10) << " peer osd." << from << " now " << oinfo
 	     << " " << omissing << dendl;
@@ -3747,8 +3841,10 @@ void PeeringState::split_into(
   child->info.last_epoch_started = info.last_epoch_started;
   child->info.last_interval_started = info.last_interval_started;
 
-  increment_stats_invalidations_counter(info.stats.stats_invalid);
-  increment_stats_invalidations_counter(child->info.stats.stats_invalid);
+  increment_stats_invalidations_counter(rs_pg_split_parent_stats_invalidated,
+                                        info.stats.stats_invalid);
+  increment_stats_invalidations_counter(rs_pg_split_child_stats_invalidated,
+                                        child->info.stats.stats_invalid);
 
   // There can't be recovery/backfill going on now
   int primary, up_primary;
@@ -4422,10 +4518,8 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
      *  - num_objects_degraded, num_objects_misplaced, num_objects_recovered
      *
      * The PG rebuild stats are aggregated into the following recoverystate
-     * perf counters:
+     * perf counter:
      *  - rs_pg_rebuild_duration: rebuild duration LONGRUNAVG time counter
-     *  - rs_pg_rebuild_max_secs: maximum rebuild duration (secs)
-     *  - rs_pg_rebuild_min_secs: minimum rebuild duration (secs)
      *
      * Workflow:
      *  1. Only the acting primary OSD of the PG executes the logic to
@@ -4440,6 +4534,18 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
      *     num_objects_recovered > 0 or the PG had confirmed redundancy loss
      *     at latch time, filtering out spurious state transitions. The latch
      *     is cleared after each recorded event.
+     *  4. The "recovered" (record) branch additionally requires the live
+     *     PG_STATE_ACTIVE bit, not just an empty degraded/misplaced count.
+     *     Right after a peering-interval restart, clear_primary_state()
+     *     wipes acting_recovery_backfill/missing_loc before peering has
+     *     repopulated them for the new interval; a publish landing in that
+     *     narrow mid-peering window sees num_objects_degraded == 0 and no
+     *     DEGRADED/UNDERSIZED bit set, which looks identical to a genuine
+     *     recovery completion even though the PG is still mid-transition
+     *     and about to go degraded again. Requiring PG_STATE_ACTIVE (never
+     *     set while PEERING) filters out that transient situation so it can't
+     *     prematurely record a truncated duration and reset the latch out
+     *     from under an in-progress rebuild.
      *
      * last_degraded is intentionally not used in the interim solution to
      * retain compatibility with older Ceph releases where this field doesn't
@@ -4474,24 +4580,18 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
                        << info.pgid << " at " << rebuild_start_time << dendl;
           }
         }
-      } else if (rebuild_start_time != utime_t()) {
+      } else if (rebuild_start_time != utime_t() && (state & PG_STATE_ACTIVE)) {
         // PG recovered — record rebuild time if this was a genuine event.
+        // The PG_STATE_ACTIVE check excludes the transient mid-peering
+        // window (see point 4 above) where the degraded/misplaced counts
+        // can momentarily read as zero before peering has finished
+        // repopulating them for the new interval.
         const int64_t delta_recovered = num_recovered - rebuild_base_recovered;
         const utime_t rebuild_dur  = now - rebuild_start_time;
 
         if (rebuild_dur.to_msec() > 0 &&
             (delta_recovered > 0 || rebuild_had_redundancy_loss)) {
-          PerfCounters &perf = pl->get_peering_perf();
-          perf.tinc(rs_pg_rebuild_duration, rebuild_dur);
-
-          const uint64_t rebuild_secs = (uint64_t)rebuild_dur.sec();
-          if (rebuild_secs > perf.get(rs_pg_rebuild_max_secs)) {
-            perf.set(rs_pg_rebuild_max_secs, rebuild_secs);
-          }
-          const uint64_t cur_min = perf.get(rs_pg_rebuild_min_secs);
-          if (cur_min == 0 || rebuild_secs < cur_min) {
-            perf.set(rs_pg_rebuild_min_secs, rebuild_secs);
-          }
+          pl->get_peering_perf().tinc(rs_pg_rebuild_duration, rebuild_dur);
           psdout(15) << "rebuild-stats: recorded rebuild for " << info.pgid
                      << " duration=" << rebuild_dur
                      << " delta_recovered=" << delta_recovered << dendl;
@@ -4503,15 +4603,27 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
       }
     }
 
+    // check if the PG is vulnerable
+    if (info.stats.state & (PG_STATE_DEGRADED|PG_STATE_UNDERSIZED)) {
+      // set last_degraded only if we are entering a new
+      // failure state and if it's older than last_clean
+      if (info.stats.last_degraded <= info.stats.last_clean) {
+        info.stats.last_degraded = now;
+      }
+    }
+    // update pre_publish so the change is sent immediately
+    pre_publish.last_degraded = info.stats.last_degraded;
+
     psdout(15) << "publish_stats_to_osd " << pre_publish.reported_epoch
 	       << ":" << pre_publish.reported_seq << dendl;
     return std::make_optional(std::move(pre_publish));
   }
 }
 
-void PeeringState::increment_stats_invalidations_counter(bool invalidation_state) {
+void PeeringState::increment_stats_invalidations_counter(int stats_invalidation_counter,
+                                                         bool invalidation_state) {
   if (invalidation_state) {
-    pl->get_peering_perf().inc(rs_stats_invalidated);
+    pl->get_peering_perf().inc(stats_invalidation_counter);
   }
 }
 
@@ -4614,7 +4726,8 @@ void PeeringState::update_stats(
   }
 
   if (previous_stats_invalidation != info.stats.stats_invalid) {
-    increment_stats_invalidations_counter(info.stats.stats_invalid);
+    increment_stats_invalidations_counter(rs_update_stats_invalidated,
+                                          info.stats.stats_invalid);
   }
 
   if (t) {
@@ -4663,7 +4776,8 @@ bool PeeringState::append_log_entries_update_missing(
     info.last_complete = info.last_update;
   }
   info.stats.stats_invalid = info.stats.stats_invalid || invalidate_stats;
-  increment_stats_invalidations_counter(invalidate_stats);
+  increment_stats_invalidations_counter(rs_append_log_stats_invalidated,
+                                        invalidate_stats);
   psdout(20) << "trim_to bool = " << bool(trim_to)
 	     << " trim_to = " << (trim_to ? *trim_to : eversion_t()) << dendl;
   if (trim_to) {
@@ -4717,7 +4831,8 @@ void PeeringState::merge_new_log_entries(
       dpp);
     pinfo.last_update = info.last_update;
     pinfo.stats.stats_invalid = pinfo.stats.stats_invalid || invalidate_stats;
-    increment_stats_invalidations_counter(invalidate_stats);
+    increment_stats_invalidations_counter(rs_merge_log_stats_invalidated,
+                                          invalidate_stats);
     rebuild_missing = rebuild_missing || invalidate_stats;
   }
 
@@ -4901,7 +5016,7 @@ void PeeringState::recover_got(
     psdout(10) << "last_complete now " << info.last_complete
 	       << " log.complete_to at end" << dendl;
     //below is not true in the repair case.
-    //assert(missing.num_missing() == 0);  // otherwise, complete_to was wrong.
+    //ceph_assert(missing.num_missing() == 0);  // otherwise, complete_to was wrong.
     ceph_assert(info.last_complete == info.last_update);
   }
 
@@ -5091,8 +5206,8 @@ void PeeringState::calc_trim_to()
     }
     psdout(10) << "calc_trim_to " << pg_trim_to << " -> " << new_trim_to << dendl;
     pg_trim_to = new_trim_to;
-    assert(pg_trim_to <= pg_log.get_head());
-    assert(pg_trim_to <= min_last_complete_ondisk);
+    ceph_assert(pg_trim_to <= pg_log.get_head());
+    ceph_assert(pg_trim_to <= min_last_complete_ondisk);
   }
 }
 
@@ -5151,6 +5266,15 @@ void PeeringState::apply_op_stats(
   const hobject_t &soid,
   const object_stat_sum_t &delta_stats)
 {
+  psdout(20) << fmt::format(
+	"apply_op_stats {} d.objs={} d.clns={} d.bytes={}"
+	" -> objs={} clns={} bytes={}",
+	soid, delta_stats.num_objects, delta_stats.num_object_clones,
+	delta_stats.num_bytes,
+	info.stats.stats.sum.num_objects + delta_stats.num_objects,
+	info.stats.stats.sum.num_object_clones + delta_stats.num_object_clones,
+	info.stats.stats.sum.num_bytes + delta_stats.num_bytes)
+	     << dendl;
   info.stats.stats.add(delta_stats);
   info.stats.stats.floor(0);
 
@@ -5784,9 +5908,9 @@ boost::statechart::result
 PeeringState::Backfilling::react(const RemoteReservationRevoked &)
 {
   DECLARE_LOCALS;
-  ps->state_set(PG_STATE_BACKFILL_WAIT);
-  suspend_backfill();
   if (ps->needs_backfill()) {
+    ps->state_set(PG_STATE_BACKFILL_WAIT);
+    suspend_backfill();
     return transit<WaitLocalBackfillReserved>();
   } else {
     // raced with MOSDPGBackfill::OP_BACKFILL_FINISH, ignore
@@ -6435,6 +6559,7 @@ boost::statechart::result
 PeeringState::Recovering::react(const AllReplicasRecovered &evt)
 {
   DECLARE_LOCALS;
+  psdout(10) << "handling AllReplicasRecovered" << dendl;
   ps->state_clear(PG_STATE_FORCED_RECOVERY);
   release_reservations();
   pl->cancel_local_background_io_reservation();
@@ -6483,6 +6608,8 @@ PeeringState::Recovering::react(const DeferRecovery &evt)
       ps->get_osdmap_epoch(),
       DoRecovery()),
     evt.delay);
+  psdout(10) << "DeferRecovery: transitioning to NotRecovering, "
+	     << "any pending AllReplicasRecovered will be lost" << dendl;
   return transit<NotRecovering>();
 }
 
@@ -6518,6 +6645,8 @@ PeeringState::Recovered::Recovered(my_context ctx)
 
   DECLARE_LOCALS;
 
+  psdout(10) << "Recovered::Recovered: entering Recovered state" << dendl;
+
   ceph_assert(!ps->needs_recovery());
 
   // if we finished backfill, all acting are active; recheck if
@@ -6541,6 +6670,8 @@ PeeringState::Recovered::Recovered(my_context ctx)
   if (context< Active >().all_replicas_activated  &&
       ps->async_recovery_targets.empty())
     post_event(GoClean());
+
+  psdout(10) << "Recovered::Recovered: exiting Recovered constructor" << dendl;
 }
 
 void PeeringState::Recovered::exit()
@@ -6923,7 +7054,7 @@ boost::statechart::result PeeringState::Active::react(const AllReplicasActivated
       if (merge_target) {
 	pg_t src = pgid;
 	src.set_ps(ps->pool.info.get_pg_num_pending());
-	assert(src.get_parent() == pgid);
+	ceph_assert(src.get_parent() == pgid);
 	pl->set_not_ready_to_merge_target(pgid, src);
       } else {
 	pl->set_not_ready_to_merge_source(pgid);
@@ -7018,7 +7149,7 @@ void PeeringState::Active::all_activated_and_committed()
   ceph_assert(!ps->acting_recovery_backfill.empty());
   ceph_assert(ps->blocked_by.empty());
 
-  assert(HAVE_FEATURE(ps->upacting_features, SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(ps->upacting_features, SERVER_OCTOPUS));
   // this is overkill when the activation is quick, but when it is slow it
   // is important, because the lease was renewed by the activate itself but we
   // don't know how long ago that was, and simply scheduling now may leave
@@ -7115,6 +7246,15 @@ boost::statechart::result PeeringState::ReplicaActive::react(
     ps->state_set(PG_STATE_ACTIVE);
   } else {
     ps->state_set(PG_STATE_PEERED);
+  }
+  /* Update the state in the stats. This will normally get overwritten when the next write
+   * transaction is applied, but if the PG is idle then these stats may get copied to the
+   * next primary (see PG::merge_log). The state update ensures that prepare_stats_for_publish
+   * will update last_active when the primary changes and this stops health check generating
+   * false positive stuck in peering alerts.
+   */
+  if (ps->info.stats.state != ps->state) {
+    ps->info.stats.state = ps->state;
   }
   pl->on_activate_committed();
 
@@ -8317,7 +8457,7 @@ std::vector<pg_shard_t> PeeringState::get_replica_recovery_order() const
       continue;
     }
     auto pm = get_peer_missing().find(p);
-    assert(pm != get_peer_missing().end());
+    ceph_assert(pm != get_peer_missing().end());
     auto nm = pm->second.num_missing();
     if (nm != 0) {
       if (is_async_recovery_target(p)) {

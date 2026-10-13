@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -23,19 +24,18 @@
 
 #include "include/buffer.h"
 #include "include/ceph_fs.h" // for ceph_statfs
-#include "common/debug.h" // for cmdmap_t
-#include "common/cmdparse.h"
+#include "common/cmdparse.h" // for cmdmap_t
 #include "common/Formatter.h"
 #include "osd/osd_types.h"
 #include "include/mempool.h"
-#include "mon/health_check.h"
-#include <sstream>
 #include "mon/mon_types.h"
 
 #include <cstdint>
 #include <iosfwd>
 #include <map>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 
 struct health_check_map_t;
@@ -45,7 +45,9 @@ class TextTable;
 class PGMapDigest {
 public:
   MEMPOOL_CLASS_HELPERS();
-  virtual ~PGMapDigest() {}
+
+  PGMapDigest() noexcept;
+  virtual ~PGMapDigest() noexcept;
 
   mempool::pgmap::vector<uint64_t> osd_last_seq;
 
@@ -83,12 +85,14 @@ public:
       f->dump_int("up_not_acting", up_not_acting);
       f->dump_int("primary", primary);
     }
-    static void generate_test_instances(std::list<pg_count*>& o) {
-      o.push_back(new pg_count);
-      o.push_back(new pg_count);
-      o.back()->acting = 1;
-      o.back()->up_not_acting = 2;
-      o.back()->primary = 3;
+    static std::list<pg_count> generate_test_instances() {
+      std::list<pg_count> o;
+      o.emplace_back();
+      o.emplace_back();
+      o.back().acting = 1;
+      o.back().up_not_acting = 2;
+      o.back().primary = 3;
+      return o;
     }
   };
   mempool::pgmap::unordered_map<int32_t,pg_count> num_pg_by_osd;
@@ -249,7 +253,7 @@ public:
   void encode(ceph::buffer::list& bl, uint64_t features) const;
   void decode(ceph::buffer::list::const_iterator& p);
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<PGMapDigest*>& ls);
+  static std::list<PGMapDigest> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(PGMapDigest::pg_count);
 WRITE_CLASS_ENCODER_FEATURES(PGMapDigest);
@@ -319,7 +323,7 @@ public:
       osd_stat_updates.erase(osd);
     }
     void dump(ceph::Formatter *f) const;
-    static void generate_test_instances(std::list<Incremental*>& o);
+    static std::list<Incremental> generate_test_instances();
 
     Incremental() : version(0), osdmap_epoch(0), pg_scan(0) {}
   };
@@ -371,6 +375,7 @@ public:
                              const utime_t ts,
                              const int64_t pool,
                              const pool_stat_t& old_pool_sum);
+  std::vector<std::pair<int32_t, osd_stat_t>> get_sorted_osd_stats() const;
 
  public:
 
@@ -385,10 +390,8 @@ public:
   static const int STUCK_STALE = (1<<4);
   static const int STUCK_PEERING = (1<<5);
 
-  PGMap()
-    : version(0),
-      last_osdmap_epoch(0), last_pg_scan(0)
-  {}
+  PGMap() noexcept;
+  ~PGMap() noexcept;
 
   version_t get_version() const {
     return version;
@@ -525,7 +528,7 @@ public:
     health_check_map_t *checks) const;
   void print_summary(ceph::Formatter *f, std::ostream *out) const;
 
-  static void generate_test_instances(std::list<PGMap*>& o);
+  static std::list<PGMap> generate_test_instances();
 };
 WRITE_CLASS_ENCODER_FEATURES(PGMap)
 

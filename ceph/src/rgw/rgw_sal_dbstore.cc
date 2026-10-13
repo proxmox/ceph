@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -494,7 +494,7 @@ namespace rgw::sal {
 
   int DBObject::list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			   int max_parts, int marker, int* next_marker,
-			   bool* truncated, list_parts_each_t each_func,
+			   bool* truncated, list_parts_each_t&& each_func,
 			   optional_yield y)
   {
     return -EOPNOTSUPP;
@@ -546,18 +546,21 @@ namespace rgw::sal {
     return op_target.set_attrs(dpp, setattrs ? *setattrs : empty, delattrs);
   }
 
-  int DBObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj)
+  int DBObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp)
   {
     DB::Object op_target(store->getDB(), get_bucket()->get_info(), get_obj());
     DB::Object::Read read_op(&op_target);
 
-    return read_attrs(dpp, read_op, y, target_obj);
+    return read_attrs(dpp, read_op, y, nullptr);
   }
 
   int DBObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp, uint32_t flags)
   {
     rgw_obj target = get_obj();
-    int r = get_obj_attrs(y, dpp, &target);
+    DB::Object op_target(store->getDB(), get_bucket()->get_info(), get_obj());
+    DB::Object::Read read_op(&op_target);
+
+    int r = read_attrs(dpp, read_op, y, &target);
     if (r < 0) {
       return r;
     }
@@ -608,7 +611,20 @@ namespace rgw::sal {
     return 0;
   }
 
+  int MPDBSerializer::try_lock(const DoutPrefixProvider *dpp, ceph::timespan dur, optional_yield y)
+  {
+    locked = true;
+    return 0;
+  }
+
+  int MPDBSerializer::unlock(const DoutPrefixProvider* dpp, optional_yield y)
+  {
+    clear_locked();
+    return 0;
+  }
+
   std::unique_ptr<MPSerializer> DBObject::get_serializer(const DoutPrefixProvider *dpp,
+							 optional_yield y,
 							 const std::string& lock_name)
   {
     return std::make_unique<MPDBSerializer>(dpp, store, this, lock_name);
@@ -932,9 +948,6 @@ namespace rgw::sal {
            const char *if_nomatch)
   {
     char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
-    char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
-    std::string etag;
-    bufferlist etag_bl;
     MD5 hash;
     bool truncated;
     int ret;
@@ -1002,16 +1015,17 @@ namespace rgw::sal {
     } while (truncated);
     hash.Final((unsigned char *)final_etag);
 
-    buf_to_hex((unsigned char *)final_etag, sizeof(final_etag), final_etag_str);
-    snprintf(&final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2],
-	     sizeof(final_etag_str) - CEPH_CRYPTO_MD5_DIGESTSIZE * 2,
-           "-%lld", (long long)part_etags.size());
-    etag = final_etag_str;
-    ldpp_dout(dpp, 10) << "calculated etag: " << etag << dendl;
+    bufferlist etag_bl;
+    append_bl(etag_bl, CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16, [&](auto iter) {
+      const auto start = iter;
+      iter = buf_to_hex(final_etag, iter);
+      iter = fmt::format_to(iter, "-{}", part_etags.size());
+      ldpp_dout(dpp, 10) << "calculated etag: " << std::string_view{start, iter}
+                         << dendl;
+      return iter;
+    });
 
-    etag_bl.append(etag);
-
-    attrs[RGW_ATTR_ETAG] = etag_bl;
+    attrs[RGW_ATTR_ETAG] = std::move(etag_bl);
 
     /* XXX: handle compression ? */
 
@@ -1468,7 +1482,8 @@ namespace rgw::sal {
   int DBStore::store_oidc_provider(const DoutPrefixProvider *dpp,
                                    optional_yield y,
                                    const RGWOIDCProviderInfo& info,
-                                   bool exclusive)
+                                   bool exclusive,
+                                   RGWObjVersionTracker* objv_tracker)
   {
     return -ENOTSUP;
   }
@@ -1477,7 +1492,8 @@ namespace rgw::sal {
                                   optional_yield y,
                                   std::string_view account,
                                   std::string_view url,
-                                  RGWOIDCProviderInfo& info)
+                                  RGWOIDCProviderInfo& info,
+                                  RGWObjVersionTracker* objv_tracker)
   {
     return -ENOTSUP;
   }
@@ -2131,6 +2147,12 @@ namespace rgw::sal {
     return -ENOENT;
   }
 
+  std::tuple<rgw::lua::LuaCodeType, int> DBLuaManager::get_script_or_bytecode(const DoutPrefixProvider* dpp, optional_yield y,
+                                                                    const std::string& key)
+  {
+    return std::make_tuple("", -ENOENT);
+  }
+
   int DBLuaManager::put_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, const std::string& script)
   {
     return -ENOENT;
@@ -2160,7 +2182,7 @@ namespace rgw::sal {
   {
     return -ENOENT;
   }
-  
+
 } // namespace rgw::sal
 
 extern "C" {

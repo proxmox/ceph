@@ -33,7 +33,7 @@ QAT Environment Setup
    encryption and compression services. And QAT driver in kernel space have to
    be loaded to drive the hardware.
 
-The out-of-tree QAT driver package can be downloaded from `Intel Quickassist
+The out-of-tree QAT driver package can be downloaded from `Intel QuickAssist
 Technology`_.
 
 The QATlib can be downloaded from `qatlib`_, which is used for the in-tree QAT
@@ -43,7 +43,7 @@ driver.
       The out-of-tree QAT driver is gradually being migrated to an in-tree driver+QATlib.
 
 2. The implementation of QAT-based encryption is directly based on the QAT API,
-   which is included the driver package. However, QAT support for compression
+   which is included in the driver package. However, QAT support for compression
    depends on the QATzip project, which is a userspace library that builds on
    top of the QAT API. At the time of writing (July 2024), QATzip speeds up
    gzip compression and decompression.
@@ -56,12 +56,17 @@ Implementation
 
 `OpenSSL support for RGW encryption`_ has been merged into Ceph, and Intel also
 provides one `QAT Engine`_ for OpenSSL. Theoretically, QAT-based encryption in
-Ceph can be directly supported through the OpenSSl+QAT Engine.
+Ceph can be directly supported through the OpenSSL+QAT Engine.
 
 However, the QAT Engine for OpenSSL currently supports only chained operations,
 which means that Ceph will not be able to utilize QAT hardware features for
 crypto operations based on the OpenSSL crypto plugin. As a result, one QAT plugin
 based on native QAT API is added into the crypto framework.
+
+.. note:: QAT acceleration currently supports only AES-256-CBC encryption mode.
+   The AES-256-GCM encryption mode (see :ref:`radosgw-encryption`) uses ISA-L
+   or OpenSSL acceleration instead. QAT support for GCM may be added in a
+   future release.
 
 2. QAT Support for Compression
 
@@ -144,7 +149,7 @@ Configuration
       cd ceph
       ./do_cmake.sh -DWITH_QATDRV=ON
       cd build
-      ininja
+      ninja
 
    .. note:: The section name in QAT configuration files must be ``CEPH``,
       because the section name is set to ``CEPH`` in the Ceph crypto source code.
@@ -229,7 +234,7 @@ The following QAT-related settings can be added to the Ceph configuration file
 
 .. _QAT Support for Compression: https://github.com/ceph/ceph/pull/19714
 .. _QAT based Encryption for RGW: https://github.com/ceph/ceph/pull/19386
-.. _Intel Quickassist Technology: https://01.org/intel-quickassist-technology
+.. _Intel QuickAssist Technology: https://www.intel.com/content/www/us/en/developer/topic-technology/open/quick-assist-technology/overview.html
 .. _QATzip: https://github.com/intel/QATzip
 .. _OpenSSL support for RGW encryption: https://github.com/ceph/ceph/pull/15168
 .. _QAT Engine: https://github.com/intel/QAT_Engine

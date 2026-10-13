@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <errno.h>
 
@@ -13,6 +13,8 @@ using std::string;
 using ceph::bufferlist;
 using ceph::decode;
 using ceph::encode;
+
+using namespace cls::cas;
 
 void cls_cas_chunk_create_or_get_ref(
   librados::ObjectWriteOperation& op,
@@ -28,7 +30,7 @@ void cls_cas_chunk_create_or_get_ref(
   }
   call.data = data;
   encode(call, in);
-  op.exec("cas", "chunk_create_or_get_ref", in);
+  op.exec(method::chunk_create_or_get_ref, in);
 }
 
 void cls_cas_chunk_get_ref(
@@ -39,7 +41,7 @@ void cls_cas_chunk_get_ref(
   cls_cas_chunk_get_ref_op call;
   call.source = soid;
   encode(call, in);
-  op.exec("cas", "chunk_get_ref", in);
+  op.exec(method::chunk_get_ref, in);
 }
 
 void cls_cas_chunk_put_ref(
@@ -50,7 +52,7 @@ void cls_cas_chunk_put_ref(
   cls_cas_chunk_put_ref_op call;
   call.source = soid;
   encode(call, in);
-  op.exec("cas", "chunk_put_ref", in);
+  op.exec(method::chunk_put_ref, in);
 }
 
 int cls_cas_references_chunk(
@@ -60,6 +62,6 @@ int cls_cas_references_chunk(
 {
   bufferlist in, out;
   encode(chunk_oid, in);
-  int r = io_ctx.exec(oid, "cas", "references_chunk", in, out);
+  int r = io_ctx.exec(oid, method::references_chunk, in, out);
   return r;
 }

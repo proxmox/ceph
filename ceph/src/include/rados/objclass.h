@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_OBJCLASS_OBJCLASS_PUBLIC_H
 #define CEPH_OBJCLASS_OBJCLASS_PUBLIC_H
@@ -7,6 +7,7 @@
 #ifdef __cplusplus
 
 #include "buffer.h"
+#include "cls_traits.hpp"
 
 extern "C" {
 #endif
@@ -24,10 +25,6 @@ const char *__cls_name = #name;
 
 #define CLS_INIT(name) \
 CEPH_CLS_API void __cls_init()
-
-#define CLS_METHOD_RD       0x1 /// method executes read operations
-#define CLS_METHOD_WR       0x2 /// method executes write operations
-#define CLS_METHOD_PROMOTE  0x8 /// method cannot be proxied to base tier
 
 #define CLS_LOG(level, fmt, ...)                                        \
   cls_log(level, "<cls> %s:%d: " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
@@ -85,8 +82,26 @@ typedef int (*cls_method_cxx_call_t)(cls_method_context_t ctx,
  * @param class_call
  * @param handle
  */
-extern int cls_register_cxx_method(cls_handle_t hclass, const char *method, int flags,
+namespace detail {
+extern int cls_register_cxx_method_impl(cls_handle_t hclass, const char *method, int flags,
                                    cls_method_cxx_call_t class_call, cls_method_handle_t *handle);
+}
+
+template <typename ClassDef>
+struct ClassRegistrar {
+  cls_handle_t h_class;
+
+  ClassRegistrar(cls_handle_t h) : h_class(h) {}
+
+  template <typename Tag>
+  void register_cxx_method(const ClsMethod<Tag, ClassDef>& method_def,
+                    cls_method_cxx_call_t class_call,
+                    cls_method_handle_t* handle) {
+
+    int flags = FlagTraits<Tag>::value;
+    detail::cls_register_cxx_method_impl(h_class, method_def.name, flags, class_call, handle);
+  }
+};
 
 /**
  * Create an object.

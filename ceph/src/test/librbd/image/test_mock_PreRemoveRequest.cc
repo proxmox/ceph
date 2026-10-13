@@ -1,5 +1,5 @@
-// -*- mode:c++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:c++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "test/librbd/test_mock_fixture.h"
 #include "test/librbd/test_support.h"
@@ -193,7 +193,7 @@ public:
     }
 
     auto &expect = EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
-                               exec(mock_image_ctx.header_oid, _, StrEq("rbd"),
+                               exec_internal(mock_image_ctx.header_oid, _, StrEq("rbd"),
                                     StrEq("image_group_get"), _, _, _, _));
     if (r < 0) {
       expect.WillOnce(Return(r));

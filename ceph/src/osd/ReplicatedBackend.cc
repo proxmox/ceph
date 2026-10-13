@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -280,6 +281,18 @@ int ReplicatedBackend::objects_read_sync(
   uint64_t off,
   uint64_t len,
   uint32_t op_flags,
+  bufferlist *bl,
+  uint64_t object_size,
+  std::optional<CoroHandles> coro)
+{
+  return store->read(ch, ghobject_t(hoid), off, len, *bl, op_flags);
+}
+
+int ReplicatedBackend::objects_read_local(
+  const hobject_t &hoid,
+  uint64_t off,
+  uint64_t len,
+  uint32_t op_flags,
   bufferlist *bl)
 {
   return store->read(ch, ghobject_t(hoid), off, len, *bl, op_flags);
@@ -308,6 +321,34 @@ void ReplicatedBackend::objects_read_async(
   bool fast_read)
 {
   ceph_abort_msg("async read is not used by replica pool");
+}
+
+bool ReplicatedBackend::get_ec_supports_crc_encode_decode() const {
+  ceph_abort_msg("crc encode decode is not used by replica pool");
+  return false;
+}
+
+bool ReplicatedBackend::ec_can_decode(
+    const shard_id_set &available_shards) const {
+  ceph_abort_msg("can decode is not used by replica pool");
+  return false;
+}
+
+shard_id_map<bufferlist> ReplicatedBackend::ec_encode_acting_set(
+    const bufferlist &in_bl) const {
+  ceph_abort_msg("encode is not used by replica pool");
+  return {0};
+}
+
+shard_id_map<bufferlist> ReplicatedBackend::ec_decode_acting_set(
+    const shard_id_map<bufferlist> &shard_map, int chunk_size) const {
+  ceph_abort_msg("decode is not used by replica pool");
+  return {0};
+}
+
+ECUtil::stripe_info_t ReplicatedBackend::ec_get_sinfo() const {
+  ceph_abort_msg("get_ec_sinfo is not used by replica pool");
+  return {0, 0, 0};
 }
 
 class C_OSD_OnOpCommit : public Context {
@@ -415,15 +456,14 @@ void generate_transaction(
 	t->omap_setheader(coll, goid, *(op.omap_header));
 
       for (auto &&up: op.omap_updates) {
-	using UpdateType = PGTransaction::ObjectOperation::OmapUpdateType;
 	switch (up.first) {
-	case UpdateType::Remove:
+	case OmapUpdateType::Remove:
 	  t->omap_rmkeys(coll, goid, up.second);
 	  break;
-	case UpdateType::Insert:
+	case OmapUpdateType::Insert:
 	  t->omap_setkeys(coll, goid, up.second);
 	  break;
-	case UpdateType::RemoveRange:
+	case OmapUpdateType::RemoveRange:
 	  t->omap_rmkeyrange(coll, goid, up.second);
 	  break;
 	}
@@ -744,66 +784,102 @@ static uint32_t crc32_netstring(const uint32_t orig_crc, std::string_view data)
   return crc;
 }
 
+
+std::optional<int32_t> ReplicatedBackend::be_deep_scrub_read_data(
+    const Scrub::ScrubCounterSet &io_counters,
+    const hobject_t& poid,
+    ScrubMapBuilder& pos,
+    ScrubMap::object& smap_object)
+{
+  if (pos.data_pos == 0) {
+    pos.data_hash = bufferhash(-1);
+  }
+  ceph_assert(pos.data_pos >= 0);  // also simplifies subtraction below
+  const uint64_t stride = cct->_conf->osd_deep_scrub_stride;
+
+  // note re the '1' (and not '0') in the next line: we should never
+  // reach here with pos == size != 0, as that is caught by the check
+  // after the 'read'. But if size==0, we do want to try to read
+  // something (and get EOF).
+  uint64_t to_read{1};
+  if (std::cmp_greater(smap_object.size, pos.data_pos)) {
+    to_read = std::min(stride, smap_object.size - pos.data_pos);
+    // the implicit 'else' is to_read = 1.
+  }
+
+  auto& perf_logger = *(get_parent()->get_logger());
+  perf_logger.inc(io_counters.read_cnt);
+  bufferlist bl;
+  const int r = store->read(
+      ch,
+      ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+      pos.data_pos, to_read, bl, scrub_fadvise_flags);
+  if (r < 0) {
+    dout(5) << fmt::format(
+                   "{}: {} got {} on read, read_error", __func__, poid, r)
+            << dendl;
+    smap_object.read_error = true;
+    return 0;
+  }
+  if (r > 0) {
+    pos.data_hash << bl;
+    perf_logger.inc(io_counters.read_bytes, r);
+  }
+  pos.data_pos += r;
+  if (std::cmp_greater_equal(pos.data_pos, smap_object.size) ||
+      std::cmp_less(r, to_read)) {
+    // done with bytes
+    smap_object.digest = pos.data_hash.digest();
+    smap_object.digest_present = true;
+    dout(10) << fmt::format(
+                    "{}: {} read {} bytes total ({} now; expected:{}; "
+                    "obj-size:{}), done with data. Digest {:#x}",
+                    __func__, poid, pos.data_pos, r, to_read, smap_object.size,
+                    smap_object.digest)
+             << dendl;
+    pos.data_pos = -1;
+    // the caller is not required to return immediately, and may continue
+    // analyzing the object.
+    return std::nullopt;
+  }
+  dout(10) << fmt::format(
+                  "{}: {} read {} bytes total ({} now; obj-size:{}), more data "
+                  "to read. Digest so far: {:#x}",
+                  __func__, poid, pos.data_pos, r, smap_object.size,
+                  pos.data_hash.digest())
+           << dendl;
+  return -EINPROGRESS;
+}
+
+
 int ReplicatedBackend::be_deep_scrub(
   const Scrub::ScrubCounterSet& io_counters,
   const hobject_t &poid,
   ScrubMap &map,
   ScrubMapBuilder &pos,
-  ScrubMap::object &o)
+  ScrubMap::object& smap_object)
 {
-  dout(10) << __func__ << " " << poid << " pos " << pos << dendl;
+  dout(10) << fmt::format("{} {} pos {}", __func__, poid, pos) << dendl;
   auto& perf_logger = *(get_parent()->get_logger());
-  const uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
-                                 CEPH_OSD_OP_FLAG_FADVISE_DONTNEED |
-                                 CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE;
 
-  utime_t sleeptime;
-  sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
-  if (sleeptime != utime_t()) {
-    lgeneric_derr(cct) << __func__ << " sleeping for " << sleeptime << dendl;
-    sleeptime.sleep();
+  {
+    // possible debug sleep
+    utime_t sleeptime;
+    sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
+    if (sleeptime != utime_t()) {
+      lgeneric_derr(cct) << __func__ << " sleeping for " << sleeptime << dendl;
+      sleeptime.sleep();
+    }
   }
 
-  int r{0};
   ceph_assert(poid == pos.ls[pos.pos]);
   if (!pos.data_done()) {
-    if (pos.data_pos == 0) {
-      pos.data_hash = bufferhash(-1);
+    if (auto maybe_must_rtrn =
+            be_deep_scrub_read_data(io_counters, poid, pos, smap_object);
+        maybe_must_rtrn) {
+      // either -EINPROGRESS or a 0 (which means read error)
+      return *maybe_must_rtrn;
     }
-
-    const uint64_t stride = cct->_conf->osd_deep_scrub_stride;
-
-    perf_logger.inc(io_counters.read_cnt);
-    bufferlist bl;
-    r = store->read(
-      ch,
-      ghobject_t(
-	poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-      pos.data_pos,
-      stride, bl,
-      fadvise_flags);
-    if (r < 0) {
-      dout(20) << __func__ << "  " << poid << " got "
-	       << r << " on read, read_error" << dendl;
-      o.read_error = true;
-      return 0;
-    }
-    if (r > 0) {
-      pos.data_hash << bl;
-    }
-    perf_logger.inc(io_counters.read_bytes, r);
-    pos.data_pos += r;
-    if (static_cast<uint64_t>(r) == stride) {
-      dout(20) << __func__ << "  " << poid << " more data, digest so far 0x"
-	       << std::hex << pos.data_hash.digest() << std::dec << dendl;
-      return -EINPROGRESS;
-    }
-    // done with bytes
-    pos.data_pos = -1;
-    o.digest = pos.data_hash.digest();
-    o.digest_present = true;
-    dout(20) << __func__ << "  " << poid << " done with data, digest 0x"
-	     << std::hex << o.digest << std::dec << dendl;
   }
 
   // omap header
@@ -812,7 +888,7 @@ int ReplicatedBackend::be_deep_scrub(
 
     perf_logger.inc(io_counters.omapgetheader_cnt);
     bufferlist hdrbl;
-    r = store->omap_get_header(
+    int r = store->omap_get_header(
       ch,
       ghobject_t(
 	poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
@@ -820,7 +896,7 @@ int ReplicatedBackend::be_deep_scrub(
     if (r == -EIO) {
       dout(20) << __func__ << "  " << poid << " got "
 	       << r << " on omap header read, read_error" << dendl;
-      o.read_error = true;
+      smap_object.read_error = true;
       return 0;
     }
     if (r == 0 && hdrbl.length()) {
@@ -877,24 +953,24 @@ int ReplicatedBackend::be_deep_scrub(
     dout(25) << __func__ << " " << poid
 	     << " large omap object detected. Object has " << pos.omap_keys
 	     << " keys and size " << pos.omap_bytes << " bytes" << dendl;
-    o.large_omap_object_found = true;
-    o.large_omap_object_key_count = pos.omap_keys;
-    o.large_omap_object_value_size = pos.omap_bytes;
+    smap_object.large_omap_object_found = true;
+    smap_object.large_omap_object_key_count = pos.omap_keys;
+    smap_object.large_omap_object_value_size = pos.omap_bytes;
     map.has_large_omap_object_errors = true;
   }
 
-  o.omap_digest = pos.omap_hash;
-  o.omap_digest_present = true;
+  smap_object.omap_digest = pos.omap_hash;
+  smap_object.omap_digest_present = true;
   dout(20) << __func__ << " done with " << poid << " omap_digest "
-	   << std::hex << o.omap_digest << std::dec << dendl;
+	   << std::hex << smap_object.omap_digest << std::dec << dendl;
 
   // Sum up omap usage
   if (pos.omap_keys > 0 || pos.omap_bytes > 0) {
     dout(25) << __func__ << " adding " << pos.omap_keys << " keys and "
              << pos.omap_bytes << " bytes to pg_stats sums" << dendl;
     map.has_omap_keys = true;
-    o.object_omap_bytes = pos.omap_bytes;
-    o.object_omap_keys = pos.omap_keys;
+    smap_object.object_omap_bytes = pos.omap_bytes;
+    smap_object.object_omap_keys = pos.omap_keys;
   }
 
   // done!
@@ -1337,9 +1413,9 @@ void ReplicatedBackend::calc_head_subsets(
   if (size)
     data_subset.insert(0, size);
 
-  assert(HAVE_FEATURE(parent->min_peer_features(), SERVER_OCTOPUS));
+  ceph_assert(HAVE_FEATURE(parent->min_peer_features(), SERVER_OCTOPUS));
   const auto it = missing.get_items().find(head);
-  assert(it != missing.get_items().end());
+  ceph_assert(it != missing.get_items().end());
   data_subset.intersection_of(it->second.clean_regions.get_dirty_regions());
   dout(10) << "calc_head_subsets " << head
 	   << " data_subset " << data_subset << dendl;
@@ -1575,7 +1651,7 @@ void ReplicatedBackend::prepare_pull(
     // pulling head or unversioned object.
     // always pull the whole thing.
     recovery_info.copy_subset.insert(0, (uint64_t)-1);
-    assert(HAVE_FEATURE(parent->min_peer_features(), SERVER_OCTOPUS));
+    ceph_assert(HAVE_FEATURE(parent->min_peer_features(), SERVER_OCTOPUS));
     recovery_info.copy_subset.intersection_of(missing_iter->second.clean_regions.get_dirty_regions());
     recovery_info.size = ((uint64_t)-1);
     recovery_info.object_exist = missing_iter->second.clean_regions.object_is_exist();
@@ -1704,7 +1780,7 @@ int ReplicatedBackend::prep_push(
   get_parent()->begin_peer_recover(peer, soid);
   const auto pmissing_iter = get_parent()->get_shard_missing().find(peer);
   const auto missing_iter = pmissing_iter->second.get_items().find(soid);
-  assert(missing_iter != pmissing_iter->second.get_items().end());
+  ceph_assert(missing_iter != pmissing_iter->second.get_items().end());
   // take note.
   push_info_t &push_info = pushing[soid][peer];
   push_info.obc = obc;
@@ -1808,7 +1884,7 @@ void ReplicatedBackend::submit_push_data(
     if (!complete) {
       //clone overlap content in local object
       if (recovery_info.object_exist) {
-        assert(r == 0);
+        ceph_assert(r == 0);
         uint64_t local_size = std::min(recovery_info.size, (uint64_t)st.st_size);
         interval_set<uint64_t> local_intervals_included, local_intervals_excluded;
         if (local_size) {
@@ -1834,7 +1910,7 @@ void ReplicatedBackend::submit_push_data(
   // Punch zeros for data, if fiemap indicates nothing but it is marked dirty
   if (data_zeros.size() > 0) {
     data_zeros.intersection_of(recovery_info.copy_subset);
-    assert(intervals_included.subset_of(data_zeros));
+    ceph_assert(intervals_included.subset_of(data_zeros));
     data_zeros.subtract(intervals_included);
 
     dout(20) << __func__ <<" recovering object " << recovery_info.soid
@@ -1970,7 +2046,7 @@ bool ReplicatedBackend::handle_pull_response(
     if (attrset.find(SS_ATTR) != attrset.end()) {
       bufferlist ssbv = attrset.at(SS_ATTR);
       SnapSet ss(ssbv);
-      assert(!pull_info.obc->ssc->exists || ss.seq  == pull_info.obc->ssc->snapset.seq);
+      ceph_assert(!pull_info.obc->ssc->exists || ss.seq  == pull_info.obc->ssc->snapset.seq);
     }
     pull_info.recovery_info.oi = pull_info.obc->obs.oi;
     pull_info.recovery_info = recalc_subsets(
@@ -2446,7 +2522,7 @@ void ReplicatedBackend::handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply)
       } else {
         recovery_info.copy_subset.clear();
       }
-      assert(recovery_info.clone_subset.empty());
+      ceph_assert(recovery_info.clone_subset.empty());
     }
 
     r = build_push_op(recovery_info, progress, 0, reply);
@@ -2460,7 +2536,7 @@ void ReplicatedBackend::handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply)
  *
  * @param copy_subset intervals we want
  * @param data_included intervals we got
- * @param data_recieved data we got
+ * @param data_received data we got
  * @param intervals_usable intervals we want to keep
  * @param data_usable matching data we want to keep
  */
@@ -2503,7 +2579,7 @@ void ReplicatedBackend::_failed_pull(pg_shard_t from, const hobject_t &soid)
 {
   dout(20) << __func__ << ": " << soid << " from " << from << dendl;
   auto it = pulling.find(soid);
-  assert(it != pulling.end());
+  ceph_assert(it != pulling.end());
   get_parent()->on_failed_pull(
     { from },
     soid,

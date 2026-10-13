@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -26,6 +26,7 @@ namespace crimson::os::seastore::journal {
 class SegmentedJournal : public Journal {
 public:
   SegmentedJournal(
+      store_index_t store_index,
       SegmentProvider &segment_provider,
       JournalTrimmer &trimmer);
   ~SegmentedJournal() {}
@@ -73,6 +74,7 @@ private:
     OrderingHandle &handle,
     on_submission_func_t &&on_submission);
 
+  store_index_t store_index;
   SegmentSeqAllocatorRef segment_seq_allocator;
   SegmentAllocator journal_segment_allocator;
   RecordSubmitter record_submitter;

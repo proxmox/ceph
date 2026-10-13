@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -36,9 +37,14 @@
 
 #include "osd/OSDMap.h"
 
+#include "health_check.h"
 #include "MonitorDBStore.h"
+#include "MonMap.h"
+#include "Paxos.h"
+#include "MonitorBackup.h"
 
 #include "messages/PaxosServiceMessage.h"
+#include "messages/MMonCommand.h"
 #include "messages/MMonMap.h"
 #include "messages/MMonGetMap.h"
 #include "messages/MMonGetVersion.h"
@@ -63,6 +69,8 @@
 #include "messages/MTimeCheck2.h"
 #include "messages/MPing.h"
 
+#include "msg/Messenger.h"
+
 #include "common/strtol.h"
 #include "common/ceph_argparse.h"
 #include "common/Timer.h"
@@ -76,6 +84,7 @@
 #include "include/color.h"
 #include "include/ceph_fs.h"
 #include "include/str_list.h"
+#include "include/util.h" // for collect_sys_info(), dump_services()
 
 #include "OSDMonitor.h"
 #include "MDSMonitor.h"
@@ -142,6 +151,42 @@ using ceph::timespan_str;
 static ostream& _prefix(std::ostream *_dout, const Monitor *mon) {
   return *_dout << "mon." << mon->name << "@" << mon->rank
 		<< "(" << mon->get_state_name() << ") e" << mon->monmap->get_epoch() << " ";
+}
+
+void Monitor::C_Command::_finish(int r) {
+  auto m = op->get_req<MMonCommand>();
+  if (r >= 0) {
+    std::ostringstream ss;
+    if (!op->get_req()->get_connection()) {
+      ss << "connection dropped for command ";
+    } else {
+      MonSession *s = op->get_session();
+
+      // if client drops we may not have a session to draw information from.
+      if (s) {
+	ss << "from='" << s->name << " " << s->addrs << "' "
+	   << "entity='" << s->entity_name << "' ";
+      } else {
+	ss << "session dropped for command ";
+      }
+    }
+    cmdmap_t cmdmap;
+    std::ostringstream ds;
+    std::string prefix;
+    cmdmap_from_json(m->cmd, &cmdmap, ds);
+    cmd_getval(cmdmap, "prefix", prefix);
+    if (prefix != "config set" && prefix != "config-key set")
+      ss << "cmd='" << m->cmd << "': finished";
+
+    mon.audit_clog->info() << ss.str();
+    mon.reply_command(op, rc, rs, rdata, version);
+  }
+  else if (r == -ECANCELED)
+    return;
+  else if (r == -EAGAIN)
+    mon.dispatch_op(op);
+  else
+    ceph_abort_msg("bad C_Command return value");
 }
 
 const string Monitor::MONITOR_NAME = "monitor";
@@ -501,7 +546,11 @@ will start to track new ops received afterwards.";
 	    << duration << " seconds" << dendl;
     out << "compacted " << g_conf().get_val<std::string>("mon_keyvaluedb")
 	<< " in " << duration << " seconds";
- } else {
+  } else if (command == "backup") {
+    r = perform_backup();
+  } else if (command == "backup_cleanup") {
+    r = cleanup_backup();
+  } else {
     ceph_abort_msg("bad AdminSocket command binding");
   }
   (read_only ? audit_clog->debug() : audit_clog->info())
@@ -518,6 +567,40 @@ abort:
     << "cmd=" << command << " "
     << "args=" << args << ": aborted";
   return r;
+}
+
+int Monitor::perform_backup()
+{
+  std::string backup_path = g_conf().get_val<string>("mon_backup_path");
+  dout(1) << "triggering backup" << dendl;
+  if (backup_path.empty()) {
+    derr << "backup failed: mon_backup_path is empty" << dendl;
+    return -ENOTDIR;
+  }
+  if (!backup_manager) {
+    derr << "backup failed: monitor still initializing" << dendl;
+    return -EAGAIN;
+  }
+  uint64_t jobid = backup_manager->backup();
+  dout(1) << "queued backup job id " << jobid << dendl;
+  return 0;
+}
+
+int Monitor::cleanup_backup()
+{
+  std::string backup_path = g_conf().get_val<string>("mon_backup_path");
+  dout(1) << "triggering backup_cleanup" << dendl;
+  if (backup_path.empty()) {
+    derr << "backup_cleanup failed: mon_backup_path is empty" << dendl;
+    return -ENOTDIR;
+  }
+  if (!backup_manager) {
+    derr << "backup_cleanup failed: monitor still initializing" << dendl;
+    return -EAGAIN;
+  }
+  uint64_t jobid = backup_manager->cleanup();
+  dout(1) << "queued backup cleanup job id " << jobid << dendl;
+  return 0;
 }
 
 void Monitor::handle_signal(int signum)
@@ -560,6 +643,7 @@ CompatSet Monitor::get_supported_features()
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_REEF);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_SQUID);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_TENTACLE);
+  compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_UMBRELLA);
 
   // Release-independent features
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_CEPHX_AUTH_AES256K);
@@ -777,6 +861,44 @@ int Monitor::preinit()
         "ewon", PerfCountersBuilder::PRIO_INTERESTING);
     pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Elections lost",
         "elst", PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_running, "backup_running", "Mon backup process is running",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_backup_started, "backup_started", "Mon backups started",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_backup_success, "backup_success", "Mon backups finished successfully",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_backup_failed, "backup_failed", "Mon backups failed",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_time_avg(l_mon_backup_duration, "backup_duration", "Mon backup duration",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_time(l_mon_backup_last_success, "backup_last_success", "Last successful mon backup",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64(l_mon_backup_last_success_id, "backup_last_success_id", "Last successful mon backup id",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_time(l_mon_backup_last_failed, "backup_last_failed", "Last failed mon backup",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64(l_mon_backup_last_size, "backup_last_size", "Last backup size",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_last_files, "backup_last_files", "Last backup file numbers",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_backup_cleanup_started, "backup_cleanup_started", "Mon backup cleanup started",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_cleanup_running, "backup_cleanup_running", "Mon backup cleanup is running",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_backup_cleanup_success, "backup_cleanup_success", "Mon backup cleanup finished successfully",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_backup_cleanup_failed, "backup_cleanup_failed", "Mon backup cleanup failed",
+        nullptr, PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64(l_mon_backup_cleanup_size, "backup_cleanup_size", "Size of backups removed",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_cleanup_kept, "backup_cleanup_kept", "Number of backups kept after cleanup",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_time_avg(l_mon_backup_cleanup_duration, "backup_cleanup_duration", "Mon backup cleanup duration",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_cleanup_freed, "backup_cleanup_freed", "Mon backup cleanup freed size in bytes",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mon_backup_cleanup_deleted, "backup_cleanup_deleted", "Mon backup cleanup deleted backups",
+        nullptr, PerfCountersBuilder::PRIO_INTERESTING);
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
   }
@@ -935,6 +1057,13 @@ int Monitor::preinit()
 				       command.helpstring);
     ceph_assert(r == 0);
   }
+  r = admin_socket->register_command("backup", admin_hook,
+				     "create a backup of the mon database");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command(
+    "backup_cleanup", admin_hook,
+    "delete old mon database backups according to retention config");
+  ceph_assert(r == 0);
   l.lock();
 
   // add ourselves as a conf observer
@@ -1000,6 +1129,9 @@ int Monitor::init()
 
   // add features of myself into feature_map
   session_map.feature_map.add_mon(con_self->get_features());
+
+  backup_manager = std::make_unique<MonitorBackupManager>(cct, this);
+
   return 0;
 }
 
@@ -1094,6 +1226,9 @@ void Monitor::shutdown()
     cct->get_admin_socket()->unregister_commands(admin_hook);
     delete admin_hook;
     admin_hook = NULL;
+  }
+  if (backup_manager) {
+    backup_manager->stop();
   }
 
   elector.shutdown();
@@ -2267,6 +2402,21 @@ epoch_t Monitor::get_epoch()
   return elector.get_epoch();
 }
 
+std::string Monitor::get_leader_name() {
+  return quorum.empty() ? std::string() : monmap->get_name(leader);
+}
+
+std::list<std::string> Monitor::get_quorum_names() {
+  std::list<std::string> q;
+  for (auto p = quorum.begin(); p != quorum.end(); ++p)
+    q.push_back(monmap->get_name(*p));
+  return q;
+}
+
+mon_feature_t Monitor::get_required_mon_features() const {
+  return monmap->get_required_features();
+}
+
 void Monitor::_finish_svc_election()
 {
   ceph_assert(state == STATE_LEADER || state == STATE_PEON);
@@ -2590,6 +2740,13 @@ void Monitor::apply_monmap_to_compatset_features()
     ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_TENTACLE));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_TENTACLE);
   }
+  if (monmap_features.contains_all(ceph::features::mon::FEATURE_UMBRELLA)) {
+    ceph_assert(ceph::features::mon::get_persistent().contains_all(
+           ceph::features::mon::FEATURE_UMBRELLA));
+    // this feature should only ever be set if the quorum supports it.
+    ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_UMBRELLA));
+    new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_UMBRELLA);
+  }
 
 
   // Release-independent features
@@ -2647,6 +2804,9 @@ void Monitor::calc_quorum_requirements()
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_TENTACLE)) {
     required_features |= CEPH_FEATUREMASK_SERVER_TENTACLE;
+  }
+  if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_UMBRELLA)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_UMBRELLA;
   }
 
   // monmap
@@ -3638,8 +3798,8 @@ void Monitor::handle_command(MonOpRequestRef op)
     dout(10) << __func__ << " proxying mgr command (+" << size
 	     << " -> " << mgr_proxy_bytes << ")" << dendl;
     C_MgrProxyCommand *fin = new C_MgrProxyCommand(this, op, size);
-    mgr_client.start_command(m->cmd,
-			     m->get_data(),
+    mgr_client.start_command(std::move(m->cmd),
+			     std::move(m->get_data()),
 			     &fin->outbl,
 			     &fin->outs,
 			     new C_OnFinisher(fin, &finisher));
@@ -6104,6 +6264,7 @@ void Monitor::tick()
     prepare_new_fingerprint(t);
     paxos->trigger_propose();
   }
+  backup_manager->tick();
 
   mgr_client.update_daemon_health(get_health_metrics());
   new_tick();
@@ -6140,6 +6301,13 @@ vector<DaemonHealthMetric> Monitor::get_health_metrics()
     metrics.emplace_back(daemon_metric::SLOW_OPS, 0, 0);
   }
   return metrics;
+}
+
+bool Monitor::is_mon_down() const {
+  int max = monmap->size();
+  int actual = get_quorum().size();
+  auto now = ceph::real_clock::now();
+  return actual < max && now > monmap->created.to_real_time();
 }
 
 void Monitor::prepare_new_fingerprint(MonitorDBStore::TransactionRef t)
@@ -6626,7 +6794,7 @@ int Monitor::handle_auth_request(
 	dout(1) << __func__ << " invalid mode " << (int)mode << dendl;
 	return -EACCES;
       }
-      assert(mode >= AUTH_MODE_MON && mode <= AUTH_MODE_MON_MAX);
+      ceph_assert(mode >= AUTH_MODE_MON && mode <= AUTH_MODE_MON_MAX);
       ::decode(entity_name, p);
       ::decode(con->peer_global_id, p);
     } catch (ceph::buffer::error& e) {
@@ -6765,7 +6933,7 @@ bool Monitor::ms_handle_fast_authentication(Connection *con)
       entity_name_t(con->get_peer_type(), -1),  // we don't know yet
       con->get_peer_addrs(),
       con);
-    assert(s);
+    ceph_assert(s);
     dout(10) << __func__ << " adding session " << s << " to con " << con
 	     << dendl;
     con->set_priv(s);

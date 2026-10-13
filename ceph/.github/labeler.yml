@@ -298,6 +298,7 @@ rgw:
   - src/test/librgw_*
   - src/test/rgw/**
   - src/test/test_rgw*
+  - doc/radosgw
 
 ceph-volume:
   - src/ceph-volume/**
@@ -346,3 +347,6 @@ script:
   - src/script/**
   - admin/**
   - doc/scripts/**
+
+config-change:
+  - src/common/options/**

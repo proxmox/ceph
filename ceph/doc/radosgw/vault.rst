@@ -5,7 +5,7 @@ HashiCorp Vault Integration
 ===========================
 
 HashiCorp `Vault`_ can be used as a secure key management service for
-`Server-Side Encryption`_ (SSE-KMS).
+:ref:`Server-Side Encryption <radosgw-encryption>` (SSE-KMS).
 
 .. ditaa::
 
@@ -106,7 +106,7 @@ Vault agent, such as having the Vault agent listen only to localhost.
 Token Policies for the Object Gateway
 -------------------------------------
 
-All Vault tokens have powers as specified by the polices attached
+All Vault tokens have powers as specified by the policies attached
 to that token.  Multiple policies may be associated with one
 token.  You should only use the policies necessary for your
 configuration.
@@ -169,7 +169,7 @@ only Ceph itself should be doing that.
 Token Authentication
 --------------------
 
-.. note: Never use root tokens with Ceph in production environments.
+.. note:: Never use root tokens with Ceph in production environments.
 
 The token authentication method expects a Vault token to be present in a
 plaintext file. The Object Gateway can be configured to use token authentication
@@ -432,7 +432,6 @@ In the transit engine example above, the Object Gateway would encrypt the secret
 
   http://vaultserver:8200/v1/transit/mybucketkey
 
-.. _Server-Side Encryption: ../encryption
 .. _Vault: https://www.vaultproject.io/docs/
 .. _Token authentication method: https://www.vaultproject.io/docs/auth/token.html
 .. _Vault agent: https://www.vaultproject.io/docs/agent/index.html

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -79,7 +79,7 @@ struct RGWNameToId {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWNameToId*>& o);
+  static std::list<RGWNameToId> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWNameToId)
 
@@ -123,7 +123,7 @@ struct RGWZoneStorageClass {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZoneStorageClass*>& o);
+  static std::list<RGWZoneStorageClass> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWZoneStorageClass)
 
@@ -211,7 +211,7 @@ public:
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZoneStorageClasses*>& o);
+  static std::list<RGWZoneStorageClasses> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWZoneStorageClasses)
 
@@ -308,7 +308,7 @@ struct RGWZonePlacementInfo {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZonePlacementInfo*>& o);
+  static std::list<RGWZonePlacementInfo> generate_test_instances();
 
 };
 WRITE_CLASS_ENCODER(RGWZonePlacementInfo)
@@ -399,7 +399,7 @@ struct RGWZone {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZone*>& o);
+  static std::list<RGWZone> generate_test_instances();
 
   bool is_read_only() const { return read_only; }
 
@@ -495,9 +495,12 @@ struct RGWZoneGroupPlacementTierS3 {
   std::string region;
   HostStyle host_style{PathStyle};
   std::string target_storage_class;
+  std::string location_constraint;
 
   /* Should below be bucket/zone specific?? */
   std::string target_path;
+  bool target_by_bucket{false};
+  std::string target_by_bucket_prefix;
   std::map<std::string, RGWTierACLMapping> acl_mappings;
 
   uint64_t multipart_sync_threshold{DEFAULT_MULTIPART_SYNC_PART_SIZE};
@@ -505,9 +508,14 @@ struct RGWZoneGroupPlacementTierS3 {
 
   int update_params(const JSONFormattable& config);
   int clear_params(const JSONFormattable& config);
+  std::string make_target_bucket_name(const std::string& zonegroup_name,
+                                      const std::string& storage_class,
+                                      const std::string& bucket_name,
+                                      const std::string& tenant,
+                                      const std::string& owner = {}) const;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(3, 1, bl);
     encode(endpoint, bl);
     encode(key, bl);
     encode(region, bl);
@@ -517,11 +525,14 @@ struct RGWZoneGroupPlacementTierS3 {
     encode(acl_mappings, bl);
     encode(multipart_sync_threshold, bl);
     encode(multipart_min_part_size, bl);
+    encode(location_constraint, bl);
+    encode(target_by_bucket, bl);
+    encode(target_by_bucket_prefix, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
+    DECODE_START(3, bl);
     decode(endpoint, bl);
     decode(key, bl);
     decode(region, bl);
@@ -535,6 +546,15 @@ struct RGWZoneGroupPlacementTierS3 {
     decode(acl_mappings, bl);
     decode(multipart_sync_threshold, bl);
     decode(multipart_min_part_size, bl);
+
+    if (struct_v >= 2) {
+      decode(location_constraint, bl);
+    }
+    if (struct_v >= 3) {
+      decode(target_by_bucket, bl);
+      decode(target_by_bucket_prefix, bl);
+    }
+
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
@@ -545,6 +565,7 @@ WRITE_CLASS_ENCODER(RGWZoneGroupPlacementTierS3)
 enum GlacierRestoreTierType : uint8_t {
   Standard = 0,
   Expedited = 1,
+  NoTier = 2,
 };
 
 struct RGWZoneGroupTierS3Glacier {
@@ -570,10 +591,12 @@ struct RGWZoneGroupTierS3Glacier {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZoneGroupTierS3Glacier*>& o) {
-    o.push_back(new RGWZoneGroupTierS3Glacier);
-    o.back()->glacier_restore_days = 2;
-    o.back()->glacier_restore_tier_type = GlacierRestoreTierType::Expedited;
+  static std::list<RGWZoneGroupTierS3Glacier> generate_test_instances() {
+    std::list<RGWZoneGroupTierS3Glacier> o;
+    o.emplace_back();
+    o.back().glacier_restore_days = 2;
+    o.back().glacier_restore_tier_type = GlacierRestoreTierType::Expedited;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(RGWZoneGroupTierS3Glacier)
@@ -667,15 +690,17 @@ struct RGWZoneGroupPlacementTier {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZoneGroupPlacementTier*>& o) {
-    o.push_back(new RGWZoneGroupPlacementTier);
-    o.push_back(new RGWZoneGroupPlacementTier);
-    o.back()->tier_type = RGWTierType::CLOUD_S3;
-    o.back()->storage_class = RGW_STORAGE_CLASS_STANDARD;
-    o.back()->allow_read_through = false;
-    o.back()->restore_storage_class = RGW_STORAGE_CLASS_STANDARD;
-    o.back()->s3_glacier.glacier_restore_days = 2;
-    o.back()->s3_glacier.glacier_restore_tier_type = GlacierRestoreTierType::Expedited;
+  static std::list<RGWZoneGroupPlacementTier> generate_test_instances() {
+    std::list<RGWZoneGroupPlacementTier> o;
+    o.emplace_back();
+    o.emplace_back();
+    o.back().tier_type = RGWTierType::CLOUD_S3;
+    o.back().storage_class = RGW_STORAGE_CLASS_STANDARD;
+    o.back().allow_read_through = false;
+    o.back().restore_storage_class = RGW_STORAGE_CLASS_STANDARD;
+    o.back().s3_glacier.glacier_restore_days = 2;
+    o.back().s3_glacier.glacier_restore_tier_type = GlacierRestoreTierType::Expedited;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(RGWZoneGroupPlacementTier)
@@ -724,16 +749,18 @@ struct RGWZoneGroupPlacementTarget {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(std::list<RGWZoneGroupPlacementTarget*>& o) {
-    o.push_back(new RGWZoneGroupPlacementTarget);
-    o.back()->storage_classes.insert(RGW_STORAGE_CLASS_STANDARD);
-    o.push_back(new RGWZoneGroupPlacementTarget);
-    o.back()->name = "target";
-    o.back()->tags.insert("tag1");
-    o.back()->tags.insert("tag2");
-    o.back()->storage_classes.insert("STANDARD_IA");
-    o.back()->tier_targets[RGWTierType::CLOUD_S3].tier_type = RGWTierType::CLOUD_S3;
-    o.back()->tier_targets[RGWTierType::CLOUD_S3].storage_class = RGW_STORAGE_CLASS_STANDARD;
+  static std::list<RGWZoneGroupPlacementTarget> generate_test_instances() {
+    std::list<RGWZoneGroupPlacementTarget> o;
+    o.emplace_back();
+    o.back().storage_classes.insert(RGW_STORAGE_CLASS_STANDARD);
+    o.emplace_back();
+    o.back().name = "target";
+    o.back().tags.insert("tag1");
+    o.back().tags.insert("tag2");
+    o.back().storage_classes.insert("STANDARD_IA");
+    o.back().tier_targets[RGWTierType::CLOUD_S3].tier_type = RGWTierType::CLOUD_S3;
+    o.back().tier_targets[RGWTierType::CLOUD_S3].storage_class = RGW_STORAGE_CLASS_STANDARD;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(RGWZoneGroupPlacementTarget)

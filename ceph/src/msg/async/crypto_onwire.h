@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -20,8 +21,10 @@
 #include <memory>
 #include <stdexcept>
 
-#include "auth/Auth.h"
 #include "include/buffer_fwd.h"
+#include "include/common_fwd.h"
+
+struct AuthConnectionMeta;
 
 namespace ceph::math {
 

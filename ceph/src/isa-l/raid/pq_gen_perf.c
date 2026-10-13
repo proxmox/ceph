@@ -27,62 +27,65 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
-#include<stdio.h>
-#include<stdint.h>
-#include<string.h>
-#include<stdlib.h>
-#include<sys/time.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
 #include "raid.h"
 #include "test.h"
 
-//#define CACHED_TEST
-#ifdef CACHED_TEST
-// Cached test, loop many times over small dataset
-# define TEST_SOURCES 10
-# define TEST_LEN     8*1024
-# define TEST_TYPE_STR "_warm"
-#else
-# ifndef TEST_CUSTOM
-// Uncached test.  Pull from large mem base.
-#  define TEST_SOURCES 10
-#  define GT_L3_CACHE  32*1024*1024	/* some number > last level cache */
-#  define TEST_LEN     ((GT_L3_CACHE / TEST_SOURCES) & ~(64-1))
-#  define TEST_TYPE_STR "_cold"
-# else
-#  define TEST_TYPE_STR "_cus"
-# endif
+#ifndef GT_L3_CACHE
+#define GT_L3_CACHE 32 * 1024 * 1024 /* some number > last level cache */
 #endif
 
-#define TEST_MEM ((TEST_SOURCES + 2)*(TEST_LEN))
+#if !defined(COLD_TEST) && !defined(TEST_CUSTOM)
+// Cached test, loop many times over small dataset
+#define TEST_SOURCES  10
+#define TEST_LEN      8 * 1024
+#define TEST_TYPE_STR "_warm"
+#elif defined(COLD_TEST)
+// Uncached test.  Pull from large mem base.
+#define TEST_SOURCES  10
+#define TEST_LEN      ((GT_L3_CACHE / TEST_SOURCES) & ~(64 - 1))
+#define TEST_TYPE_STR "_cold"
+#elif defined(TEST_CUSTOM)
+#define TEST_TYPE_STR "_cus"
+#endif
 
-int main(int argc, char *argv[])
+#define TEST_MEM ((TEST_SOURCES + 2) * (TEST_LEN))
+
+int
+main(int argc, char *argv[])
 {
-	int i;
-	void *buffs[TEST_SOURCES + 2];
-	struct perf start;
+        int i;
+        void *buffs[TEST_SOURCES + 2];
+        struct perf start;
 
-	printf("Test pq_gen_perf %d sources X %d bytes\n", TEST_SOURCES, TEST_LEN);
+        printf("Test pq_gen_perf %d sources X %d bytes\n", TEST_SOURCES, TEST_LEN);
 
-	// Allocate the arrays
-	for (i = 0; i < TEST_SOURCES + 2; i++) {
-		int ret;
-		void *buf;
-		ret = posix_memalign(&buf, 64, TEST_LEN);
-		if (ret) {
-			printf("alloc error: Fail");
-			return 1;
-		}
-		buffs[i] = buf;
-	}
+        // Allocate the arrays
+        for (i = 0; i < TEST_SOURCES + 2; i++) {
+                int ret;
+                void *buf;
+                ret = posix_memalign(&buf, 64, TEST_LEN);
+                if (ret) {
+                        printf("alloc error: Fail");
+                        return 1;
+                }
+                buffs[i] = buf;
+        }
 
-	// Setup data
-	for (i = 0; i < TEST_SOURCES + 2; i++)
-		memset(buffs[i], 0, TEST_LEN);
+        // Setup data
+        for (i = 0; i < TEST_SOURCES + 2; i++)
+                memset(buffs[i], 0, TEST_LEN);
 
-	// Warm up
-	BENCHMARK(&start, BENCHMARK_TIME, pq_gen(TEST_SOURCES + 2, TEST_LEN, buffs));
-	printf("pq_gen" TEST_TYPE_STR ": ");
-	perf_print(start, (long long)TEST_MEM);
+        // Warm up
+        BENCHMARK(&start, BENCHMARK_TIME, pq_gen(TEST_SOURCES + 2, TEST_LEN, buffs));
+        printf("pq_gen" TEST_TYPE_STR ": ");
+        perf_print(start, (long long) TEST_MEM);
 
-	return 0;
+        for (i = 0; i < TEST_SOURCES + 2; i++)
+                aligned_free(buffs[i]);
+
+        return 0;
 }

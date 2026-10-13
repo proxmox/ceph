@@ -18,7 +18,8 @@ import { RgwDaemonService } from '~/app/shared/api/rgw-daemon.service';
 @Component({
   selector: 'cd-rgw-multisite-migrate',
   templateUrl: './rgw-multisite-migrate.component.html',
-  styleUrls: ['./rgw-multisite-migrate.component.scss']
+  styleUrls: ['./rgw-multisite-migrate.component.scss'],
+  standalone: false
 })
 export class RgwMultisiteMigrateComponent implements OnInit {
   @Output()
@@ -80,7 +81,6 @@ export class RgwMultisiteMigrateComponent implements OnInit {
           })
         ]
       }),
-      archive_zone: new UntypedFormControl(false),
       zone_endpoints: new UntypedFormControl(null, {
         validators: [CdValidators.url, Validators.required]
       }),
@@ -127,7 +127,6 @@ export class RgwMultisiteMigrateComponent implements OnInit {
     this.zone = new RgwZone();
     this.zone.name = values['zoneName'];
     this.zone.endpoints = values['zone_endpoints'];
-    this.zone.tier_type = values['archive_zone'] ? 'archive' : '';
     this.rgwMultisiteService
       .migrate(this.realm, this.zonegroup, this.zone, values['username'])
       .subscribe(

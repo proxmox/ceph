@@ -19,7 +19,13 @@
 
 echo "Building windows wheel..."
 
-call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat"
+call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
+@echo on
+
+@REM Install a more recent msvcp140.dll in C:\Windows\System32
+choco install -r -y --no-progress vcredist140
+choco upgrade -r -y --no-progress vcredist140
+dir C:\Windows\System32\msvcp140.dll
 
 echo "=== (%PYTHON_VERSION%) Clear output directories and leftovers ==="
 del /s /q C:\arrow-build
@@ -36,7 +42,7 @@ set ARROW_FLIGHT=ON
 set ARROW_GANDIVA=OFF
 set ARROW_GCS=ON
 set ARROW_HDFS=ON
-set ARROW_ORC=OFF
+set ARROW_ORC=ON
 set ARROW_PARQUET=ON
 set PARQUET_REQUIRE_ENCRYPTION=ON
 set ARROW_MIMALLOC=ON
@@ -50,7 +56,8 @@ set ARROW_WITH_SNAPPY=ON
 set ARROW_WITH_ZLIB=ON
 set ARROW_WITH_ZSTD=ON
 set CMAKE_UNITY_BUILD=ON
-set CMAKE_GENERATOR=Visual Studio 15 2017 Win64
+set CMAKE_GENERATOR=Visual Studio 16 2019
+set CMAKE_PLATFORM=x64
 set VCPKG_ROOT=C:\vcpkg
 set VCPKG_FEATURE_FLAGS=-manifests
 set VCGPK_TARGET_TRIPLET=amd64-windows-static-md-%CMAKE_BUILD_TYPE%
@@ -88,7 +95,6 @@ cmake ^
     -DARROW_WITH_ZLIB=%ARROW_WITH_ZLIB% ^
     -DARROW_WITH_ZSTD=%ARROW_WITH_ZSTD% ^
     -DCMAKE_BUILD_TYPE=%CMAKE_BUILD_TYPE% ^
-    -DCMAKE_CXX_COMPILER=clcache ^
     -DCMAKE_INSTALL_PREFIX=C:\arrow-dist ^
     -DCMAKE_UNITY_BUILD=%CMAKE_UNITY_BUILD% ^
     -DMSVC_LINK_VERBOSE=ON ^
@@ -96,6 +102,7 @@ cmake ^
     -DVCPKG_MANIFEST_MODE=OFF ^
     -DVCPKG_TARGET_TRIPLET=%VCGPK_TARGET_TRIPLET% ^
     -G "%CMAKE_GENERATOR%" ^
+    -A "%CMAKE_PLATFORM%" ^
     C:\arrow\cpp || exit /B 1
 cmake --build . --config %CMAKE_BUILD_TYPE% --target install || exit /B 1
 popd
@@ -104,7 +111,6 @@ echo "=== (%PYTHON_VERSION%) Building wheel ==="
 set PYARROW_BUILD_TYPE=%CMAKE_BUILD_TYPE%
 set PYARROW_BUNDLE_ARROW_CPP=ON
 set PYARROW_CMAKE_GENERATOR=%CMAKE_GENERATOR%
-set PYARROW_INSTALL_TESTS=ON
 set PYARROW_WITH_ACERO=%ARROW_ACERO%
 set PYARROW_WITH_DATASET=%ARROW_DATASET%
 set PYARROW_WITH_FLIGHT=%ARROW_FLIGHT%
@@ -120,7 +126,27 @@ set ARROW_HOME=C:\arrow-dist
 set CMAKE_PREFIX_PATH=C:\arrow-dist
 
 pushd C:\arrow\python
-@REM bundle the msvc runtime
-cp "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Redist\MSVC\14.16.27012\x64\Microsoft.VC141.CRT\msvcp140.dll" pyarrow\
+
+@REM Bundle the C++ runtime
+cp C:\Windows\System32\msvcp140.dll pyarrow\
+
+@REM Build wheel
 python setup.py bdist_wheel || exit /B 1
+
+@REM Repair the wheel with delvewheel
+@REM
+@REM Since we bundled the Arrow C++ libraries ourselves, we only need to
+@REM mangle msvcp140.dll so as to avoid ABI issues when msvcp140.dll is
+@REM required by multiple Python libraries in the same process.
+@REM
+@REM For now this requires a custom version of delvewheel:
+@REM https://github.com/adang1345/delvewheel/pull/59
+pip install https://github.com/pitrou/delvewheel/archive/refs/heads/fixes-for-arrow.zip || exit /B 1
+
+for /f %%i in ('dir dist\pyarrow-*.whl /B') do (set WHEEL_NAME=%cd%\dist\%%i) || exit /B 1
+echo "Wheel name: %WHEEL_NAME%"
+
+delvewheel repair -vv --mangle-only=msvcp140.dll --no-patch ^
+    -w repaired_wheels %WHEEL_NAME% || exit /B 1
+
 popd

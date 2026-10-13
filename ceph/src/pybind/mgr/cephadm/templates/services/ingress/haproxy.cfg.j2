@@ -37,6 +37,7 @@ defaults
     timeout check           5s
 {% endif %}
 {% if mode == 'tcp' %}
+    option tcplog
     timeout queue           1m
     timeout connect         10s
     timeout client          1m
@@ -47,23 +48,40 @@ defaults
 
 frontend stats
     mode http
-    bind {{ ip }}:{{ monitor_port }}
-    bind {{ local_host_ip }}:{{ monitor_port }}
+{% for monitor_ip in monitor_ips %}
+    {% if spec.monitor_ssl %}
+    bind {{ monitor_ip }}:{{ monitor_port }} ssl crt /var/lib/haproxy/{{ monitor_ssl_file }}
+    {% else %}
+    bind {{ monitor_ip }}:{{ monitor_port }}
+    {% endif %}
+{% endfor %}
+{% if spec.enable_stats %}
     stats enable
     stats uri /stats
     stats refresh 10s
     stats auth {{ user }}:{{ password }}
     http-request use-service prometheus-exporter if { path /metrics }
+{% endif %}
     monitor-uri /health
 
 frontend frontend
-{% if spec.ssl_cert %}
+{% if spec.ssl or spec.ssl_cert %}
     bind {{ ip }}:{{ frontend_port }} ssl crt /var/lib/haproxy/haproxy.pem {{ v4v6_flag }}
 {% else %}
     bind {{ ip }}:{{ frontend_port }} {{ v4v6_flag }}
 {% endif %}
+{% if mode == 'tcp' %}
+    option tcplog
+{% endif %}
     default_backend backend
 
+{% if backend_spec.service_type == 'nfs' and peer_hosts %}
+peers haproxy_peers
+    {% for hostname, ip in peer_hosts.items() %}
+     peer {{ hostname }} {{ ip }}:{{ spec.haproxy_peer_communication_port  | default(1024, true) }}
+    {% endfor %}
+
+{% endif %}
 backend backend
 {% if mode == 'http' %}
     option forwardfor
@@ -73,18 +91,40 @@ backend backend
 {% endif %}
     balance static-rr
     option httpchk HEAD / HTTP/1.0
-    {% for server in servers %}
-    server {{ server.name }} {{ server.ip }}:{{ server.port }} check weight 100 inter {{ health_check_interval }}
-    {% endfor %}
 {% endif %}
 {% if mode == 'tcp' %}
     mode        tcp
-    balance     source
+    balance     roundrobin
+    {% if backend_spec.service_type == 'nfs' %}
+    {% if is_ipv6 or v4v6_flag %}
+    stick-table type ipv6 size 1m store server_id peers haproxy_peers
+    {% endif %}
+    {% if not is_ipv6 or v4v6_flag %}
+    stick-table type ip size 1m store server_id peers haproxy_peers
+    {% endif %}
+    stick match src
+    stick store-request src
+    option tcp-check
+    retries 3
+    retry-on all-retryable-errors
+    timeout connect 2s
+    {% endif %}
     hash-type   consistent
-{% if default_server_opts %}
-    default-server {{ default_server_opts|join(" ") }}
+{% if spec.use_tcp_mode_over_rgw %}
+{% if backend_spec.ssl %}
+    option ssl-hello-chk
 {% endif %}
+{% endif %}
+{% if default_server_opts %}
+    default-server {{ default_server_opts|join(" ") }} fall 2 inter 5000 rise 1 on-marked-down shutdown-sessions
+{% endif %}
+{% endif %}
+{% if backend_spec.service_type == 'rgw' %}
     {% for server in servers %}
-    server {{ server.name }} {{ server.ip }}:{{ server.port }} check
+    server {{ server.name }} {{ server.ip }}:{{ server.port }} check weight 100 inter {{ health_check_interval }}
+    {% endfor %}
+{% else %}
+    {% for server in servers %}
+    server {{ server.name }} {{ server.ip }}:{{ server.port }} id {{ server.name.split('.')[-1] | int + 1 }} check inter {{ health_check_interval }} rise 2 fall 3
     {% endfor %}
 {% endif %}

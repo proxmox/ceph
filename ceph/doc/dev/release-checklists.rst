@@ -18,15 +18,13 @@ Versions and tags
 - [x] Update CMakeLists.txt VERSION (right at the top to X.0.0)
 - [x] Update src/librbd/CMakeLists.txt VERSION (librbd target at the bottom to 1.X.0)
 - [x] Update src/ceph_release with the new release name, number, and type ('dev')
-- [ ] Initial tag vX.0.0 (so that we can distinguish from (and sort
-      after) the backported (X-1).2.Z versions.
+- [x] Initial tag vX.0.0 so that we can distinguish from (and sort after) the backported (X-1).2.Z versions.
 
-### Notes on tagging
-* Tags must be annonated as CMake determines `CEPH_GIT_NICE_VER` by
-calling `git describe --always`.
-* vX.0.0 are special ones in the sense they are pushed manually (unlike v.X.2.n
-which are handled by Jenkins).
-* vX.0.0 should point to a commit before the first one in a kickoff branch.
+.. note::
+
+    - Tags must be annotated as CMake determines ``CEPH_GIT_NICE_VER`` by calling ``git describe --always``.
+    - vX.0.0 are special ones in the sense they are pushed manually (unlike vX.1.Z and vX.2.Z which are handled by Jenkins).
+    - vX.0.0 should point to a commit before the first one in a kickoff branch.
 
 Define release names and constants
 ----------------------------------
@@ -37,13 +35,18 @@ Make sure X (and, ideally, X+1) is defined:
 - [x] src/common/ceph_strings.cc (`ceph_release_name()`)
 - [x] src/include/rados.h (`CEPH_RELEASE_*` and `MAX`)
 - [x] src/include/rbd/librbd.h (`LIBRBD_VER_MINOR` to X)
-- [x] src/mon/mon_types.h (`ceph::features::mon::FEATURE_*` and related structs and helpers)
 - [x] src/mds/cephfs_features.h (`CEPHFS_CURRENT_RELEASE`)
+- [x] src/mon/mon_types.h (`ceph::features::mon::FEATURE_*` and related structs and helpers)
+
+Github Actions
+~~~~~~~~~~~~~~
+
+- [x] .github/workflows/redmine-upkeep.yml add release branch to pull_request_target trigger
+- [x] .github/workflows/releng-audit.yml add release branch to pull_request_target trigger
 
 Scripts
 ~~~~~~~
 
-- [x] src/script/backport-resolve-issue (`releases()`, `ver_to_release()`)
 - [x] src/script/backport-create-issue (`releases()`)
 - [x] src/script/ceph-release-notes (up to X)
 
@@ -69,6 +72,7 @@ Compatsets
 - [x] mon/Monitor.cc (`apply_monmap_to_compatset_features()`)
 - [x] mon/Monitor.cc (`calc_quorum_requirements()`)
 - [x] test/cli/monmaptool/feature-set-unset-list.t (`supported`, `persistent`)
+- [x] test/cli/monmaptool/feature-set-unset-list.t Update "unknown(X)" to next unused and update monmaptool --feature-unset examples
 
 Mon
 ---
@@ -90,17 +94,17 @@ OSDMap
 ------
 
 - [x] src/osd/OSDMap.cc add release name mapping for `SERVER_X` in `pending_require_osd_release()`
-- [x] OSDMap::get_min_compat_client: core team evaluate
+- [ ] OSDMap::get_min_compat_client: core team evaluate
 
 Code cleanup
 ------------
 
-- [ ] search code for "after X-1" or "X" for conditional checks
-- [ ] search code for X-2 and X-3 (`CEPH_FEATURE_SERVER_*` and
+- [x] search code for "after X-1" or "X" for conditional checks
+- [x] search code for X-2 and X-3 (`CEPH_FEATURE_SERVER_*` and
   `ceph_release_t::*`)
 - [ ] search code for `require_osd_release`
 - [ ] search code for `min_mon_release`
-- [ ] check include/denc.h if DENC_START macro still needs reference to squid
+- [x] check include/denc.h if DENC_START macro still needs reference to squid
 
 QA suite
 --------
@@ -120,37 +124,39 @@ ceph-build
 ----------
 In the `ceph/ceph-build.git` repo:
 
-- [x] add the version -> X mapping (`release_from_version()` in `scripts/build_utils.sh`)
-- [x] add the option for X (`case $RELEASE_BRANCH` in `ceph-dev-build/build/build_osc`)
-- [x] add the option for X (`case $RELEASE_BRANCH` in `ceph-dev-build/build/setup_osc`)
-- [x] grep for previous release and add relevant build targets (e.g. for reef https://github.com/ceph/ceph-build/pull/2076 and https://github.com/ceph/ceph-build/pull/2119 and https://github.com/ceph/ceph-build/pull/2315)
+- [ ] add the version -> X mapping (`release_from_version()` in `scripts/build_utils.sh`)
+- [ ] add the option for X (`case $RELEASE_BRANCH` in `ceph-dev-build/build/build_osc`)
+- [ ] add the option for X (`case $RELEASE_BRANCH` in `ceph-dev-build/build/setup_osc`)
+- [ ] grep for previous release and add relevant build targets (e.g. for reef https://github.com/ceph/ceph-build/pull/2076 and https://github.com/ceph/ceph-build/pull/2119 and https://github.com/ceph/ceph-build/pull/2315)
 
 
 After dev freeze
 ================
 
-- [ ] create branch for new release
-- [ ] remove ``doc/releases/*.rst``. This should leave behind ``doc/releases/releases.yml`` which is used for doc building purposes. See also commit 33d63c3 ("doc: remove release notes for release branch") for details.
-- [ ] cherry-pick 8cf9ad62949516666ad0f2c0bb7726ef68e4d666 ("doc: add releases links to toc"). There will be trivial conflicts.
-- [ ] add redirect for new major release at `RTD <https://readthedocs.org/dashboard/ceph/redirects/>`_.
+- [x] create branch for new release
+- [x] open the Branch Protection settings of the Ceph repo.  Duplicate settings to the new release branch.
+- [x] create vX.3.0 annotated tag on ``main`` so upgrades from new release to main are not wrongly considered downgrades.
+- [x] remove ``doc/releases/*.rst``. This should leave behind ``doc/releases/releases.yml`` which is used for doc building purposes. See also commit 33d63c3 ("doc: remove release notes for release branch") for details.
+- [x] cherry-pick 8cf9ad62949516666ad0f2c0bb7726ef68e4d666 ("doc: add releases links to toc"). There will be trivial conflicts.
+- [x] add redirect for new major release at `RTD <https://readthedocs.org/dashboard/ceph/redirects/>`_.
 - [x] add release name to redmine (using https://tracker.ceph.com/custom_fields/16/edit)
 - [x] add release name to .github/milestone.yml for github actions to automatically add milestone to backports (this commit must be backported to the release branch)
-- [ ] add release branch to nightlies: qa/crontab/teuthology-cronjobs
+- [x] add release branch to nightlies: qa/crontab/teuthology-cronjobs
 
 First release candidate
 =======================
 
-- [x] src/ceph_release: change type to `rc`
+- [ ] src/ceph_release: change type to `rc`
 - [ ] opt-in to all telemetry channels, generate telemetry reports, and verify no sensitive details (like pools names) are collected
-- [x] check if new pool flags exist in pg_pool_t (osd/osd_types.h), and add them to telemetry's basic_pool_flags collection, in case they are not sensitive
+- [ ] check if new pool flags exist in pg_pool_t (osd/osd_types.h), and add them to telemetry's basic_pool_flags collection, in case they are not sensitive
 
 
 First stable release
 ====================
 
-- [x] src/ceph_release: change type `stable`
-- [x] generate new object corpus for encoding/decoding tests - see :doc:`corpus`
-- [x] src/cephadm/cephadmlib/constants.py: update `LATEST_STABLE_RELEASE`
-- [x] activate latest release in readthedocs, as described in `the readthedocs
+- [ ] src/ceph_release: change type `stable`
+- [ ] generate new object corpus for encoding/decoding tests - see :doc:`corpus`
+- [ ] src/cephadm/cephadmlib/constants.py: update `LATEST_STABLE_RELEASE`
+- [ ] activate latest release in readthedocs, as described in `the readthedocs
   documentation <https://docs.readthedocs.io/en/stable/versions.html>`_ 
 - [ ] add release and supported distros to tables in `doc/start/os-recommendations.rst`

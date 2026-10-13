@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -98,6 +99,7 @@ void PyModuleRegistry::init()
   ceph_assert(pMainThreadState != nullptr);
 
   std::list<std::string> failed_modules;
+  thread_monitor->start_monitoring();
 
   const std::string module_path = g_conf().get_val<std::string>("mgr_module_path");
   auto module_names = probe_modules(module_path);
@@ -117,7 +119,6 @@ void PyModuleRegistry::init()
       failed_modules.push_back(module_name);
       // Don't drop out here, load the other modules
     }
-
     // Record the module even if the load failed, so that we can
     // report its loading error
     modules[module_name] = std::move(mod);
@@ -235,7 +236,7 @@ void PyModuleRegistry::active_start(
       kv_store, mon_provides_kv_sub,
       ds, cs, mc,
       clog_, audit_clog_, objecter_, f, server,
-      *this));
+      *this, thread_monitor.get()));
 
   for (const auto &i : modules) {
     // Anything we're skipping because of !can_run will be flagged

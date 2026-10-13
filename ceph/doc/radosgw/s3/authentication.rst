@@ -42,7 +42,7 @@ In a radosgw instance that is configured with authentication against
 OpenStack Keystone, it is possible to use Keystone as an authoritative
 source for S3 API authentication. To do so, you must set:
 
-* the ``rgw keystone`` configuration options explained in :doc:`../keystone`,
+* the ``rgw keystone`` configuration options explained in :ref:`radosgw-keystone`,
 * ``rgw s3 auth use keystone = true``.
 
 In addition, a user wishing to use the S3 API must obtain an AWS-style
@@ -66,7 +66,7 @@ access to radosgw.
 
 .. note:: Consider that most production radosgw deployments
           authenticating against OpenStack Keystone are also set up
-          for :doc:`../multitenancy`, for which special
+          for :ref:`rgw-multitenancy`, for which special
           considerations apply with respect to S3 signed URLs and
           public read ACLs.
 
@@ -127,7 +127,7 @@ Internally, S3 operations are mapped to ACL permissions thus:
 +---------------------------------------+---------------+
 | ``s3:DeleteObject``                   | ``WRITE``     |
 +---------------------------------------+---------------+
-| ``s3:s3DeleteObjectVersion``          | ``WRITE``     |
+| ``s3:DeleteObjectVersion``            | ``WRITE``     |
 +---------------------------------------+---------------+
 | ``s3:PutObject``                      | ``WRITE``     |
 +---------------------------------------+---------------+
@@ -195,7 +195,7 @@ Internally, S3 operations are mapped to ACL permissions thus:
 +---------------------------------------+---------------+
 | ``s3:PutBucketTagging``               | ``WRITE_ACP`` |
 +---------------------------------------+---------------+
-| ``s3:PutPutBucketVersioning``         | ``WRITE_ACP`` |
+| ``s3:PutBucketVersioning``            | ``WRITE_ACP`` |
 +---------------------------------------+---------------+
 | ``s3:PutBucketWebsite``               | ``WRITE_ACP`` |
 +---------------------------------------+---------------+

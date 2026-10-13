@@ -55,6 +55,31 @@ def test_valid_share_name(value, valid):
 @pytest.mark.parametrize(
     "value,valid",
     [
+        ("x", True),
+        ("aa", True),
+        ("test-key-1", True),
+        ("mem-scope-key", True),
+        ("kmip0123456789", True),
+        ("A" * 63, True),  # max allowed
+        ("A" * 64, False),  # invalid >63
+        ("-bad", False),
+        ("bad-", False),
+        ("", False),
+        ("bad$key", False),
+    ],
+)
+def test_valid_fscrypt_key_name(value, valid):
+    assert smb.validation.valid_fscrypt_key_name(value) == valid
+    if valid:
+        smb.validation.check_fscrypt_key_name(value)
+    else:
+        with pytest.raises(ValueError):
+            smb.validation.check_fscrypt_key_name(value)
+
+
+@pytest.mark.parametrize(
+    "value,valid",
+    [
         ("cat", True),
         ("animals/cat", True),
         ("animals/cat", True),
@@ -117,9 +142,9 @@ def test_clean_custom_options():
     [
         ("tim", True, ""),
         ("britons\\arthur", True, ""),
-        ("lance a lot", False, "spaces, tabs, or newlines"),
-        ("tabs\ta\tlot", False, "spaces, tabs, or newlines"),
-        ("bed\nivere", False, "spaces, tabs, or newlines"),
+        ("lance a lot", True, ""),
+        ("tabs\ta\tlot", False, "tabs or newlines"),
+        ("bed\nivere", False, "tabs or newlines"),
         ("runawa" + ("y" * 122), True, ""),
         ("runawa" + ("y" * 123), False, "128"),
     ],

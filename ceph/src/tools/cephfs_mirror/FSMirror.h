@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPHFS_MIRROR_FS_MIRROR_H
 #define CEPHFS_MIRROR_FS_MIRROR_H
@@ -30,7 +30,7 @@ public:
   ~FSMirror();
 
   void init(Context *on_finish);
-  void shutdown(Context *on_finish);
+  void shutdown(Context *on_finish, bool purge_persisted_sync_stats=false);
 
   void add_peer(const Peer &peer);
   void remove_peer(const Peer &peer);
@@ -58,13 +58,11 @@ public:
   }
 
   monotime get_failed_ts() {
-    std::scoped_lock locker(m_lock);
-    return m_failed_ts;
+    return m_failed_ts.load(std::memory_order_relaxed);
   }
 
   void set_failed_ts() {
-    std::scoped_lock locker(m_lock);
-    m_failed_ts = clock::now();
+    m_failed_ts.store(clock::now(), std::memory_order_relaxed);
   }
 
   bool is_blocklisted() {
@@ -73,13 +71,11 @@ public:
   }
 
   monotime get_blocklisted_ts() {
-    std::scoped_lock locker(m_lock);
-    return m_blocklisted_ts;
+    return m_blocklisted_ts.load(std::memory_order_relaxed);
   }
 
   void set_blocklisted_ts() {
-    std::scoped_lock locker(m_lock);
-    m_blocklisted_ts = clock::now();
+    m_blocklisted_ts.store(clock::now(), std::memory_order_relaxed);
   }
 
   Peers get_peers() {
@@ -121,8 +117,8 @@ private:
       fs_mirror->handle_acquire_directory(dir_path);
     }
 
-    void release_directory(std::string_view dir_path) override {
-      fs_mirror->handle_release_directory(dir_path);
+    void release_directory(std::string_view dir_path, bool purging) override {
+      fs_mirror->handle_release_directory(dir_path, purging);
     }
 
   };
@@ -140,8 +136,8 @@ private:
     }
   };
 
-  monotime m_blocklisted_ts;
-  monotime m_failed_ts;
+  std::atomic<monotime> m_blocklisted_ts;
+  std::atomic<monotime> m_failed_ts;
   CephContext *m_cct;
   Filesystem m_filesystem;
   uint64_t m_pool_id;
@@ -164,6 +160,7 @@ private:
 
   int m_retval = 0;
   bool m_stopping = false;
+  bool m_purge_persisted_sync_stats_on_shutdown = false;
   bool m_init_failed = false;
   Context *m_on_init_finish = nullptr;
   Context *m_on_shutdown_finish = nullptr;
@@ -193,7 +190,9 @@ private:
   void handle_shutdown_instance_watcher(int r);
 
   void handle_acquire_directory(std::string_view dir_path);
-  void handle_release_directory(std::string_view dir_path);
+  void handle_release_directory(std::string_view dir_path, bool purging);
+
+  void remove_persisted_sync_stats_by_prefix(std::string_view prefix);
 };
 
 } // namespace mirror

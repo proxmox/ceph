@@ -1,10 +1,14 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #pragma once
 
 namespace crimson::admin::pg {
 
+class PGOldFormCommand;
 class QueryCommand;
+class LogCommand;
+class ListUnfoundCommand;
 class MarkUnfoundLostCommand;
 template <bool deep>
 class ScrubCommand;

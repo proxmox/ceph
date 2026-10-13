@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 #define TIME_BUF_SIZE 128
@@ -374,9 +374,7 @@ public:
   using RGWHandler_REST_SWIFT::RGWHandler_REST_SWIFT;
   ~RGWHandler_REST_Bucket_SWIFT() override = default;
 
-  int error_handler(int err_no, std::string *error_content, optional_yield y) override {
-    return website_handler->error_handler(err_no, error_content, y);
-  }
+  int error_handler(int err_no, std::string *error_content, optional_yield y) override;
 
   int retarget(RGWOp* op, RGWOp** new_op, optional_yield) override {
     return website_handler->retarget_bucket(op, new_op);
@@ -412,10 +410,7 @@ public:
   using RGWHandler_REST_SWIFT::RGWHandler_REST_SWIFT;
   ~RGWHandler_REST_Obj_SWIFT() override = default;
 
-  int error_handler(int err_no, std::string *error_content,
-		    optional_yield y) override {
-    return website_handler->error_handler(err_no, error_content, y);
-  }
+  int error_handler(int err_no, std::string *error_content, optional_yield y) override;
 
   int retarget(RGWOp* op, RGWOp** new_op, optional_yield) override {
     return website_handler->retarget_object(op, new_op);

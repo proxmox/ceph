@@ -64,9 +64,9 @@ When using :doc:`/cephfs/fs-volumes` the argument `fs` is equivalent to a
 
 When a timestamp is passed (the `start` argument in the `add`, `remove`,
 `activate` and `deactivate` subcommands) the ISO format `%Y-%m-%dT%H:%M:%S` will
-always be accepted. When either python3.7 or newer is used or
+always be accepted. When either Python 3.7 or newer is used or
 https://github.com/movermeyer/backports.datetime_fromisoformat is installed, any
-valid ISO timestamp that is parsed by python's `datetime.fromisoformat` is valid.
+valid ISO timestamp that is parsed by Python's `datetime.fromisoformat` is valid.
 
 When no subcommand is supplied a synopsis is printed::
 
@@ -91,7 +91,7 @@ Inspect snapshot schedules
 --------------------------
 
 The module offers two subcommands to inspect existing schedules: `list` and
-`status`. Bother offer plain and json output via the optional `format` argument.
+`status`. Both offer plain and JSON output via the optional `format` argument.
 The default is plain.
 The `list` sub-command will list all schedules on a path in a short single line
 format. It offers a `recursive` argument to list all schedules in the specified
@@ -149,25 +149,25 @@ Examples::
   ceph fs snap-schedule retention add / 24h4w # add 24 hourly and 4 weekly to retention
   ceph fs snap-schedule retention remove / 7d4w # remove 7 daily and 4 weekly, leaves 24 hourly
 
-.. note: When adding a path to snap-schedule, remember to strip off the mount
+.. note:: When adding a path to snap-schedule, remember to strip off the mount
    point path prefix. Paths to snap-schedule should start at the appropriate
    CephFS file system root and not at the host file system root.
    e.g. if the Ceph File System is mounted at ``/mnt`` and the path under which
-   snapshots need to be taken is ``/mnt/some/path`` then the acutal path required
+   snapshots need to be taken is ``/mnt/some/path`` then the actual path required
    by snap-schedule is only ``/some/path``.
 
-.. note: It should be noted that the "created" field in the snap-schedule status
+.. note:: It should be noted that the "created" field in the snap-schedule status
    command output is the timestamp at which the schedule was created. The "created"
    timestamp has nothing to do with the creation of actual snapshots. The actual
    snapshot creation is accounted for in the "created_count" field, which is a
    cumulative count of the total number of snapshots created so far.
 
-.. note: The maximum number of snapshots to retain per directory is limited by the
+.. note:: The maximum number of snapshots to retain per directory is limited by the
    config tunable `mds_max_snaps_per_dir`. This tunable defaults to 100.
    To ensure a new snapshot can be created, one snapshot less than this will be
    retained. So by default, a maximum of 99 snapshots will be retained.
 
-.. note: The --fs argument is now required if there is more than one file system.
+.. note:: The --fs argument is now required if there is more than one file system.
 
 Active and inactive schedules
 -----------------------------
@@ -189,11 +189,11 @@ Examples::
 
 Limitations
 -----------
-Snapshots are scheduled using python Timers. Under normal circumstances
+Snapshots are scheduled using Python Timers. Under normal circumstances
 specifying 1h as the schedule will result in snapshots 1 hour apart fairly
-precisely. If the mgr daemon is under heavy load however, the Timer threads
+precisely. If the Manager daemon is under heavy load however, the Timer threads
 might not get scheduled right away, resulting in a slightly delayed snapshot. If
-this happens, the next snapshot will be schedule as if the previous one was not
+this happens, the next snapshot will be scheduled as if the previous one was not
 delayed, i.e. one or more delayed snapshots will not cause drift in the overall
 schedule.
 

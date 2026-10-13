@@ -43,10 +43,6 @@
 ;       Reference paper titled "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction"
 ;       URL: http://download.intel.com/design/intarch/papers/323102.pdf
 ;
-;
-;       sample yasm command line:
-;       yasm -f x64 -f elf64 -X gnu -g dwarf2 crc32_gzip_refl_by8
-;
 ;       As explained here:
 ;       http://docs.oracle.com/javase/7/docs/api/java/util/zip/package-summary.html
 ;       CRC-32 checksum is described in RFC 1952
@@ -55,7 +51,13 @@
 
 %include "reg_sizes.asm"
 
-%define	fetch_dist	1024
+%ifndef fetch_dist
+%define	fetch_dist	4096
+%endif
+
+%ifndef PREFETCH
+%define PREFETCH        prefetcht1
+%endif
 
 [bits 64]
 default rel
@@ -132,10 +134,16 @@ crc32_gzip_refl_by8_02:
 	; at this section of the code, there is 128*x+y (0<=y<128) bytes of buffer. The fold_128_B_loop
 	; loop will fold 128B at a time until we have 128+y Bytes of buffer
 
+%if fetch_dist != 0
+	; check if there is at least 4KB (fetch distance) + 128B in the buffer
+        cmp             arg3, (fetch_dist + 128)
+        jb              .fold_128_B_loop
+
 	; fold 128B at a time. This section of the code folds 8 xmm registers in parallel
-.fold_128_B_loop:
+align 16
+.fold_and_prefetch_128_B_loop:
 	add		arg2, 128
-	prefetchnta	[arg2+fetch_dist+0]
+	PREFETCH	[arg2+fetch_dist+0]
 	vmovdqu		xmm9, [arg2+16*0]
 	vmovdqu		xmm12, [arg2+16*1]
 	vpclmulqdq	xmm8, xmm0, xmm10, 0x10
@@ -147,7 +155,6 @@ crc32_gzip_refl_by8_02:
 	vpxor		xmm1, xmm12
 	vxorps		xmm1, xmm13
 
-	prefetchnta	[arg2+fetch_dist+32]
 	vmovdqu		xmm9, [arg2+16*2]
 	vmovdqu		xmm12, [arg2+16*3]
 	vpclmulqdq	xmm8, xmm2, xmm10, 0x10
@@ -159,7 +166,7 @@ crc32_gzip_refl_by8_02:
 	vpxor		xmm3, xmm12
 	vxorps		xmm3, xmm13
 
-	prefetchnta	[arg2+fetch_dist+64]
+	PREFETCH	[arg2+fetch_dist+64]
 	vmovdqu		xmm9, [arg2+16*4]
 	vmovdqu		xmm12, [arg2+16*5]
 	vpclmulqdq	xmm8, xmm4, xmm10, 0x10
@@ -171,7 +178,63 @@ crc32_gzip_refl_by8_02:
 	vpxor		xmm5, xmm12
 	vxorps		xmm5, xmm13
 
-	prefetchnta	[arg2+fetch_dist+96]
+	vmovdqu		xmm9, [arg2+16*6]
+	vmovdqu		xmm12, [arg2+16*7]
+	vpclmulqdq	xmm8, xmm6, xmm10, 0x10
+	vpclmulqdq	xmm6, xmm6, xmm10 , 0x1
+	vpclmulqdq	xmm13, xmm7, xmm10, 0x10
+	vpclmulqdq	xmm7, xmm7, xmm10 , 0x1
+	vpxor		xmm6, xmm9
+	vxorps		xmm6, xmm8
+	vpxor		xmm7, xmm12
+	vxorps		xmm7, xmm13
+
+	sub		arg3, 128
+
+	; check if there is another 4KB (fetch distance) + 128B in the buffer
+        cmp             arg3, (fetch_dist + 128)
+	jge	        .fold_and_prefetch_128_B_loop
+
+%endif ; fetch_dist != 0
+
+	; fold 128B at a time. This section of the code folds 8 xmm registers in parallel
+align 16
+.fold_128_B_loop:
+	add		arg2, 128
+
+	vmovdqu		xmm9, [arg2+16*0]
+	vmovdqu		xmm12, [arg2+16*1]
+	vpclmulqdq	xmm8, xmm0, xmm10, 0x10
+	vpclmulqdq	xmm0, xmm0, xmm10 , 0x1
+	vpclmulqdq	xmm13, xmm1, xmm10, 0x10
+	vpclmulqdq	xmm1, xmm1, xmm10 , 0x1
+	vpxor		xmm0, xmm9
+	vxorps		xmm0, xmm8
+	vpxor		xmm1, xmm12
+	vxorps		xmm1, xmm13
+
+	vmovdqu		xmm9, [arg2+16*2]
+	vmovdqu		xmm12, [arg2+16*3]
+	vpclmulqdq	xmm8, xmm2, xmm10, 0x10
+	vpclmulqdq	xmm2, xmm2, xmm10 , 0x1
+	vpclmulqdq	xmm13, xmm3, xmm10, 0x10
+	vpclmulqdq	xmm3, xmm3, xmm10 , 0x1
+	vpxor		xmm2, xmm9
+	vxorps		xmm2, xmm8
+	vpxor		xmm3, xmm12
+	vxorps		xmm3, xmm13
+
+	vmovdqu		xmm9, [arg2+16*4]
+	vmovdqu		xmm12, [arg2+16*5]
+	vpclmulqdq	xmm8, xmm4, xmm10, 0x10
+	vpclmulqdq	xmm4, xmm4, xmm10 , 0x1
+	vpclmulqdq	xmm13, xmm5, xmm10, 0x10
+	vpclmulqdq	xmm5, xmm5, xmm10 , 0x1
+	vpxor		xmm4, xmm9
+	vxorps		xmm4, xmm8
+	vpxor		xmm5, xmm12
+	vxorps		xmm5, xmm13
+
 	vmovdqu		xmm9, [arg2+16*6]
 	vmovdqu		xmm12, [arg2+16*7]
 	vpclmulqdq	xmm8, xmm6, xmm10, 0x10

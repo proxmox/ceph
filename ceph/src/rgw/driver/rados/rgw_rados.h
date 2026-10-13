@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -70,29 +70,6 @@ struct get_obj_data;
 #define PUT_OBJ_EXCL        0x02
 #define PUT_OBJ_CREATE_EXCL (PUT_OBJ_CREATE | PUT_OBJ_EXCL)
 
-static inline void prepend_bucket_marker(const rgw_bucket& bucket, const std::string& orig_oid, std::string& oid)
-{
-  if (bucket.marker.empty() || orig_oid.empty()) {
-    oid = orig_oid;
-  } else {
-    oid = bucket.marker;
-    oid.append("_");
-    oid.append(orig_oid);
-  }
-}
-
-static inline void get_obj_bucket_and_oid_loc(const rgw_obj& obj, std::string& oid, std::string& locator)
-{
-  const rgw_bucket& bucket = obj.bucket;
-  prepend_bucket_marker(bucket, obj.get_oid(), oid);
-  const std::string& loc = obj.key.get_loc();
-  if (!loc.empty()) {
-    prepend_bucket_marker(bucket, loc, locator);
-  } else {
-    locator.clear();
-  }
-}
-
 struct RGWOLHInfo {
   rgw_obj target;
   bool removed;
@@ -112,7 +89,7 @@ struct RGWOLHInfo {
      decode(removed, bl);
      DECODE_FINISH(bl);
   }
-  static void generate_test_instances(std::list<RGWOLHInfo*>& o);
+  static std::list<RGWOLHInfo> generate_test_instances();
   void dump(Formatter *f) const;
 };
 WRITE_CLASS_ENCODER(RGWOLHInfo)
@@ -135,7 +112,7 @@ struct RGWOLHPendingInfo {
   }
 
   void dump(Formatter *f) const;
-  static void generate_test_instances(std::list<RGWOLHPendingInfo*>& o);
+  static std::list<RGWOLHPendingInfo> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(RGWOLHPendingInfo)
 
@@ -302,7 +279,7 @@ struct objexp_hint_entry {
   }
 
   void dump(Formatter *f) const;
-  static void generate_test_instances(std::list<objexp_hint_entry*>& o);
+  static std::list<objexp_hint_entry> generate_test_instances();
 };
 WRITE_CLASS_ENCODER(objexp_hint_entry)
 
@@ -635,11 +612,11 @@ public:
   CephContext *ctx() { return cct; }
   /** do all necessary setup of the storage device */
   int init_begin(CephContext *_cct, const DoutPrefixProvider *dpp,
-                 bool background_tasks, const rgw::SiteConfig& site);
+                 bool background_tasks, const rgw::SiteConfig& site, rgw::sal::ConfigStore* cfgstore);
   /** Initialize the RADOS instance and prepare to do other ops */
-  int init_svc(bool raw, const DoutPrefixProvider *dpp, bool background_tasks, const rgw::SiteConfig& site);
+  int init_svc(bool raw, const DoutPrefixProvider *dpp, bool background_tasks, const rgw::SiteConfig& site, rgw::sal::ConfigStore* cfgstore);
   virtual int init_rados();
-  int init_complete(const DoutPrefixProvider *dpp, optional_yield y);
+  int init_complete(const DoutPrefixProvider *dpp, optional_yield y, rgw::sal::ConfigStore* cfgstore);
   void finalize();
 
   int register_to_service_map(const DoutPrefixProvider *dpp, const std::string& daemon_type, const std::map<std::string, std::string>& meta);
@@ -1044,7 +1021,9 @@ public:
 		   optional_yield y,
 		   const std::string *user_data = nullptr,
 		   bool appendable = false,
-                   bool log_op = true);
+                   bool log_op = true,
+		   uint8_t restore_status = 0,
+		   ceph::real_time restore_expiry_date = {});
       int complete_del(const DoutPrefixProvider *dpp,
                        int64_t poolid, uint64_t epoch,
                        ceph::real_time& removed_mtime, /* mtime of removed object */
@@ -1294,6 +1273,7 @@ public:
                rgw::sal::DataProcessorFactory *dp_factory,
                const DoutPrefixProvider *dpp,
                optional_yield y,
+               uint64_t src_accounted_size = 0,
                bool log_op = true);
 
   int transition_obj(RGWObjectCtx& obj_ctx,
@@ -1312,6 +1292,7 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                              RGWObjTier& tier_config,
                              std::optional<uint64_t> days,
 			     bool& in_progress,
+			     uint64_t& size,
                              const DoutPrefixProvider *dpp,
                              optional_yield y);
 
@@ -1649,8 +1630,8 @@ public:
                      librados::ObjectWriteOperation *op);
   int gc_operate(const DoutPrefixProvider *dpp, std::string& oid, librados::ObjectReadOperation&& op, bufferlist *pbl, optional_yield y);
 
-  int list_gc_objs(int *index, std::string& marker, uint32_t max, bool expired_only, std::list<cls_rgw_gc_obj_info>& result, bool *truncated, bool& processing_queue);
-  int process_gc(bool expired_only, optional_yield y);
+  int list_gc_objs(int& index, std::string& marker, uint32_t max, bool expired_only, std::list<cls_rgw_gc_obj_info>& result, bool& truncated, bool& processing_queue, std::optional<int> shard_id = std::nullopt);
+  int process_gc(bool expired_only, optional_yield y, std::optional<int> shard_id = std::nullopt);
   bool process_expired_objects(const DoutPrefixProvider *dpp, optional_yield y);
   int defer_gc(const DoutPrefixProvider *dpp, RGWObjectCtx* ctx, RGWBucketInfo& bucket_info, const rgw_obj& obj, optional_yield y);
 

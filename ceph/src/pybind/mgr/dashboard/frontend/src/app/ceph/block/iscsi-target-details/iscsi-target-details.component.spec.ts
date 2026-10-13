@@ -1,11 +1,12 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
-import { Node } from 'carbon-components-angular/treeview/tree-node.types';
+import { Node } from '~/app/shared/models/carbon-tree-node';
 import { TreeviewModule } from 'carbon-components-angular';
 import { SharedModule } from '~/app/shared/shared.module';
 import { configureTestBed } from '~/testing/unit-test-helper';
 import { IscsiTargetDetailsComponent } from './iscsi-target-details.component';
+import { USER } from '~/app/shared/constants/app.constants';
 
 describe('IscsiTargetDetailsComponent', () => {
   let component: IscsiTargetDetailsComponent;
@@ -189,7 +190,7 @@ describe('IscsiTargetDetailsComponent', () => {
     });
     expect(component.nodes[0].label).toEqual(component.labelTpl);
     expect(component.nodes[0].labelContext).toEqual({
-      cdIcon: 'fa fa-lg fa fa-bullseye',
+      cdIcon: '24 target',
       name: 'iqn.2003-01.com.redhat.iscsi-gw:iscsi-igw'
     });
     expect(component.nodes).toHaveLength(1);
@@ -234,7 +235,7 @@ describe('IscsiTargetDetailsComponent', () => {
       );
       component.onNodeSelected(node);
       expect(component.data).toEqual([
-        { current: 'myiscsiusername', default: undefined, displayName: 'user' },
+        { current: 'myiscsiusername', default: undefined, displayName: USER },
         { current: 'myhost', default: undefined, displayName: 'alias' },
         { current: ['192.168.200.1'], default: undefined, displayName: 'ip_address' },
         { current: ['node1'], default: undefined, displayName: 'logged_in' }

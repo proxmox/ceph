@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 /*
  * Ceph - scalable distributed file system
@@ -26,8 +26,10 @@
 #include "include/types.h"
 
 #include "cls/fifo/cls_fifo_types.h"
+#include "include/rados/cls_traits.hpp"
 
-namespace rados::cls::fifo::op {
+namespace rados::cls::fifo {
+namespace op {
 struct create_meta
 {
   std::string id;
@@ -77,20 +79,22 @@ struct create_meta
     f->dump_unsigned("max_entry_size", max_entry_size);
     f->dump_bool("exclusive", exclusive);
   }
-  static void generate_test_instances(std::list<create_meta*>& o) {
-    o.push_back(new create_meta);
-    o.push_back(new create_meta);
-    o.back()->id = "id";
+  static std::list<create_meta> generate_test_instances() {
+    std::list<create_meta> o;
+    o.emplace_back();
+    o.emplace_back();
+    o.back().id = "id";
     objv v1;
     v1.instance = "inst1";
     v1.ver = 1;
-    o.back()->version = v1;
-    o.back()->pool.name = "pool";
-    o.back()->pool.ns = "ns";
-    o.back()->oid_prefix = "prefix";
-    o.back()->max_part_size = 1024;
-    o.back()->max_entry_size = 1024;
-    o.back()->exclusive = true;
+    o.back().version = v1;
+    o.back().pool.name = "pool";
+    o.back().pool.ns = "ns";
+    o.back().oid_prefix = "prefix";
+    o.back().max_part_size = 1024;
+    o.back().max_entry_size = 1024;
+    o.back().exclusive = true;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(create_meta)
@@ -112,13 +116,15 @@ struct get_meta
   void dump(ceph::Formatter *f) const {
     f->dump_object("version", version.value_or(objv()));
   }
-  static void generate_test_instances(std::list<get_meta*>& o) {
-    o.push_back(new get_meta);
-    o.push_back(new get_meta);
+  static std::list<get_meta> generate_test_instances() {
+    std::list<get_meta> o;
+    o.emplace_back();
+    o.emplace_back();
     objv v1;
     v1.instance = "inst1";
     v1.ver = 1;
-    o.back()->version = v1;
+    o.back().version = v1;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(get_meta)
@@ -149,12 +155,14 @@ struct get_meta_reply
     f->dump_unsigned("part_header_size", part_header_size);
     f->dump_unsigned("part_entry_overhead", part_entry_overhead);
   }
-  static void generate_test_instances(std::list<get_meta_reply*>& o) {
-    o.push_back(new get_meta_reply);
-    o.push_back(new get_meta_reply);
-    o.back()->info = fifo::info();
-    o.back()->part_header_size = 1024;
-    o.back()->part_entry_overhead = 1024;
+  static std::list<get_meta_reply> generate_test_instances() {
+    std::list<get_meta_reply> o;
+    o.emplace_back();
+    o.emplace_back();
+    o.back().info = fifo::info();
+    o.back().part_header_size = 1024;
+    o.back().part_entry_overhead = 1024;
+    return o;
   }
 };
 WRITE_CLASS_ENCODER(get_meta_reply)
@@ -356,4 +364,19 @@ inline constexpr auto PUSH_PART = "push_part";
 inline constexpr auto TRIM_PART = "trim_part";
 inline constexpr auto LIST_PART = "part_list";
 inline constexpr auto GET_PART_INFO = "get_part_info";
-} // namespace rados::cls::fifo::op
+} // namespace op
+
+struct ClassId {
+  static constexpr auto name = op::CLASS;
+};
+namespace method {
+constexpr auto create_meta = ClsMethod<RdWrTag, ClassId>(op::CREATE_META);
+constexpr auto get_meta = ClsMethod<RdTag, ClassId>(op::GET_META);
+constexpr auto update_meta = ClsMethod<RdWrTag, ClassId>(op::UPDATE_META);
+constexpr auto init_part = ClsMethod<RdWrTag, ClassId>(op::INIT_PART);
+constexpr auto push_part = ClsMethod<RdWrTag, ClassId>(op::PUSH_PART);
+constexpr auto trim_part = ClsMethod<RdWrTag, ClassId>(op::TRIM_PART);
+constexpr auto list_part = ClsMethod<RdTag, ClassId>(op::LIST_PART);
+constexpr auto get_part_info = ClsMethod<RdTag, ClassId>(op::GET_PART_INFO);
+} // namespace method
+} // namespace rados::cls::fifo

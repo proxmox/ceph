@@ -1,9 +1,24 @@
 # ISA-L Build Details
 
-For x86-64 builds it is highly recommended to get an up-to-date version of
-[nasm] that can understand the latest instruction sets. Building with an older
-version is usually possible but the library may lack some function versions for
-the best performance.
+## Build tools
+
+NASM: For x86-64 builds it is highly recommended to get an up-to-date version of
+[nasm] that can understand the latest instruction sets.
+Minimum version of NASM is 2.14.01, supporting all the ISA needed for the library.
+The configure or make tools can check for this minimum version.
+
+    checking for nasm... yes
+    checking for modern nasm... yes
+
+If an appropriate nasm is not available from your distro, it is simple to build
+from source or download an executable from [nasm].
+
+    git clone --depth=10 https://github.com/netwide-assembler/nasm
+    cd nasm
+    ./autogen.sh
+    ./configure
+    make
+    sudo make install
 
 ## Windows Build Environment Details
 

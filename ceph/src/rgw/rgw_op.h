@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /**
  * All operations via the rados gateway are carried out by
@@ -38,8 +38,10 @@
 #include "rgw_cksum.h"
 #include "rgw_common.h"
 #include "rgw_dmclock.h"
+
+struct rgw_crypt_src_identity;
 #include "rgw_sal.h"
-#include "rgw_user.h"
+#include "driver/rados/rgw_user.h"
 #include "rgw_bucket.h"
 #include "rgw_acl.h"
 #include "rgw_cors.h"
@@ -56,9 +58,6 @@
 #include "rgw_public_access.h"
 #include "rgw_bucket_encryption.h"
 #include "rgw_tracer.h"
-
-#include "services/svc_sys_obj.h"
-#include "services/svc_tier_rados.h"
 
 #include "include/ceph_assert.h"
 
@@ -217,6 +216,7 @@ protected:
   req_state *s;
   RGWHandler *dialect_handler;
   rgw::sal::Driver* driver;
+  std::optional<RGWCORSRule> optional_global_cors;
   RGWCORSConfiguration bucket_cors;
   bool cors_exist;
   RGWQuota quota;
@@ -281,6 +281,7 @@ public:
     this->dialect_handler = dialect_handler;
   }
   int read_bucket_cors();
+  int read_global_cors();
   bool generate_cors_headers(std::string& origin, std::string& method, std::string& headers, std::string& exp_headers, unsigned *max_age);
 
   virtual int verify_params() { return 0; }
@@ -396,8 +397,9 @@ public:
     // DataProcessor requires ownership of the entire bufferlist.
     // RGWGetObj_Filter, however, may reuse the original bufferlist after this call.
     // To avoid unintended side effects, we create a copy of the relevant portion.
+    // Note: bl_ofs is the offset into this bufferlist, not an object offset.
     bufferlist copy_bl;
-    bl.begin().copy(bl_len, copy_bl);
+    bl.begin(bl_ofs).copy(bl_len, copy_bl);
 
     int ret = processor->process(std::move(copy_bl), ofs);
     if (ret < 0) return ret;
@@ -451,7 +453,7 @@ protected:
   bool first_data;
   uint64_t cur_ofs;
   bufferlist waiting;
-  uint64_t action = 0;
+  rgw::IAM::action_t action{};
 
   bool get_retention;
   bool get_legal_hold;
@@ -460,6 +462,10 @@ protected:
   std::optional<int> multipart_part_num;
   // PartsCount response when partNumber is specified
   std::optional<int> multipart_parts_count;
+
+  // For AEAD encryption ciphers: preserve original encrypted size before plaintext conversion.
+  // Used by decrypt filter for range clamping. For non-AEAD modes, equals s->obj_size.
+  off_t encrypted_obj_size{0};
 
   int init_common();
 public:
@@ -1181,10 +1187,13 @@ class RGWCreateBucket : public RGWOp {
   RGWAccessControlPolicy policy;
   std::string location_constraint;
   bool has_cors = false;
+  bool has_policy = false;
+  uint32_t policy_rw_mask = 0;
   bool relaxed_region_enforcement = false;
   RGWCORSConfiguration cors_config;
   std::set<std::string> rmattr_names;
   bufferlist in_data;
+  std::optional<rgw::s3::ObjectOwnership> object_ownership;
 
   virtual bool need_metadata_upload() const { return false; }
 
@@ -1610,6 +1619,8 @@ protected:
   std::string_view copy_source;
   // Not actually required
   std::optional<std::string_view> md_directive;
+  std::optional<RGWObjTags> obj_tags;
+  bool copy_source_tags = false;
   std::map<std::string, std::string> crypt_http_responses;
 
   off_t ofs;
@@ -1640,6 +1651,17 @@ protected:
   //object lock
   RGWObjectRetention *obj_retention;
   RGWObjectLegalHold *obj_legal_hold;
+
+  // remote copy progress helper
+  struct ProgressTracker {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::queue<off_t> ofs_queue;
+    std::atomic<bool> done{false};
+
+    ProgressTracker() {}
+  };
+  std::optional<ProgressTracker> progress_tracker;
 
   int init_common();
 
@@ -1681,6 +1703,13 @@ public:
   void pre_exec() override;
   void execute(optional_yield y) override;
   void progress_cb(off_t ofs);
+  void progress_cb_handler();
+  ProgressTracker& get_progress_tracker() {
+    if (!progress_tracker) {
+      progress_tracker.emplace();
+    }
+    return *progress_tracker;
+  }
 
   virtual int check_storage_class(const rgw_placement_rule& src_placement) {
     return 0;
@@ -1911,6 +1940,7 @@ public:
 
   int verify_permission(optional_yield y) override {return 0;}
   int validate_cors_request(RGWCORSConfiguration *cc);
+  int validate_global_cors_request(RGWCORSRule *cc);
   void execute(optional_yield y) override;
   void get_response_params(std::string& allowed_hdrs, std::string& exp_hdrs, unsigned *max_age);
   void send_response() override = 0;
@@ -1963,6 +1993,39 @@ public:
   const char* name() const override { return "delete_bucket_encryption"; }
   std::string canonical_name() const override { return fmt::format("REST.{}.ENCRYPTION", s->info.method); }
   RGWOpType get_type() override { return RGW_OP_DELETE_BUCKET_ENCRYPTION; }
+  uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
+};
+
+class RGWPutBucketOwnershipControls : public RGWOp {
+ protected:
+  rgw::s3::OwnershipControls ownership;
+  bufferlist data;
+ public:
+  virtual int get_params(optional_yield y) = 0;
+  int verify_permission(optional_yield y) override;
+  void execute(optional_yield y) override;
+  const char* name() const override { return "put_bucket_ownership_controls"; }
+  RGWOpType get_type() override { return RGW_OP_PUT_BUCKET_OWNERSHIP_CONTROLS; }
+  uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
+};
+
+class RGWGetBucketOwnershipControls : public RGWOp {
+ protected:
+  rgw::s3::OwnershipControls ownership;
+ public:
+  int verify_permission(optional_yield y) override;
+  void execute(optional_yield y) override;
+  const char* name() const override { return "get_bucket_ownership_controls"; }
+  RGWOpType get_type() override { return RGW_OP_GET_BUCKET_OWNERSHIP_CONTROLS; }
+  uint32_t op_mask() override { return RGW_OP_TYPE_READ; }
+};
+
+class RGWDeleteBucketOwnershipControls : public RGWOp {
+ public:
+  int verify_permission(optional_yield y) override;
+  void execute(optional_yield y) override;
+  const char* name() const override { return "delete_bucket_ownership_controls"; }
+  RGWOpType get_type() override { return RGW_OP_DELETE_BUCKET_OWNERSHIP_CONTROLS; }
   uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
 };
 
@@ -2062,6 +2125,8 @@ public:
   void complete() override;
 
   virtual int get_params(optional_yield y) = 0;
+  virtual int verify_encryption(std::map<std::string, bufferlist>& attrs,
+                                rgw::cksum::Type cksum_type) { return 0; }
   void send_response() override = 0;
   const char* name() const override { return "complete_multipart"; }
   std::string canonical_name() const override { return fmt::format("REST.{}.UPLOAD", s->info.method); }
@@ -2205,7 +2270,6 @@ public:
   }
 };
 
-
 class RGWDeleteMultiObj : public RGWOp {
   /**
    * Handles the deletion of an individual object and uses
@@ -2215,10 +2279,6 @@ class RGWDeleteMultiObj : public RGWOp {
                                 optional_yield y,
                                 const bool skip_olh_obj_update = false);
 
-  void handle_versioned_objects(const std::vector<RGWMultiDelObject>& objects,
-                                uint32_t max_aio, boost::asio::yield_context yield);
-  void handle_non_versioned_objects(const std::vector<RGWMultiDelObject>& objects,
-                                    uint32_t max_aio, boost::asio::yield_context yield);
   void handle_objects(const std::vector<RGWMultiDelObject>& objects,
                       uint32_t max_aio, boost::asio::yield_context yield);
 
@@ -2353,7 +2413,8 @@ inline int rgw_get_request_metadata(const DoutPrefixProvider *dpp,
       "x-amz-storage-class",
       "x-amz-content-sha256",
       "x-amz-checksum-algorithm",
-      "x-amz-date"
+      "x-amz-date",
+      "x-amz-tagging"
   };
 
   size_t valid_meta_count = 0;
@@ -2445,16 +2506,17 @@ inline int encode_dlo_manifest_attr(const char * const dlo_manifest,
   return 0;
 } /* encode_dlo_manifest_attr */
 
-inline void complete_etag(MD5& hash, std::string *etag)
+inline void complete_etag(MD5& hash, std::string* etag)
 {
+  if (!etag) {
+    return;
+  }
   char etag_buf[CEPH_CRYPTO_MD5_DIGESTSIZE];
-  char etag_buf_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
 
   hash.Final((unsigned char *)etag_buf);
-  buf_to_hex((const unsigned char *)etag_buf, CEPH_CRYPTO_MD5_DIGESTSIZE,
-	    etag_buf_str);
-
-  *etag = etag_buf_str;
+  etag->clear();
+  etag->reserve(CEPH_CRYPTO_MD5_DIGESTSIZE * 2);
+  buf_to_hex(etag_buf, std::back_inserter(*etag));
 } /* complete_etag */
 
 using boost::container::flat_map;
@@ -2860,4 +2922,7 @@ int get_decrypt_filter(
   std::map<std::string, bufferlist>& attrs,
   bufferlist* manifest_bl,
   std::map<std::string, std::string>* crypt_http_responses,
-  bool copy_source);
+  bool copy_source,
+  uint32_t part_num = 0,
+  off_t encrypted_total_size = 0,
+  const rgw_crypt_src_identity* src_identity = nullptr);

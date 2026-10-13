@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { SmbJoinAuthFormComponent } from './smb-join-auth-form.component';
-import { ToastrModule } from 'ngx-toastr';
+
 import { SharedModule } from '~/app/shared/shared.module';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
@@ -10,11 +10,12 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { SmbService } from '~/app/shared/api/smb.service';
 import { JOIN_AUTH_RESOURCE } from '../smb.model';
 import { of } from 'rxjs';
+import { USER } from '~/app/shared/constants/app.constants';
 
 export const FOO_JOIN_AUTH = {
   auth_id: 'foo',
   auth: {
-    username: 'user',
+    username: USER,
     password: 'pass'
   },
   resource_type: JOIN_AUTH_RESOURCE
@@ -28,7 +29,7 @@ describe('SmbJoinAuthFormComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      imports: [ToastrModule.forRoot(), SharedModule, ReactiveFormsModule],
+      imports: [SharedModule, ReactiveFormsModule],
       declarations: [SmbJoinAuthFormComponent],
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])]
     }).compileComponents();
@@ -54,7 +55,7 @@ describe('SmbJoinAuthFormComponent', () => {
 
   it('should submit the form', () => {
     component.form.controls['authId'].setValue('foo');
-    component.form.controls['username'].setValue('user');
+    component.form.controls['username'].setValue(USER);
     component.form.controls['password'].setValue('pass');
     component.form.controls['linkedToCluster'].setValue(undefined);
 
@@ -75,7 +76,7 @@ describe('SmbJoinAuthFormComponent', () => {
       expect(getJoinAuth).toHaveBeenCalled();
       expect(component.form.getRawValue()).toEqual({
         authId: 'foo',
-        username: 'user',
+        username: USER,
         password: 'pass',
         linkedToCluster: undefined
       });

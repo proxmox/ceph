@@ -6,7 +6,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { TreeViewComponent, TreeviewModule } from 'carbon-components-angular';
 import { NgbActiveModal, NgbModalModule, NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { ToastrModule } from 'ngx-toastr';
+
 import { Observable, of } from 'rxjs';
 import _ from 'lodash';
 
@@ -27,7 +27,7 @@ import { NotificationService } from '~/app/shared/services/notification.service'
 import { SharedModule } from '~/app/shared/shared.module';
 import { configureTestBed, modalServiceShow, PermissionHelper } from '~/testing/unit-test-helper';
 import { CephfsDirectoriesComponent } from './cephfs-directories.component';
-import { Node } from 'carbon-components-angular/treeview/tree-node.types';
+import { Node } from '~/app/shared/models/carbon-tree-node';
 import { By } from '@angular/platform-browser';
 
 describe('CephfsDirectoriesComponent', () => {
@@ -393,7 +393,6 @@ describe('CephfsDirectoriesComponent', () => {
       SharedModule,
       RouterTestingModule,
       TreeviewModule,
-      ToastrModule.forRoot(),
       NgbModalModule
     ],
     declarations: [CephfsDirectoriesComponent],

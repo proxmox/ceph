@@ -1,7 +1,8 @@
 import { Directive, ElementRef, HostListener, Input, OnInit, Renderer2 } from '@angular/core';
 
 @Directive({
-  selector: '[cdPasswordButton]'
+  selector: '[cdPasswordButton]',
+  standalone: false
 })
 export class PasswordButtonDirective implements OnInit {
   private iElement: HTMLElement;
@@ -9,7 +10,10 @@ export class PasswordButtonDirective implements OnInit {
   @Input()
   private cdPasswordButton: string;
 
-  constructor(private elementRef: ElementRef, private renderer: Renderer2) {}
+  constructor(
+    private elementRef: ElementRef,
+    private renderer: Renderer2
+  ) {}
 
   ngOnInit() {
     this.renderer.setAttribute(this.elementRef.nativeElement, 'tabindex', '-1');

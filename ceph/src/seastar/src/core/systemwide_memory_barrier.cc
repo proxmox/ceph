@@ -19,13 +19,11 @@
  * Copyright 2015 Scylla DB
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <sys/mman.h>
 #include <unistd.h>
 #include <atomic>
+#include <mutex>
 
 #if SEASTAR_HAS_MEMBARRIER
 #include <linux/membarrier.h>
@@ -33,17 +31,16 @@ module;
 #include <unistd.h>
 #endif
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
-#include <seastar/core/systemwide_memory_barrier.hh>
+#include <seastar/core/internal/systemwide_memory_barrier.hh>
 #include <seastar/core/cacheline.hh>
 #include <seastar/util/log.hh>
-#include <seastar/util/defer.hh>
-#endif
 #include <seastar/util/assert.hh>
 
 namespace seastar {
+
+extern logger seastar_logger;
+
+namespace internal {
 
 
 #ifdef SEASTAR_HAS_MEMBARRIER
@@ -129,12 +126,7 @@ bool try_systemwide_memory_barrier() {
     //
     // To fix this, only we serialize membarrier calls ourselves, but instead of sleeping, we just
     // return to the reactor poll loop. If an event is ready, we will wake up immediately.
-    if (!membarrier_lock.try_lock()) {
-        return false;
-    }
-    auto unlock = defer([] () noexcept {
-        membarrier_lock.unlock();
-    });
+  if (auto lck = std::unique_lock(membarrier_lock, std::try_to_lock)) {
 
     if (try_native_membarrier()) {
         return true;
@@ -145,7 +137,6 @@ bool try_systemwide_memory_barrier() {
     // Some (not all) ARM processors can broadcast TLB invalidations using the
     // TLBI instruction. On those, the mprotect trick won't work.
     static std::once_flag warn_once;
-    extern logger seastar_logger;
     std::call_once(warn_once, [] {
         seastar_logger.warn("membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) is not available, reactor will not sleep when idle. Upgrade to Linux 4.14 or later");
     });
@@ -156,7 +147,10 @@ bool try_systemwide_memory_barrier() {
 
     systemwide_memory_barrier();
     return true;
+  }
+  return false; // couldn't get the lock
 }
 
+}
 }
 

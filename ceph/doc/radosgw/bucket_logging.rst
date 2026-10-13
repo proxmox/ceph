@@ -2,7 +2,7 @@
 Bucket Logging
 ==============
 
-.. versionadded:: T
+.. versionadded:: Tentacle
 
 .. contents::
 
@@ -42,7 +42,7 @@ Logging Reliability
 -------------------
 For performance reasons, even though the log records are written to persistent
 storage, the log object will appear in the log bucket only after some
-configurable amount of time (or if the maximum object size of 128MB is
+configurable amount of time (or if the maximum object size of 128 MB is
 reached). This time (in seconds) can be set per source bucket via a Ceph
 extension to the :ref:`REST API <radosgw s3>`, or globally via the
 ``rgw_bucket_logging_obj_roll_time`` configuration option. If not set, the
@@ -53,6 +53,13 @@ counter that, you can flush all logging objects on a given source bucket to log
 them, regardless if enough time passed or if no more records are written to the
 object. Flushing will happen automatically when logging is disabled on a
 bucket, or its logging configuration is changed, or the bucket is deleted.
+
+To manually flush pending log objects to the log bucket, execute the following
+command:
+
+.. prompt:: bash #
+
+   radosgw-admin bucket logging flush --bucket <source bucket>
 
 The process of adding a new log object to the log bucket is asynchronous when
 triggered by a log record being written. Consequently, the operation that
@@ -68,6 +75,17 @@ the log bucket, execute the following command:
 .. prompt:: bash #
 
    radosgw-admin bucket logging list --bucket <source bucket>
+
+To view the logging configuration of a source bucket, or to see which source
+buckets are logging to a specific log bucket, execute the following command:
+
+.. prompt:: bash #
+
+   radosgw-admin bucket logging info --bucket <bucket>
+
+When run on a source bucket, this displays the logging configuration (target
+bucket, prefix, etc.). When run on a log bucket, this displays which source
+buckets are sending logs to it.
 
 
 Standard
@@ -117,7 +135,7 @@ The following operations are supported in journal mode:
 
 Multisite
 `````````
-In a multi-zone deployment, each zone uses its own log object before the
+In a :ref:`multi-zone deployment <multisite>`, each zone uses its own log object before the
 log object is added to the log bucket. After the log object is added to the
 log bucket (that is, after being flushed) it is replicated to other zones.
 This means that for a given time period there can be more than one log object
@@ -170,7 +188,7 @@ mode, the logging operation is skipped, but the bucket operation continues.
 
 Bucket Logging REST API
 -----------------------
-Detailed under: `Bucket Operations`_.
+Detailed under: :ref:`radosgw-bucketops`.
 
 
 Log Objects Key Format
@@ -212,7 +230,7 @@ possible formats:
 
 Journal
 ```````
-The "Journal" record format uses minimum amount of data for journaling
+The "Journal" record format uses a minimum amount of data for journaling
 bucket changes (this is a Ceph extension).
 
   - bucket owner (or dash if empty)
@@ -234,7 +252,7 @@ For example:
 
 Standard
 ````````
-The "Standard" record format is based on `AWS Logging Record Format`_.
+The "Standard" record format is based on the `AWS Logging Record Format`_.
 
   - bucket owner (or dash if empty)
   - bucket name (or dash if empty) in the format: ``[tenant:]<bucket name>``
@@ -273,4 +291,3 @@ For example:
 
 
 .. _AWS Logging Record Format: https://docs.aws.amazon.com/AmazonS3/latest/userguide/LogFormat.html
-.. _Bucket Operations: ../s3/bucketops

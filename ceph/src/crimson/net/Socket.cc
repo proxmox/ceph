@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "Socket.h"
 
@@ -7,6 +7,7 @@
 #include <seastar/core/when_all.hh>
 #include <seastar/net/packet.hh>
 
+#include "crimson/common/config_proxy.h" // for local_conf()
 #include "crimson/common/log.h"
 #include "include/random.h" // for ceph::util::generate_random_number()
 #include "Errors.h"
@@ -332,7 +333,7 @@ Socket::try_trap_pre(bp_action_t& trap) {
     trap = action;
     break;
    default:
-    ceph_abort("unexpected action from trap");
+    ceph_abort_msg("unexpected action from trap");
   }
   return seastar::make_ready_future<>();
 }
@@ -349,7 +350,7 @@ Socket::try_trap_post(bp_action_t& trap) {
     force_shutdown();
     return blocker->block();
    default:
-    ceph_abort("unexpected action from trap");
+    ceph_abort_msg("unexpected action from trap");
   }
   return seastar::make_ready_future<>();
 }

@@ -325,6 +325,14 @@ class Batch(object):
             default=None,
             help="Additional cryptsetup luksOpen options (use the same syntax as the cryptsetup CLI)",
         )
+        parser.add_argument(
+            '--osd-type',
+            dest='osd_type',
+            help='The Ceph OSD type to use.',
+            default='classic',
+            choices=['classic', 'crimson'],
+            type=str,
+        )
         self.args = parser.parse_args(argv)
         if self.args.bluestore:
             self.args.objectstore = 'bluestore'
@@ -421,6 +429,7 @@ class Batch(object):
         defaults = common.get_default_args()
         global_args = [
             'objectstore',
+            'osd_type',
             'bluestore',
             'dmcrypt',
             'with_tpm',

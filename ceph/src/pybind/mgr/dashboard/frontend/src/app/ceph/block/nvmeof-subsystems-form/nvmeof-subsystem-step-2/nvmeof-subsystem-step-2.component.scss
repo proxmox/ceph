@@ -1,17 +1,17 @@
 @use '@carbon/layout';
 
 .cd-nvmeof-subsystem-step-two {
+  // Full width of the tearsheet content column; min-inline-size allows nested
+  // Carbon grid rows to shrink instead of bleeding into the right influencer.
+  min-inline-size: 0;
+  inline-size: 100%;
+
   // Aligns with exactly 10 columns of the standard 16-column Carbon grid layout (10/16).
   --host-input-width: #{percentage(10 / 16)};
 
-  // Full width of the tearsheet content column; min-inline-size allows nested
-  // Carbon grid rows to shrink instead of bleeding into the right influencer.
-  inline-size: 100%;
-  min-inline-size: 0;
-
   &-manual-hosts {
-    align-items: flex-start;
     display: flex;
+    align-items: flex-start;
   }
 
   &-manual-hosts-input {

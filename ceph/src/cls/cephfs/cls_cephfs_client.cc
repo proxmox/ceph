@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -21,6 +22,8 @@
 
 using ceph::bufferlist;
 using ceph::decode;
+
+using namespace cls::cephfs;
 
 #define XATTR_CEILING "scan_ceiling"
 #define XATTR_MAX_MTIME "scan_max_mtime"
@@ -50,7 +53,7 @@ int ClsCephFSClient::accumulate_inode_metadata(
   librados::ObjectWriteOperation op;
   bufferlist inbl;
   args.encode(inbl);
-  op.exec("cephfs", "accumulate_inode_metadata", inbl);
+  op.exec(method::accumulate_inode_metadata, inbl);
 
   if (obj_pool_id != -1) {
     bufferlist bl;

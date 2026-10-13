@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=2 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=2 sw=2 sts=2 expandtab
 
 #include "./pg_scrubber.h"  // '.' notation used to affect clang-format order
 
@@ -480,10 +480,9 @@ void PgScrubber::update_targets(utime_t scrub_clock_now)
 
   // the next periodic scrubs:
   m_scrub_job->adjust_shallow_schedule(
-      m_pg->info.history.last_scrub_stamp, applicable_conf, scrub_clock_now);
+      m_pg->info.history.last_scrub_stamp, applicable_conf);
   m_scrub_job->adjust_deep_schedule(
-      m_pg->info.history.last_deep_scrub_stamp, applicable_conf,
-      scrub_clock_now);
+      m_pg->info.history.last_deep_scrub_stamp, applicable_conf);
 
   dout(10) << fmt::format("{}: adjusted:{}", __func__, *m_scrub_job) << dendl;
 }
@@ -713,7 +712,7 @@ void asok_response_section(
   Formatter::ObjectSection asok_resp_section{*f, "result"sv};
   f->dump_bool("deep", (scrub_level == scrub_level_t::deep));
   f->dump_bool("must", !is_periodic);
-  f->dump_stream("stamp") << stamp;
+  f->dump_named_fmt("stamp", "{}", stamp);
 }
 }  // namespace
 
@@ -1028,7 +1027,7 @@ std::optional<uint64_t> PgScrubber::select_range()
       if (objects.empty()) {
 	ceph_assert(0 ==
 		    "Somehow we got more than 2 objects which"
-		    "have the same head but are not clones");
+		    " have the same head but are not clones");
       }
       back = objects.back();
     }
@@ -1137,8 +1136,6 @@ bool PgScrubber::write_blocked_by_scrub(const hobject_t& soid)
   }
 
   get_osd_perf_counters()->inc(unlabeled_cntrs_idx.write_blocked);
-  // to be removed in version 'Umbrella':
-  get_labeled_counters()->inc(scrbcnt_write_blocked);
   return true;
 }
 
@@ -1473,9 +1470,13 @@ int PgScrubber::build_scrub_map_chunk(ScrubMap& map,
     if (pos.ls.empty()) {
       break;
     }
-    m_pg->_scan_rollback_obs(rollback_obs);
     pos.pos = 0;
-    return -EINPROGRESS;
+    if (m_pg->_scan_rollback_obs(rollback_obs)) {
+      // we had to perform some real work (queue a transaction
+      // to discard obsolete rollback versions of objects in the
+      // selected range). Let's reschedule the scrub.
+      return -EINPROGRESS;
+    }
   }
 
   // scan objects
@@ -1666,8 +1667,6 @@ void PgScrubber::replica_scrub_op(OpRequestRef op)
 
   preemption_data.reset();
   preemption_data.force_preemptability(msg->allow_preemption);
-
-  replica_scrubmap_pos.reset();	 // needed? RRR
 
   set_queued_or_active();
   advance_token();
@@ -2046,65 +2045,7 @@ void PgScrubber::scrub_finish()
     }
   }
 
-  {
-    // finish up
-    ObjectStore::Transaction t;
-    m_pg->recovery_state.update_stats(
-      [this](auto& history, auto& stats) {
-	dout(10) << "m_pg->recovery_state.update_stats() errors:"
-		 << m_shallow_errors << "/" << m_deep_errors << " deep? "
-		 << m_is_deep << dendl;
-	utime_t now = ceph_clock_now();
-	history.last_scrub = m_pg->recovery_state.get_info().last_update;
-	history.last_scrub_stamp = now;
-	if (m_is_deep) {
-	  history.last_deep_scrub = m_pg->recovery_state.get_info().last_update;
-	  history.last_deep_scrub_stamp = now;
-	}
-
-	if (m_is_deep) {
-	  if ((m_shallow_errors == 0) && (m_deep_errors == 0)) {
-	    history.last_clean_scrub_stamp = now;
-	  }
-	  stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
-	  stats.stats.sum.num_deep_scrub_errors = m_deep_errors;
-	  auto omap_stats = m_be->this_scrub_omapstats();
-	  stats.stats.sum.num_large_omap_objects =
-	    omap_stats.large_omap_objects;
-	  stats.stats.sum.num_omap_bytes = omap_stats.omap_bytes;
-	  stats.stats.sum.num_omap_keys = omap_stats.omap_keys;
-	  dout(19) << "scrub_finish shard " << m_pg_whoami
-		   << " num_omap_bytes = " << stats.stats.sum.num_omap_bytes
-		   << " num_omap_keys = " << stats.stats.sum.num_omap_keys
-		   << dendl;
-	} else {
-	  stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
-	  // XXX: last_clean_scrub_stamp doesn't mean the pg is not inconsistent
-	  // because of deep-scrub errors
-	  if (m_shallow_errors == 0) {
-	    history.last_clean_scrub_stamp = now;
-	  }
-	}
-
-	stats.stats.sum.num_scrub_errors =
-	  stats.stats.sum.num_shallow_scrub_errors +
-	  stats.stats.sum.num_deep_scrub_errors;
-
-	if (m_flags.check_repair) {
-	  m_flags.check_repair = false;
-	  if (m_pg->info.stats.stats.sum.num_scrub_errors) {
-	    state_set(PG_STATE_FAILED_REPAIR);
-	    dout(10) << "scrub_finish "
-		     << m_pg->info.stats.stats.sum.num_scrub_errors
-		     << " error(s) still present after re-scrub" << dendl;
-	  }
-	}
-	return true;
-      },
-      &t);
-    int tr = m_osds->store->queue_transaction(m_pg->ch, std::move(t), nullptr);
-    ceph_assert(tr == 0);
-  }
+  emit_scrub_result();
 
   if (has_error) {
     m_pg->queue_peering_event(PGPeeringEventRef(
@@ -2128,6 +2069,66 @@ void PgScrubber::scrub_finish()
   if (m_pg->is_active() && m_pg->is_primary()) {
     m_pg->recovery_state.share_pg_info();
   }
+}
+
+void
+PgScrubber::emit_scrub_result()
+{
+  ObjectStore::Transaction t;
+  m_pg->recovery_state.update_stats(
+      [this](auto& history, auto& stats) {
+        dout(10) << "m_pg->recovery_state.update_stats() errors:"
+                 << m_shallow_errors << "/" << m_deep_errors << " deep? "
+                 << m_is_deep << dendl;
+        utime_t now = ceph_clock_now();
+        history.last_scrub = m_pg->recovery_state.get_info().last_update;
+        history.last_scrub_stamp = now;
+        if (m_is_deep) {
+          history.last_deep_scrub = m_pg->recovery_state.get_info().last_update;
+          history.last_deep_scrub_stamp = now;
+        }
+
+        if (m_is_deep) {
+          if ((m_shallow_errors == 0) && (m_deep_errors == 0)) {
+            history.last_clean_scrub_stamp = now;
+          }
+          stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
+          stats.stats.sum.num_deep_scrub_errors = m_deep_errors;
+          auto omap_stats = m_be->this_scrub_omapstats();
+          stats.stats.sum.num_large_omap_objects = omap_stats.large_omap_objects;
+          stats.stats.sum.num_omap_bytes = omap_stats.omap_bytes;
+          stats.stats.sum.num_omap_keys = omap_stats.omap_keys;
+          dout(19) << "scrub_finish shard " << m_pg_whoami
+                   << " num_omap_bytes = " << stats.stats.sum.num_omap_bytes
+                   << " num_omap_keys = " << stats.stats.sum.num_omap_keys
+                   << dendl;
+        } else {
+          stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
+          // XXX: last_clean_scrub_stamp doesn't mean the pg is not inconsistent
+          // because of deep-scrub errors
+          if (m_shallow_errors == 0) {
+            history.last_clean_scrub_stamp = now;
+          }
+        }
+
+        stats.stats.sum.num_scrub_errors =
+            stats.stats.sum.num_shallow_scrub_errors +
+            stats.stats.sum.num_deep_scrub_errors;
+
+        if (m_flags.check_repair) {
+          m_flags.check_repair = false;
+          if (m_pg->info.stats.stats.sum.num_scrub_errors) {
+            state_set(PG_STATE_FAILED_REPAIR);
+            dout(10) << "scrub_finish "
+                     << m_pg->info.stats.stats.sum.num_scrub_errors
+                     << " error(s) still present after re-scrub" << dendl;
+          }
+        }
+        return true;
+      },
+      &t);
+  int tr = m_osds->store->queue_transaction(m_pg->ch, std::move(t), nullptr);
+  ceph_assert(tr == 0);
 }
 
 
@@ -2284,7 +2285,7 @@ void PgScrubber::requeue_penalized(
 	     << dendl;
     return;
   }
-  /// \todo fix the 5s' to use a cause-specific delay parameter
+
   auto& trgt = m_scrub_job->delay_on_failure(s_or_d, cause, scrub_clock_now);
   ceph_assert(!trgt.queued);
   m_osds->get_scrub_services().enqueue_target(trgt);
@@ -2424,8 +2425,7 @@ Scrub::schedule_result_t PgScrubber::start_scrub_session(
 
 
 ///\todo modify the fields dumped here to match the new scrub-job structure
-void PgScrubber::dump_scrubber(
-    ceph::Formatter* f) const
+void PgScrubber::dump_scrubber(ceph::Formatter* f) const
 {
   Formatter::ObjectSection scrubber_section{*f, "scrubber"sv};
 
@@ -2438,15 +2438,15 @@ void PgScrubber::dump_scrubber(
     const auto& earliest = m_scrub_job->earliest_target(now_is);
     f->dump_bool("must_scrub", earliest.is_high_priority());
     f->dump_bool(
-	"must_deep_scrub", m_scrub_job->deep_target.is_high_priority());
+        "must_deep_scrub", m_scrub_job->deep_target.is_high_priority());
     // the following data item is deprecated. Will be replaced by a set
     // of reported attributes that match the updated scrub-job state.
     f->dump_bool("must_repair", earliest.urgency() == urgency_t::must_repair);
-
-    f->dump_stream("scrub_reg_stamp")
-	<< earliest.sched_info.schedule.not_before;
+    f->dump_named_fmt(
+        "sched_time", "{}", earliest.sched_info.schedule.not_before);
     auto sched_state = m_scrub_job->scheduling_state(now_is);
     f->dump_string("schedule", sched_state);
+    f->dump_named_fmt("urgency", "{}", earliest.urgency());
   }
 
   if (m_publish_sessions) {
@@ -2454,16 +2454,44 @@ void PgScrubber::dump_scrubber(
     // The 'test_sequence' is an ever-increasing number used by tests.
     f->dump_int("test_sequence", m_sessions_counter);
   }
+
+  // always (also) dump the two targets (as some tests expect their specific
+  // format)
+  const auto query_time = ceph_clock_now();
+  {
+    Formatter::ObjectSection shallow_section{*f, "shallow-target"sv};
+    m_scrub_job->shallow_target.queued_element().dump(*f);
+    f->dump_bool(
+        "eligible",
+        m_scrub_job->shallow_target.queued_element().schedule.not_before <=
+            query_time);
+    f->dump_bool("queued", m_scrub_job->shallow_target.queued);
+    f->dump_bool(
+        "active",
+        (m_active_target && m_active_target->is_shallow()) ? true : false);
+  }
+  {
+    Formatter::ObjectSection deep_section{*f, "deep-target"sv};
+    m_scrub_job->deep_target.queued_element().dump(*f);
+    f->dump_bool(
+        "eligible",
+        m_scrub_job->deep_target.queued_element().schedule.not_before <=
+            query_time);
+    f->dump_bool("queued", m_scrub_job->deep_target.queued);
+    f->dump_bool(
+        "active",
+        (m_active_target && m_active_target->is_deep()) ? true : false);
+  }
 }
 
 
 void PgScrubber::dump_active_scrubber(ceph::Formatter* f) const
 {
-  f->dump_stream("epoch_start") << m_interval_start;
-  f->dump_stream("start") << m_start;
-  f->dump_stream("end") << m_end;
-  f->dump_stream("max_end") << m_max_end;
-  f->dump_stream("subset_last_update") << m_subset_last_update;
+  f->dump_named_fmt("epoch_start", "{}", m_interval_start);
+  f->dump_named_fmt("start", "{}", m_start);
+  f->dump_named_fmt("end", "{}", m_end);
+  f->dump_named_fmt("max_end", "{}", m_max_end);
+  f->dump_named_fmt("subset_last_update", "{}", m_subset_last_update);
   f->dump_bool("deep", m_active_target->is_deep());
 
   // dump the scrub-type flags
@@ -2478,7 +2506,9 @@ void PgScrubber::dump_active_scrubber(ceph::Formatter* f) const
   f->dump_int("fixed", m_fixed_count);
   f->with_array_section(
       "waiting_on_whom"sv, m_maps_status.get_awaited(),
-      [](Formatter& f, const pg_shard_t& sh) { f.dump_stream("shard") << sh; });
+      [](Formatter& f, const pg_shard_t& sh) {
+        f.dump_named_fmt("shard", "{}", sh);
+      });
 
   if (m_scrub_job->blocked) {
     f->dump_string("schedule", "blocked");
@@ -2490,11 +2520,13 @@ void PgScrubber::dump_active_scrubber(ceph::Formatter* f) const
     f->dump_bool("is_reserving_replicas", true);
     f->dump_int("osd_to_respond", maybe_register->m_osd_to_respond);
     f->dump_int("duration_seconds", maybe_register->m_duration_seconds);
-    f->dump_int("requested_in_order", maybe_register->m_ordinal_of_requested_replica);
+    f->dump_int(
+        "requested_in_order", maybe_register->m_ordinal_of_requested_replica);
     f->dump_int("num_to_reserve", maybe_register->m_num_to_reserve);
   } else {
     f->dump_bool("is_reserving_replicas", false);
   }
+  f->dump_named_fmt("urgency", "{}", m_active_target->urgency());
 }
 
 pg_scrubbing_status_t PgScrubber::get_schedule() const
@@ -2605,16 +2637,18 @@ void PgScrubber::handle_query_state(ceph::Formatter* f)
   dout(15) << __func__ << dendl;
 
   Formatter::ObjectSection scrub_section{*f, "scrub"sv};
-  f->dump_stream("scrubber.epoch_start") << m_interval_start;
+  f->dump_named_fmt("scrubber.epoch_start", "{}", m_interval_start);
   f->dump_bool("scrubber.active", m_active);
-  f->dump_stream("scrubber.start") << m_start;
-  f->dump_stream("scrubber.end") << m_end;
-  f->dump_stream("scrubber.max_end") << m_max_end;
-  f->dump_stream("scrubber.subset_last_update") << m_subset_last_update;
+  f->dump_named_fmt("scrubber.start", "{}", m_start);
+  f->dump_named_fmt("scrubber.end", "{}", m_end);
+  f->dump_named_fmt("scrubber.max_end", "{}", m_max_end);
+  f->dump_named_fmt("scrubber.subset_last_update", "{}", m_subset_last_update);
   f->dump_bool("scrubber.deep", m_is_deep);
   f->with_array_section(
       "waiting_on_whom"sv, m_maps_status.get_awaited(),
-      [](Formatter& f, const pg_shard_t& sh) { f.dump_stream("shard") << sh; });
+      [](Formatter& f, const pg_shard_t& sh) {
+        f.dump_named_fmt("shard", "{}", sh);
+      });
   f->dump_string("comment", "DEPRECATED - may be removed in the next release");
 }
 
@@ -2765,9 +2799,9 @@ bool PgScrubber::is_token_current(Scrub::act_token_t received_token)
   if (received_token == 0 || received_token == m_current_token) {
     return true;
   }
-  dout(5) << __func__ << " obsolete token (" << received_token << " vs current "
-	  << m_current_token << dendl;
-
+  dout(5) << fmt::format("{}: obsolete token {} does not match current ({})",
+                  __func__, received_token, m_current_token)
+           << dendl;
   return false;
 }
 
@@ -2910,18 +2944,19 @@ void PgScrubber::update_scrub_stats(ceph::coarse_real_clock::time_point now_is)
 
   /// \todo use the date library (either the one included in Arrow or directly)
   /// to get the formatting of the time_points.
-
   if (g_conf()->subsys.should_gather<ceph_subsys_osd, 25>()) {
     // will only create the debug strings if required
-    char buf[50];
-    auto printable_last = fmt::localtime(clock::to_time_t(m_last_stat_upd));
-    strftime(buf, sizeof(buf), "%Y-%m-%dT%T", &printable_last);
-    dout(20) << fmt::format("{}: period: {}/{}-> {} last:{}",
+    std::time_t time = clock::to_time_t(m_last_stat_upd);
+    std::tm tm_local;
+    if (!localtime_r(&time, &tm_local)) {
+      throw fmt::format_error("time_t value out of range");
+    }
+    dout(20) << fmt::format("{}: period: {}/{}-> {} last:{:%FT%T}",
 			    __func__,
 			    period_active,
 			    period_inactive,
 			    period,
-			    buf)
+			    tm_local)
 	     << dendl;
   }
 

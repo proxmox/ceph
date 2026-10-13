@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -106,6 +106,8 @@ enum class OperationTypeCode {
   scrub_reserve_range,
   scrub_scan,
   pgpct_request,
+  ecrep_request,
+  snap_trim_initiate,
   last_op
 };
 
@@ -131,6 +133,8 @@ static constexpr const char* const OP_NAMES[] = {
   "scrub_reserve_range",
   "scrub_scan",
   "pgpct_request",
+  "ecrep_request",
+  "snap_trim_initiate",
 };
 
 // prevent the addition of OperationTypeCode-s with no matching OP_NAMES entry:
@@ -360,6 +364,8 @@ class OperationThrottler : public BlockerT<OperationThrottler>,
 
 public:
   OperationThrottler(ConfigProxy &conf);
+  void start();
+  seastar::future<> stop();
 
   std::vector<std::string> get_tracked_keys() const noexcept final;
   void handle_conf_change(const ConfigProxy& conf,
@@ -394,6 +400,7 @@ public:
     });
   }
 
+  void initialize_scheduler(CephContext* cct, ConfigProxy &conf, bool is_rotational, int whoami);
 private:
   void dump_detail(Formatter *f) const final;
 
@@ -403,13 +410,21 @@ private:
   uint64_t in_progress = 0;
 
   uint64_t pending = 0;
+  bool started = false;
+  bool stopped = false;
+
+  seastar::condition_variable cv;
+  std::optional<seastar::future<>> bg_future;
 
   void wake();
+
+  seastar::future<> wake_set();
 
   seastar::future<> acquire_throttle(
     crimson::osd::scheduler::params_t params);
 
   void release_throttle();
+  seastar::future<> background_task();
 };
 
 }

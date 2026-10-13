@@ -1,8 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
+#include <deque>
 #include <map>
 #include <optional>
 #include <string>
@@ -18,11 +19,13 @@
 
 #include "os/Transaction.h"
 #include "crimson/common/throttle.h"
+#include "crimson/common/smp_helpers.h"
 #include "crimson/os/futurized_collection.h"
 #include "crimson/os/futurized_store.h"
 
 #include "crimson/os/seastore/device.h"
 #include "crimson/os/seastore/transaction.h"
+#include "crimson/os/seastore/transaction_interruptor.h"
 #include "crimson/os/seastore/onode_manager.h"
 #include "crimson/os/seastore/omap_manager.h"
 #include "crimson/os/seastore/collection_manager.h"
@@ -37,12 +40,11 @@ class TransactionManager;
 enum class op_type_t : uint8_t {
     DO_TRANSACTION = 0,
     READ,
-    WRITE,
     GET_ATTR,
     GET_ATTRS,
     STAT,
     OMAP_GET_VALUES,
-    OMAP_GET_VALUES2,
+    OMAP_ITERATE,
     MAX
 };
 
@@ -52,7 +54,13 @@ public:
   SeastoreCollection(T&&... args) :
     FuturizedCollection(std::forward<T>(args)...) {}
 
-  seastar::shared_mutex ordering_lock;
+  struct batch_entry_t {
+    ceph::os::Transaction txn;
+    seastar::promise<> pr;
+    bool batchable = true;
+  };
+  std::deque<batch_entry_t> pending_txns;
+  bool collection_in_flight = false;
 };
 
 /**
@@ -71,9 +79,6 @@ struct col_obj_ranges_t {
 
 class SeaStore final : public FuturizedStore {
 public:
-  using base_ertr = TransactionManager::base_ertr;
-  using base_iertr = TransactionManager::base_iertr;
-
   class MDStore {
   public:
     using write_meta_ertr = base_ertr;
@@ -96,61 +101,63 @@ public:
     Shard(
       std::string root,
       Device* device,
-      bool is_test);
+      bool is_test,
+      uint32_t store_shard_nums,
+      store_index_t store_index = 0);
     ~Shard() = default;
 
     seastar::future<struct stat> stat(
       CollectionRef c,
       const ghobject_t& oid,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     read_errorator::future<ceph::bufferlist> read(
       CollectionRef c,
       const ghobject_t& oid,
       uint64_t offset,
       size_t len,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     read_errorator::future<ceph::bufferlist> readv(
       CollectionRef c,
       const ghobject_t& oid,
       interval_set<uint64_t>& m,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     base_errorator::future<bool> exists(
       CollectionRef c,
       const ghobject_t& oid,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     get_attr_errorator::future<ceph::bufferlist> get_attr(
       CollectionRef c,
       const ghobject_t& oid,
       std::string_view name,
-      uint32_t op_flags = 0) const final;
+      uint32_t op_flags = 0) const override final;
 
     get_attrs_ertr::future<attrs_t> get_attrs(
       CollectionRef c,
       const ghobject_t& oid,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     read_errorator::future<omap_values_t> omap_get_values(
       CollectionRef c,
       const ghobject_t& oid,
       const omap_keys_t& keys,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
-    /// Retrieves paged set of values > start (if present)
-    read_errorator::future<omap_values_paged_t> omap_get_values(
-      CollectionRef c,           ///< [in] collection
-      const ghobject_t &oid,     ///< [in] oid
-      const std::optional<std::string> &start, ///< [in] start, empty for begin
-      uint32_t op_flags = 0
-      ) final; ///< @return <done, values> values.empty() iff done
+    read_errorator::future<ObjectStore::omap_iter_ret_t> omap_iterate(
+      CollectionRef c,
+      const ghobject_t &oid,
+      ObjectStore::omap_iter_seek_t start_from,
+      omap_iterate_cb_t callback,
+      uint32_t op_flags = 0,
+      omap_iterate_conf_t on_conflict = nullptr) override final;
 
     get_attr_errorator::future<bufferlist> omap_get_header(
       CollectionRef c,
       const ghobject_t& oid,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
     /// std::get<1>(ret) returns end if and only if the listing has listed all
     /// the items within the range, otherwise it returns the next key to be listed.
@@ -159,29 +166,29 @@ public:
       const ghobject_t& start,
       const ghobject_t& end,
       uint64_t limit,
-      uint32_t op_flags = 0) const final;
+      uint32_t op_flags = 0) const override final;
 
-    seastar::future<CollectionRef> create_new_collection(const coll_t& cid) final;
-    seastar::future<CollectionRef> open_collection(const coll_t& cid) final;
+    seastar::future<CollectionRef> create_new_collection(const coll_t& cid) override final;
+    seastar::future<CollectionRef> open_collection(const coll_t& cid) override final;
     seastar::future<> set_collection_opts(CollectionRef c,
-                                        const pool_opts_t& opts) final;
+                                        const pool_opts_t& opts) override final;
 
     seastar::future<> do_transaction_no_callbacks(
       CollectionRef ch,
-      ceph::os::Transaction&& txn) final;
+      ceph::os::Transaction&& txn) override final;
 
     /* Note, flush() machinery must go through the same pipeline
      * stages and locks as do_transaction. */
-    seastar::future<> flush(CollectionRef ch) final;
+    seastar::future<> flush(CollectionRef ch) override final;
 
     read_errorator::future<fiemap_ret_t> fiemap(
       CollectionRef ch,
       const ghobject_t& oid,
       uint64_t off,
       uint64_t len,
-      uint32_t op_flags = 0) final;
+      uint32_t op_flags = 0) override final;
 
-    unsigned get_max_attr_name_length() const final {
+    unsigned get_max_attr_name_length() const override final {
       return 256;
     }
 
@@ -189,7 +196,8 @@ public:
 
   // only exposed to SeaStore
   public:
-    seastar::future<> umount();
+    base_ertr::future<> umount();
+    seastar::future<> do_gc();
     // init managers and mount transaction_manager
     seastar::future<> mount_managers();
 
@@ -204,11 +212,11 @@ public:
 
     seastar::future<std::string> get_default_device_class();
 
-    store_statfs_t stat() const;
+    seastar::future<store_statfs_t> stat() const;
 
     uuid_d get_fsid() const;
 
-    seastar::future<> mkfs_managers();
+    TransactionManager::alloc_extent_ertr::future<> mkfs_managers();
 
     void init_managers();
 
@@ -220,6 +228,13 @@ public:
 
     cache_stats_t get_cache_stats(bool report_detail, double seconds) const;
 
+    unsigned int get_store_index() const {
+      return store_index;
+    }
+
+    bool get_status() const {
+      return store_active;
+    }
   private:
     struct internal_context_t {
       CollectionRef ch;
@@ -244,64 +259,16 @@ public:
       }
     };
 
+    seastar::future<> dispatch_collection(CollectionRef ch);
+    ceph::os::Transaction build_next_batch(
+      SeastoreCollection& coll,
+      std::vector<seastar::promise<>>& pending_txns_promises);
+    seastar::future<> run_one_batch(CollectionRef ch, ceph::os::Transaction&& t);
+
     TransactionManager::read_extent_iertr::future<std::optional<unsigned>>
     get_coll_bits(CollectionRef ch, Transaction &t) const;
 
-    static void on_error(ceph::os::Transaction &t);
-
-    template <typename F>
-    auto repeat_with_internal_context(
-      CollectionRef ch,
-      ceph::os::Transaction &&t,
-      Transaction::src_t src,
-      const char* tname,
-      op_type_t op_type,
-      F &&f) {
-      // The below repeat_io_num requires MUTATE
-      assert(src == Transaction::src_t::MUTATE);
-      return seastar::do_with(
-        internal_context_t(
-          ch, std::move(t),
-          transaction_manager->create_transaction(
-	    src, tname, t.get_fadvise_flags())),
-        std::forward<F>(f),
-        [this, op_type](auto &ctx, auto &f) {
-        assert(shard_stats.starting_io_num);
-        --(shard_stats.starting_io_num);
-        ++(shard_stats.waiting_collock_io_num);
-
-	return ctx.transaction->get_handle().take_collection_lock(
-	  static_cast<SeastoreCollection&>(*(ctx.ch)).ordering_lock
-	).then([this] {
-	  assert(shard_stats.waiting_collock_io_num);
-	  --(shard_stats.waiting_collock_io_num);
-	  ++(shard_stats.waiting_throttler_io_num);
-
-	  return throttler.get(1);
-	}).then([&, this] {
-	  assert(shard_stats.waiting_throttler_io_num);
-	  --(shard_stats.waiting_throttler_io_num);
-	  ++(shard_stats.processing_inlock_io_num);
-
-	  return repeat_eagain([&, this] {
-	    ++(shard_stats.repeat_io_num);
-
-	    ctx.reset_preserve_handle(*transaction_manager);
-	    return std::invoke(f, ctx);
-	  }).handle_error(
-	    crimson::ct_error::all_same_way([&ctx](auto e) {
-	      on_error(ctx.ext_transaction);
-	      return seastar::now();
-	    })
-	  );
-	}).then([this, op_type, &ctx] {
-	  add_latency_sample(op_type,
-	      std::chrono::steady_clock::now() - ctx.begin_timestamp);
-	}).finally([this] {
-	  throttler.put();
-	});
-      });
-    }
+    static void transaction_dump(ceph::os::Transaction &t);
 
     template <typename Ret, typename F>
     auto repeat_with_onode(
@@ -406,10 +373,21 @@ public:
       internal_context_t &ctx,
       Onode &onode,
       Onode &d_onode);
+    tm_ret _maybe_copy_on_write(
+      internal_context_t &ctx,
+      Onode &onode,
+      ObjectDataHandler &handler);
     tm_ret _rename(
       internal_context_t &ctx,
       OnodeRef &onode,
       OnodeRef &d_onode);
+    tm_ret _clone_range(
+      internal_context_t &ctx,
+      OnodeRef &src_onode,
+      OnodeRef &dst_onode,
+      extent_len_t srcoff,
+      extent_len_t length,
+      extent_len_t dstoff);
     tm_ret _zero(
       internal_context_t &ctx,
       Onode &onode,
@@ -438,6 +416,14 @@ public:
     tm_ret _create_collection(
       internal_context_t &ctx,
       const coll_t& cid, int bits);
+    tm_ret _split_collection(
+      internal_context_t &ctx,
+      const coll_t& cid, int bits);
+    tm_ret _merge_collection(
+      internal_context_t &ctx,
+      coll_t cid,
+      coll_t dest_cid,
+      int bits);
     tm_ret _remove_collection(
       internal_context_t &ctx,
       const coll_t& cid);
@@ -472,14 +458,6 @@ public:
         onode.get_metadata_hint(device->get_block_size()));
     }
 
-    omap_root_t rename_omap_root(
-      omap_type_t type,
-      Onode& onode,
-      Onode& d_onode) const {
-      return onode.get_root(type).get(
-        d_onode.get_metadata_hint(device->get_block_size()));
-    }
-
     omaptree_get_value_ret omaptree_get_value(
       Transaction& t,
       omap_root_t&& root,
@@ -493,11 +471,20 @@ public:
       const std::optional<std::string>& start,
       OMapManager::omap_list_config_t config) const;
 
+    using omaptree_iterate_ret = OMapManager::omap_iterate_ret;
+    omaptree_iterate_ret omaptree_iterate(
+      Transaction& t,
+      omap_root_t&& root,
+      ObjectStore::omap_iter_seek_t &start_from,
+      omap_iterate_cb_t callback
+      );
+
     base_iertr::future<omap_values_t> omaptree_get_values(
       Transaction& t,
       omap_root_t&& root,
       const omap_keys_t& keys) const;
 
+    using omap_values_paged_t = std::tuple<bool, omap_values_t>;
     base_iertr::future<omap_values_paged_t> omaptree_get_values(
       Transaction& t,
       omap_root_t&& root,
@@ -561,9 +548,11 @@ public:
     OnodeManagerRef onode_manager;
 
     common::Throttle throttler;
+    store_index_t store_index;
+    bool store_active = true;
 
     seastar::metrics::metric_group metrics;
-    void register_metrics();
+    void register_metrics(store_index_t store_index);
 
     mutable shard_stats_t shard_stats;
     mutable seastar::lowres_clock::time_point last_tp =
@@ -577,33 +566,76 @@ public:
     MDStoreRef mdstore);
   ~SeaStore();
 
-  seastar::future<> start() final;
-  seastar::future<> stop() final;
+  seastar::future<uint32_t> start() override;
+  seastar::future<> stop() override;
 
-  mount_ertr::future<> mount() final;
-  seastar::future<> umount() final;
+  Device::access_ertr::future<> _mount();
 
-  mkfs_ertr::future<> mkfs(uuid_d new_osd_fsid) final;
-  seastar::future<store_statfs_t> stat() const final;
-  seastar::future<store_statfs_t> pool_statfs(int64_t pool_id) const final;
+  // FuturizedStore::mount_ertr/mkfs_ertr only supports a stateful_ec
+  // to keep the interface intact, convert to stateful_ec.
+  crimson::os::FuturizedStore::mount_ertr::future<> mount() override {
+    return _mount().handle_error(
+      Device::access_ertr::all_same_way([](auto& code) {
+        return crimson::stateful_ec{code};
+    }));
+  }
+  seastar::future<> umount() override;
 
-  seastar::future<> report_stats() final;
+  Device::access_ertr::future<> _mkfs(uuid_d new_osd_fsid);
 
-  uuid_d get_fsid() const final {
-    ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.local().get_fsid();
+  crimson::os::FuturizedStore::mkfs_ertr::future<> mkfs(uuid_d new_osd_fsid) override {
+    return _mkfs(new_osd_fsid).handle_error(
+      Device::access_ertr::all_same_way([](auto& code) {
+        return crimson::stateful_ec{code};
+    }));
   }
 
-  seastar::future<> write_meta(const std::string& key, const std::string& value) final;
+  seastar::future<store_statfs_t> stat() const override;
+  seastar::future<store_statfs_t> pool_statfs(int64_t pool_id) const override;
 
-  seastar::future<std::tuple<int, std::string>> read_meta(const std::string& key) final;
+  seastar::future<> report_stats() override;
 
-  seastar::future<std::vector<coll_core_t>> list_collections() final;
+  uuid_d get_fsid() const override {
+    ceph_assert(seastar::this_shard_id() == primary_core);
+    return shard_stores.local().mshard_stores[0]->get_fsid();
+  }
+
+  uint64_t get_max_object_size() const override final {
+    return std::min<uint64_t>(
+      crimson::common::local_conf()->osd_max_object_size,
+      crimson::common::get_conf<uint64_t>("seastore_default_max_object_size"));
+  }
+
+  seastar::future<> write_meta(const std::string& key, const std::string& value) override;
+
+  seastar::future<std::tuple<int, std::string>> read_meta(const std::string& key) override;
+
+  seastar::future<std::vector<coll_core_t>> list_collections() override;
 
   seastar::future<std::string> get_default_device_class() final;
 
-  FuturizedStore::Shard& get_sharded_store() final {
-    return shard_stores.local();
+  seastar::future<> do_gc() override;
+
+  BackendStore get_backend_store(store_index_t store_index) override {
+    assert(!shard_stores.local().mshard_stores.empty());
+    if (store_index != NULL_STORE_INDEX) {
+      assert(store_index < shard_stores.local().mshard_stores.size());
+    }
+    auto this_id = seastar::this_shard_id();
+    if (this_id < store_shard_nums) {
+      return BackendStore(*this, this_id, store_index);
+    } else {
+      auto shard_id = this_id % store_shard_nums;
+      return BackendStore(*this, shard_id, store_index);
+    }
+  }
+
+  FuturizedStore::Shard& get_sharded_store(store_index_t store_index = 0) override
+  {
+    assert(store_index < shard_stores.local().mshard_stores.size());
+    auto &shard_store = *(shard_stores.local().mshard_stores[store_index]);
+    assert(shard_store.get_status() == true);
+    return shard_store;
   }
 
   static col_obj_ranges_t
@@ -627,12 +659,38 @@ private:
 
   seastar::future<> set_secondaries();
 
+  seastar::future<> get_shard_nums();
+  seastar::future<> shard_stores_start(bool is_test);
+  seastar::future<> shard_stores_stop();
+
 private:
+class MultiShardStores {
+  public:
+    std::vector<std::unique_ptr<SeaStore::Shard>> mshard_stores;
+
+  public:
+    MultiShardStores(size_t count,
+                     const std::string& root,
+                     Device* dev,
+                     bool is_test,
+                     uint32_t store_shard_nums)
+    : mshard_stores() {
+      mshard_stores.reserve(count); // Reserve space for the shards
+      for (size_t store_index = 0; store_index < count; ++store_index) {
+        mshard_stores.emplace_back(std::make_unique<SeaStore::Shard>(
+          root, dev, is_test, store_shard_nums, store_index));
+      }
+    }
+    ~MultiShardStores() {
+      mshard_stores.clear();
+    }
+  };
   std::string root;
   MDStoreRef mdstore;
   DeviceRef device;
   std::vector<DeviceRef> secondaries;
-  seastar::sharded<SeaStore::Shard> shard_stores;
+  seastar::sharded<SeaStore::MultiShardStores> shard_stores;
+  uint32_t store_shard_nums = 0;
 
   mutable seastar::lowres_clock::time_point last_tp =
     seastar::lowres_clock::time_point::min();

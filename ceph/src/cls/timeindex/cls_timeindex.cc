@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <errno.h>
 
@@ -251,15 +251,13 @@ CLS_INIT(timeindex)
   cls_method_handle_t h_timeindex_list;
   cls_method_handle_t h_timeindex_trim;
 
-  cls_register("timeindex", &h_class);
+  using namespace cls::timeindex;
+  cls_register(ClassId::name, &h_class);
+  ClassRegistrar<ClassId> cls(h_class);
 
-  /* timeindex */
-  cls_register_cxx_method(h_class, "add", CLS_METHOD_RD | CLS_METHOD_WR,
-          cls_timeindex_add, &h_timeindex_add);
-  cls_register_cxx_method(h_class, "list", CLS_METHOD_RD,
-          cls_timeindex_list, &h_timeindex_list);
-  cls_register_cxx_method(h_class, "trim", CLS_METHOD_RD | CLS_METHOD_WR,
-          cls_timeindex_trim, &h_timeindex_trim);
+  cls.register_cxx_method(method::add,  cls_timeindex_add,  &h_timeindex_add);
+  cls.register_cxx_method(method::list, cls_timeindex_list, &h_timeindex_list);
+  cls.register_cxx_method(method::trim, cls_timeindex_trim, &h_timeindex_trim);
 
   return;
 }

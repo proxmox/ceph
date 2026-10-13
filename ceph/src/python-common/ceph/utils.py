@@ -3,13 +3,15 @@ import re
 import string
 import ssl
 
-from typing import Optional, MutableMapping, Tuple, Any
+from typing import Optional, MutableMapping, Tuple, Any, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
 
 import logging
 
 log = logging.getLogger(__name__)
+
+_SIZE_RE = re.compile(r'^\s*(\d+)\s*([KMGTP]?)\s*([iI]?[bB])?\s*$')
 
 
 def datetime_now() -> datetime.datetime:
@@ -30,7 +32,8 @@ def datetime_to_str(dt: datetime.datetime) -> str:
         ISO 8601 (timezone=UTC).
     """
     return dt.astimezone(tz=datetime.timezone.utc).strftime(
-        '%Y-%m-%dT%H:%M:%S.%fZ')
+        '%Y-%m-%dT%H:%M:%S.%fZ'
+    )
 
 
 def str_to_datetime(string: str) -> datetime.datetime:
@@ -50,7 +53,7 @@ def str_to_datetime(string: str) -> datetime.datetime:
     """
     fmts = [
         '%Y-%m-%dT%H:%M:%S.%f',
-        '%Y-%m-%dT%H:%M:%S.%f%z'
+        '%Y-%m-%dT%H:%M:%S.%f%z',
     ]
 
     # In *all* cases, the 9 digit second precision is too much for
@@ -74,8 +77,11 @@ def str_to_datetime(string: str) -> datetime.datetime:
         except ValueError:
             pass
 
-    raise ValueError("Time data {} does not match one of the formats {}".format(
-        string, str(fmts)))
+    raise ValueError(
+        "Time data {} does not match one of the formats {}".format(
+            string, str(fmts)
+        )
+    )
 
 
 def parse_timedelta(delta: str) -> Optional[datetime.timedelta]:
@@ -101,13 +107,15 @@ def parse_timedelta(delta: str) -> Optional[datetime.timedelta]:
     :return: The `datetime.timedelta` object or `None` in case of
         a parsing error.
     """
-    parts = re.match(r'(?P<seconds>-?\d+)s|'
-                     r'(?P<minutes>-?\d+)m|'
-                     r'(?P<hours>-?\d+)h|'
-                     r'(?P<days>-?\d+)d|'
-                     r'(?P<weeks>-?\d+)w$',
-                     delta,
-                     re.IGNORECASE)
+    parts = re.match(
+        r'(?P<seconds>-?\d+)s|'
+        r'(?P<minutes>-?\d+)m|'
+        r'(?P<hours>-?\d+)h|'
+        r'(?P<days>-?\d+)d|'
+        r'(?P<weeks>-?\d+)w$',
+        delta,
+        re.IGNORECASE,
+    )
     if not parts:
         return None
     parts = parts.groupdict()
@@ -130,17 +138,18 @@ def is_hex(s: str, strict: bool = True) -> bool:
     return True
 
 
-def http_req(hostname: str = '',
-             port: str = '443',
-             method: Optional[str] = None,
-             headers: MutableMapping[str, str] = {},
-             data: Optional[str] = None,
-             endpoint: str = '/',
-             scheme: str = 'https',
-             ssl_verify: bool = False,
-             timeout: Optional[int] = None,
-             ssl_ctx: Optional[Any] = None) -> Tuple[Any, Any, Any]:
-
+def http_req(
+    hostname: str = '',
+    port: str = '443',
+    method: Optional[str] = None,
+    headers: MutableMapping[str, str] = {},
+    data: Optional[str] = None,
+    endpoint: str = '/',
+    scheme: str = 'https',
+    ssl_verify: bool = False,
+    timeout: Optional[int] = None,
+    ssl_ctx: Optional[Any] = None,
+) -> Tuple[Any, Any, Any]:
     if not ssl_ctx:
         ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         if not ssl_verify:
@@ -182,3 +191,75 @@ def strtobool(value: str) -> bool:
     if value.lower() in _FALSE_VALS:
         return False
     raise ValueError(f'invalid truth value {value!r}')
+
+
+def size_to_bytes(v: Union[str, int]) -> int:
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        m = _SIZE_RE.match(v)
+        if not m:
+            raise ValueError(
+                f'invalid size "{v}" (examples: 10737418240, 10G, 512M)'
+            )
+        num = int(m.group(1))
+        unit = m.group(2) or ''
+        unit = unit.upper()
+        mult = {
+            '': 1,
+            'K': 1024,
+            'M': 1024**2,
+            'G': 1024**3,
+            'T': 1024**4,
+            'P': 1024**5,
+        }[unit]
+        return num * mult
+    raise ValueError(f'invalid size type {type(v)} (expected int or str)')
+
+
+def bytes_to_human(num: float, mode: str = 'decimal') -> str:
+    """Convert a bytes value into it's human-readable form.
+
+    :param num: number, in bytes, to convert
+    :param mode: Either decimal (default) or binary to determine divisor
+    :returns: string representing the bytes value in a more readable format
+    """
+    unit_list = ['', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB']
+    divisor = 1000.0
+    yotta = 'YB'
+
+    if mode == 'binary':
+        unit_list = ['', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB']
+        divisor = 1024.0
+        yotta = 'YiB'
+
+    for unit in unit_list:
+        if abs(num) < divisor:
+            return '%3.1f%s' % (num, unit)
+        num /= divisor
+    return '%.1f%s' % (num, yotta)
+
+
+def with_units_to_int(v: str) -> int:
+    if not v:
+        return 0
+    if v.endswith('iB'):
+        v = v[:-2]
+        bytes_mult = 1024
+    elif v.endswith('B'):
+        v = v[:-1]
+        bytes_mult = 1000
+    mult = 1
+    if v[-1].upper() == 'K':
+        mult = bytes_mult
+        v = v[:-1]
+    elif v[-1].upper() == 'M':
+        mult = bytes_mult * bytes_mult
+        v = v[:-1]
+    elif v[-1].upper() == 'G':
+        mult = bytes_mult * bytes_mult * bytes_mult
+        v = v[:-1]
+    elif v[-1].upper() == 'T':
+        mult = bytes_mult * bytes_mult * bytes_mult * bytes_mult
+        v = v[:-1]
+    return int(float(v) * mult)

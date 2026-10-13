@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -754,6 +754,11 @@ class PgScrubber : public ScrubPgIF,
    * the derivative-specific scrub-finishing touches:
    */
   virtual void _scrub_finish() {}
+
+  /**
+   *  update the PG's state and stats
+   */
+  void emit_scrub_result();
 
   // common code used by build_primary_map_chunk() and
   // build_replica_map_chunk():

@@ -14,11 +14,14 @@ from ..context_getters import (
 )
 from ..daemon_form import register as register_daemon_form
 from ..daemon_identity import DaemonIdentity
-from ..constants import DEFAULT_IMAGE
+from ..constants import (
+    DEFAULT_IMAGE,
+    DATA_DIR_MODE,
+)
 from ..context import CephadmContext
 from ..deployment_utils import to_deployment_container
 from ..exceptions import Error
-from ..call_wrappers import call, CallVerbosity
+from ..call_wrappers import call, call_throws, CallVerbosity
 from ..file_utils import (
     make_run_dir,
     pathify,
@@ -53,7 +56,10 @@ class Ceph(ContainerDaemonForm):
     @classmethod
     def for_daemon_type(cls, daemon_type: str) -> bool:
         # TODO: figure out a way to un-special-case osd
-        return daemon_type in cls._daemons and daemon_type != 'osd'
+        return daemon_type in cls._daemons and daemon_type not in (
+            'osd',
+            'crash',
+        )
 
     def __init__(self, ctx: CephadmContext, ident: DaemonIdentity) -> None:
         self.ctx = ctx
@@ -201,10 +207,78 @@ class Ceph(ContainerDaemonForm):
         )
         mounts.update(cm)
 
+        if self.identity.daemon_type == 'rgw':
+            config_json = fetch_configs(ctx) or {}
+            d3n_cache = config_json.get('d3n_cache')
+
+            if d3n_cache:
+                if not isinstance(d3n_cache, dict):
+                    raise Error(
+                        f'Invalid d3n_cache config: expected dict got {type(d3n_cache).__name__}'
+                    )
+
+                cache_path = d3n_cache.get('cache_path')
+                if cache_path and isinstance(cache_path, str):
+                    mounts[cache_path] = f'{cache_path}:z'
+
+    def setup_qat_args(self, ctx: CephadmContext, args: List[str]) -> None:
+        try:
+            out, _, _ = call_throws(ctx, ['ls', '-1', '/dev/vfio/devices'])
+            devices = [d for d in out.split('\n') if d]
+
+            args.extend(
+                [
+                    '--cap-add=SYS_ADMIN',
+                    '--cap-add=SYS_PTRACE',
+                    '--cap-add=IPC_LOCK',
+                    '--security-opt',
+                    'seccomp=unconfined',
+                    '--ulimit',
+                    'memlock=209715200:209715200',
+                    '--device=/dev/qat_adf_ctl:/dev/qat_adf_ctl',
+                    '--device=/dev/vfio/vfio:/dev/vfio/vfio',
+                    '-v',
+                    '/dev:/dev',
+                    '--volume=/etc/sysconfig/qat:/etc/sysconfig/qat:ro',
+                ]
+            )
+
+            for dev in devices:
+                args.append(
+                    f'--device=/dev/vfio/devices/{dev}:/dev/vfio/devices/{dev}'
+                )
+
+            os.makedirs('/etc/sysconfig', exist_ok=True)
+            with open('/etc/sysconfig/qat', 'w') as f:
+                f.write('ServicesEnabled=dc\nPOLICY=8\nQAT_USER=ceph\n')
+
+            logger.info(
+                f'[QAT] Successfully injected container args for {self.identity.daemon_name}'
+            )
+        except RuntimeError:
+            logger.exception('[QAT] Could not list /dev/vfio/devices')
+            devices = []
+
     def customize_container_args(
         self, ctx: CephadmContext, args: List[str]
     ) -> None:
         args.append(ctx.container_engine.unlimited_pids_option)
+        config_json = fetch_configs(ctx)
+        qat_raw: Any = config_json.get('qat', {})
+        if qat_raw is None:
+            qat_config: Dict[str, Any] = {}
+        elif isinstance(qat_raw, dict):
+            qat_config = qat_raw
+        else:
+            raise Error(
+                f'Invalid qat config: expected dict got {type(qat_raw.__name__)}'
+            )
+
+        if (
+            self.identity.daemon_type == 'rgw'
+            and qat_config.get('compression') == 'hw'
+        ):
+            self.setup_qat_args(ctx, args)
 
     def customize_process_args(
         self, ctx: CephadmContext, args: List[str]
@@ -285,6 +359,15 @@ class OSD(Ceph):
     def osd_fsid(self) -> Optional[str]:
         return self._osd_fsid
 
+    def default_entrypoint(self) -> str:
+        config_json = fetch_configs(self.ctx)
+        if (
+            config_json is not None
+            and config_json.get('osd_type') == 'crimson'
+        ):
+            return '/usr/bin/ceph-osd-crimson'
+        return '/usr/bin/ceph-osd'
+
     def rotate_osd_lv_keyring(
         self, ctx: CephadmContext, keyring_path: str
     ) -> None:
@@ -339,7 +422,8 @@ class OSD(Ceph):
         osd_lv_data = osd_bluestore_data.get(self.identity.daemon_id, [])
         if not osd_lv_data:
             logger.info(
-                'No lv data found for OSD.%s, checking for raw OSD', self.identity.daemon_id
+                'No lv data found for OSD.%s, checking for raw OSD',
+                self.identity.daemon_id,
             )
             c_v_container = CephContainer(
                 ctx,
@@ -363,8 +447,13 @@ class OSD(Ceph):
             )
             raw_list_data = json.loads(out)
             for osd_data in raw_list_data.values():
-                if str(osd_data.get('osd_id', -1)) == str(self.identity.daemon_id):
-                    logger.info('Found data for osd.%s in raw list', str(self.identity.daemon_id))
+                if str(osd_data.get('osd_id', -1)) == str(
+                    self.identity.daemon_id
+                ):
+                    logger.info(
+                        'Found data for osd.%s in raw list',
+                        str(self.identity.daemon_id),
+                    )
                     # misnomer since this isn't an LV, but it is the path
                     # we need to pass to the bluestore tool
                     lv_path = osd_data.get('device', None)
@@ -476,10 +565,14 @@ echo "$DM_CRYPT_KEY" | cryptsetup luksOpen $LV_PATH $DEV_NAME
                         f'Out:{out}\n'
                         f'Err:{err}'
                     )
-                logger.info(f'Got issue rotating osd keyring using ceph-bluestore-tool:\n{out}\n{err}\nRetrying in {i} seconds')
+                logger.info(
+                    f'Got issue rotating osd keyring using ceph-bluestore-tool:\n{out}\n{err}\nRetrying in {i} seconds'
+                )
                 time.sleep(i)
             else:
-                logger.info(f'Successfully rotated osd.{self.identity.daemon_id} keyring')
+                logger.info(
+                    f'Successfully rotated osd.{self.identity.daemon_id} keyring'
+                )
                 break
 
         if encrypted:
@@ -508,13 +601,45 @@ echo "$DM_CRYPT_KEY" | cryptsetup luksOpen $LV_PATH $DEV_NAME
                     f'Err:{err}'
                 )
 
-        call(ctx, ['systemctl', 'reset-failed', self.identity.unit_name],
-             verbosity=CallVerbosity.QUIET_UNLESS_ERROR)
+        call(
+            ctx,
+            ['systemctl', 'reset-failed', self.identity.unit_name],
+            verbosity=CallVerbosity.QUIET_UNLESS_ERROR,
+        )
         call(
             ctx,
             ['systemctl', 'start', self.identity.unit_name],
             verbosity=CallVerbosity.QUIET_UNLESS_ERROR,
         )
+
+
+@register_daemon_form
+class Crash(Ceph):
+    @classmethod
+    def for_daemon_type(cls, daemon_type: str) -> bool:
+        return daemon_type == 'crash'
+
+    def __init__(
+        self,
+        ctx: CephadmContext,
+        ident: DaemonIdentity,
+    ) -> None:
+        super().__init__(ctx, ident)
+
+    @classmethod
+    def create(cls, ctx: CephadmContext, ident: DaemonIdentity) -> 'Ceph':
+        (uid, gid) = extract_uid_gid(ctx)
+        data_dir_base = f'{ctx.data_dir}/{ident.fsid}'
+        makedirs(
+            os.path.join(data_dir_base, 'crash'), uid, gid, DATA_DIR_MODE
+        )
+        makedirs(
+            os.path.join(data_dir_base, 'crash', 'posted'),
+            uid,
+            gid,
+            DATA_DIR_MODE,
+        )
+        return cls(ctx, ident)
 
 
 @register_daemon_form
@@ -654,6 +779,77 @@ class CephExporter(ContainerDaemonForm):
         populate_files(ssl_dir, cert_files, uid, gid)
 
 
+def update_osd_bluestore_affinity(
+    ctx: CephadmContext, daemon_name: str, service_name: str
+) -> None:
+    """Update osdspec_affinity via ceph-bluestore-tool set-label-key.
+
+    ceph-bluestore-tool only exists inside the Ceph container image, so we
+    spin up an ephemeral privileged container to run it. The block device is
+    held exclusively by the running OSD (EBUSY), so the container is stopped
+    first and restarted afterwards. The host root is mounted at /rootfs inside
+    the container, so the block symlink is prefixed accordingly.
+    """
+    osd_data_dir = os.path.join(ctx.data_dir, ctx.fsid, daemon_name)
+    block_path = os.path.join(osd_data_dir, 'block')
+
+    if not os.path.exists(block_path):
+        raise Error(
+            f'Block device not found at {block_path} for {daemon_name}'
+        )
+
+    # daemon_name is "osd.3" (type="osd", id="3")
+    daemon_type, daemon_id = daemon_name.split('.', 1)
+    ident = DaemonIdentity(ctx.fsid, daemon_type, daemon_id)
+
+    logger.info(
+        f'Stopping {ident.container_name} to update osdspec_affinity bdev label'
+    )
+    call(
+        ctx,
+        [ctx.container_engine.path, 'stop', ident.container_name],
+        verbosity=CallVerbosity.QUIET_UNLESS_ERROR,
+    )
+    try:
+        block_path_in_container = '/rootfs' + block_path
+        c = CephContainer(
+            ctx,
+            image=ctx.image,
+            privileged=True,
+            entrypoint='ceph-bluestore-tool',
+            args=[
+                '--dev',
+                block_path_in_container,
+                'set-label-key',
+                '-k',
+                'osdspec_affinity',
+                '-v',
+                service_name,
+            ],
+            volume_mounts=get_ceph_mounts_for_type(ctx, ctx.fsid, 'osd'),
+        )
+        _, err, ret = call(
+            ctx,
+            c.run_cmd(),
+            verbosity=CallVerbosity.QUIET_UNLESS_ERROR,
+        )
+        if ret:
+            raise Error(
+                f'ceph-bluestore-tool set-label-key failed for {daemon_name} '
+                f'(osdspec_affinity={service_name}): {err}'
+            )
+        logger.debug(
+            f'Updated osdspec_affinity={service_name} for {daemon_name}'
+        )
+    finally:
+        logger.info(f'Restarting {ident.unit_name}')
+        call(
+            ctx,
+            ['systemctl', 'start', ident.unit_name],
+            verbosity=CallVerbosity.QUIET_UNLESS_ERROR,
+        )
+
+
 def get_ceph_mounts_for_type(
     ctx: CephadmContext, fsid: str, daemon_type: str
 ) -> Dict[str, str]:
@@ -705,7 +901,7 @@ def get_ceph_mounts_for_type(
                 mounts[selinux_folder] = '/sys/fs/selinux:ro'
             else:
                 logger.error(
-                    f'Cluster direcotry {cluster_dir} does not exist.'
+                    f'Cluster directory {cluster_dir} does not exist.'
                 )
     if daemon_type == 'osd':
         mounts['/'] = '/rootfs'

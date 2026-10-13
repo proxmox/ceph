@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -44,6 +45,7 @@
 #include "global/global_context.h"
 #include "include/denc.h"
 #include "include/ceph_assert.h"
+#include "include/cephfs/json.h"
 #include "include/int_types.h"
 #include "include/random.h" // for ceph::util::generate_random_number()
 
@@ -207,7 +209,7 @@ ostream& operator<<(ostream& out, const CInode& in)
   }
 
   if (in.snaprealm)
-    out << " snaprealm=" << in.snaprealm;
+    out << " sr=" << in.snaprealm;
 
   if (in.state_test(CInode::STATE_AMBIGUOUSAUTH)) out << " AMBIGAUTH";
   if (in.state_test(CInode::STATE_NEEDSRECOVER)) out << " NEEDSRECOVER";
@@ -3201,8 +3203,38 @@ const CInode::mempool_old_inode& CInode::cow_old_inode(snapid_t follows, bool co
 
 void CInode::pre_cow_old_inode()
 {
-  snapid_t follows = mdcache->get_global_snaprealm()->get_newest_seq();
-  dout(20) << __func__ << " follows " << follows << " on " << *this << dendl;
+  snapid_t follows;
+  bool using_global_snaprealm_seq = true;
+  SnapRealm *realm = find_snaprealm();
+  //bool use_global_snaprealm_seq = mdcache->use_global_snaprealm_seq;
+
+  if (mdcache->get_use_global_snaprealm_seq()) {
+    follows = mdcache->get_global_snaprealm()->get_newest_seq();
+  } else if (realm->get_subvolume_ino() || realm->get_newest_seq() <= 1 ) {
+    /* Config is disabled :
+     1. If it's a subvolume realm, obviously use realm's seq number.
+     2. If there are no snaps on that directory, use realm's seq number.
+         a. In a pure subvolume use case, updates outside the subvolume directory
+            from group directory (/volumes/<group>/<subvol> to root would use realm's
+            seq number to avoid unnecessary cow of old inodes.
+         b. In a non subvolume use case, use realm's seq number only if there are
+            no snaps. If there are snaps, always use global snaprealm's seq as there
+            could be hardlinks/renames.
+    */
+    follows = realm->get_newest_seq();
+    using_global_snaprealm_seq = false;
+  } else {
+    /* Config is disabled:
+     * 1. In a pure subvolume use case, if there is atleast one snap in the realm (between
+     *    root and subvolume snap path), use global snaprealm's seq number.
+     * 2. In a non subvolume use case, if there is atleast one snap in the realm,
+     *    use global snaprealm's seq number.
+     */
+    follows = mdcache->get_global_snaprealm()->get_newest_seq();
+  }
+
+  dout(20) << __func__ << " using_global_snaprealm_seq:" << (using_global_snaprealm_seq ? "yes ":"no ")
+           << " follows " << follows << " on " << *this << " snaprealm=" << *realm << dendl;
   if (first <= follows)
     cow_old_inode(follows, true);
 }
@@ -4215,7 +4247,7 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
    * note: encoding matches MClientReply::InodeStat
    */
   if (session->info.has_feature(CEPHFS_FEATURE_REPLY_ENCODING)) {
-    ENCODE_START(8, 1, bl);
+    ENCODE_START(9, 1, bl);
     encode(std::tuple{
       oi->ino,
       snapid,
@@ -4268,6 +4300,7 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
     encode(file_i->fscrypt_auth, bl);
     encode(file_i->fscrypt_file, bl);
     encode_nohead(optmdbl, bl);
+    encode(get_subvolume_id(), bl);
     // encode inodestat
     ENCODE_FINISH(bl);
   }
@@ -4782,20 +4815,26 @@ void InodeStoreBase::old_indoes_cb(InodeStoreBase::mempool_old_inode_map& c, JSO
   c[s] = i;
 }
 
-void InodeStore::generate_test_instances(std::list<InodeStore*> &ls)
+std::list<InodeStore> InodeStore::generate_test_instances()
 {
-  InodeStore *populated = new InodeStore;
-  populated->get_inode()->ino = 0xdeadbeef;
-  populated->symlink = "rhubarb";
-  ls.push_back(populated);
+  std::list<InodeStore> ls;
+  InodeStore populated;
+  populated.get_inode()->ino = 0xdeadbeef;
+  populated.get_inode()->mode = S_IFLNK | 0777;
+  populated.symlink = "rhubarb";
+  ls.push_back(std::move(populated));
+  return ls;
 }
 
-void InodeStoreBare::generate_test_instances(std::list<InodeStoreBare*> &ls)
+std::list<InodeStoreBare> InodeStoreBare::generate_test_instances()
 {
-  InodeStoreBare *populated = new InodeStoreBare;
-  populated->get_inode()->ino = 0xdeadbeef;
-  populated->symlink = "rhubarb";
-  ls.push_back(populated);
+  std::list<InodeStoreBare> ls;
+  InodeStoreBare populated;
+  populated.get_inode()->ino = 0xdeadbeef;
+  populated.get_inode()->mode = S_IFLNK | 0777;
+  populated.symlink = "rhubarb";
+  ls.push_back(std::move(populated));
+  return ls;
 }
 
 void CInode::validate_disk_state(CInode::validated_data *results,
@@ -5102,6 +5141,7 @@ next:
       results->raw_stats.memory_value.rstat = in->get_inode()->rstat;
       frag_info_t& dir_info = results->raw_stats.ondisk_value.dirstat;
       nest_info_t& nest_info = results->raw_stats.ondisk_value.rstat;
+      bool has_local_dirty_dirfrag = false;
 
       if (rval != 0) {
         results->raw_stats.error_str << "Failed to read dirfrags off disk";
@@ -5119,6 +5159,8 @@ next:
 	  ceph_assert(dir->get_version() > 0);
 	  nest_info.add(dir->get_fnode()->accounted_rstat);
 	  dir_info.add(dir->get_fnode()->accounted_fragstat);
+          if (dir->is_auth() && dir->is_dirty())
+              has_local_dirty_dirfrag = true;
         }
       }
       nest_info.rsubdirs++; // it gets one to account for self
@@ -5144,7 +5186,17 @@ next:
                       "please rerun scrub when system is stable; "
                       "assuming passed for now;" << dendl;
           results->raw_stats.passed = true;
-        }
+        } else if (has_local_dirty_dirfrag || in->has_dirty_remote_dirfrag_scrubbed()) {
+          MDCache *mdcache = in->mdcache; // for dout()
+          auto ino = [this]() { return in->ino(); }; // for dout()
+          dout(20) << (has_local_dirty_dirfrag ? "local": "remote") << " dirfrag : "
+	              "raw stats most likely wont match since it's a directory "
+	              "inode and a dirfrag is dirty; please rerun scrub when "
+		      "system is stable; assuming passed for now;" << dendl;
+          results->raw_stats.passed = true;
+	  if (in->has_dirty_remote_dirfrag_scrubbed())
+	    in->clear_dirty_remote_dirfrag_scrubbed();
+	}
 	goto next;
       }
 
@@ -5474,6 +5526,11 @@ int64_t CInode::get_backtrace_pool() const
     ceph_assert(get_inode()->layout.pool_id != -1);
     return get_inode()->layout.pool_id;
   }
+}
+
+inodeno_t CInode::get_subvolume_id() const {
+  auto snapr = find_snaprealm();
+  return snapr ? snapr->get_subvolume_ino() : inodeno_t(0);
 }
 
 void CInode::queue_export_pin(mds_rank_t export_pin)

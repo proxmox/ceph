@@ -21,10 +21,15 @@ options:
     stripe for erasure coded pools. Every object of size S
     will be stored as N stripes, with each data chunk
     receiving ``stripe unit`` bytes. Each stripe of ``N *
-    stripe unit`` bytes will be encoded/decoded
-    individually. This option can is overridden by the
-    ``stripe_unit`` setting in an erasure code profile.
-  default: 4_K
+    stripe unit`` bytes will be encoded/decoded individually. 
+    A value of 0 causes the code to select either a 4KB or 16KB
+    stripe_unit depending on whether ``allow_ec_optimizations`` 
+    is enabled.  If enabled, ``stripe unit`` is set to 16KB, otherwise it 
+    is set to 4KB. This option can be overridden by the ``stripe_unit``
+    setting in an erasure code profile.
+  long_desc: A value of 0 causes the code to select either a 4KB or 16KB stripe_unit 
+    depending on whether allow_ec_optimizations is enabled.
+  default: 0
   services:
   - mon
 - name: osd_pool_default_crimson
@@ -636,6 +641,14 @@ options:
   default: true
   services:
   - mon
+- name: mon_warn_on_colocated_monitors
+  type: bool
+  level: advanced
+  desc: Issue MON_COLOCATED health warning if two or
+    more Monitors have the same IP address
+  default: false
+  services:
+  - mon
 - name: mon_stretch_cluster_recovery_ratio
   type: float
   level: advanced
@@ -1188,6 +1201,74 @@ options:
   flags:
   - no_mon_update
   with_legacy: true
+- name: mon_backup_path
+  type: str
+  level: advanced
+  desc: Path to Monitor database backups
+  fmt_desc: The Monitor's backup location.
+  default: /var/backups/ceph/mon/$cluster-$id
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_min_avail
+  type: int
+  level: advanced
+  desc: Only capture backups if at least this percentage of the target filesystem is free
+  default: 10
+  min: 0
+  max: 100
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_keep_last
+  type: uint
+  level: advanced
+  desc: Keep the last N backups
+  fmt_desc: Keep the last N backups of the Monitor database.
+  default: 6
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_keep_hourly
+  type: uint
+  level: advanced
+  desc: Number of hourly backups
+  default: 5
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_keep_daily
+  type: uint
+  level: advanced
+  desc: Number of daily backups
+  fmt_desc: Keep one backup per day, for the specified number of days.
+  default: 7
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_interval
+  type: secs
+  level: advanced
+  desc: Automatic backups every N seconds (0 disables)
+  default: 0
+  services:
+  - mon
+  flags:
+  - runtime
+- name: mon_backup_cleanup_interval
+  type: secs
+  level: advanced
+  desc: Trigger backup cleanup every N seconds (0 disables)
+  default: 0
+  services:
+  - mon
+  flags:
+  - runtime
 - name: mon_rocksdb_options
   type: str
   level: advanced

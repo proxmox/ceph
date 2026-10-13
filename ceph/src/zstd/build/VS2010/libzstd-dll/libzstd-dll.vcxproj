@@ -44,9 +44,6 @@
     <ClCompile Include="..\..\..\lib\decompress\zstd_decompress.c" />
     <ClCompile Include="..\..\..\lib\decompress\zstd_decompress_block.c" />
     <ClCompile Include="..\..\..\lib\decompress\zstd_ddict.c" />
-    <ClCompile Include="..\..\..\lib\deprecated\zbuff_common.c" />
-    <ClCompile Include="..\..\..\lib\deprecated\zbuff_compress.c" />
-    <ClCompile Include="..\..\..\lib\deprecated\zbuff_decompress.c" />
     <ClCompile Include="..\..\..\lib\dictBuilder\cover.c" />
     <ClCompile Include="..\..\..\lib\dictBuilder\fastcover.c" />
     <ClCompile Include="..\..\..\lib\dictBuilder\divsufsort.c" />
@@ -64,12 +61,11 @@
     <ClInclude Include="..\..\..\lib\common\threading.h" />
     <ClInclude Include="..\..\..\lib\common\bitstream.h" />
     <ClInclude Include="..\..\..\lib\common\error_private.h" />
-    <ClInclude Include="..\..\..\lib\common\zstd_errors.h" />
+    <ClInclude Include="..\..\..\lib\zstd_errors.h" />
     <ClInclude Include="..\..\..\lib\common\mem.h" />
     <ClInclude Include="..\..\..\lib\common\fse.h" />
     <ClInclude Include="..\..\..\lib\common\huf.h" />
     <ClInclude Include="..\..\..\lib\common\xxhash.h" />
-    <ClInclude Include="..\..\..\lib\deprecated\zbuff.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_legacy.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_v01.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_v02.h" />
@@ -173,7 +169,6 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>ZSTD_DLL_EXPORT=1;ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=5;WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>

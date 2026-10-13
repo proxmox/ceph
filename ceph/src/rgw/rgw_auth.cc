@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include <array>
 #include <string>
@@ -9,7 +9,7 @@
 #include "rgw_common.h"
 #include "rgw_auth.h"
 #include "rgw_quota.h"
-#include "rgw_user.h"
+#include "driver/rados/rgw_user.h"
 #include "rgw_http_client.h"
 #include "rgw_iam_managed_policy.h"
 #include "rgw_keystone.h"
@@ -71,6 +71,22 @@ static bool match_owner(const rgw_owner& owner, const rgw_user& uid,
       [&uid] (const rgw_user& u) { return u == uid; },
       [&account] (const rgw_account_id& a) {
         return account && a == account->id;
+      }), owner);
+}
+
+static bool match_owner(const rgw_owner& owner, const rgw_user& uid)
+{
+  return std::visit(fu2::overload(
+      [&uid] (const rgw_user& u) { return u == uid; },
+      [] (const rgw_account_id&) { return false; }), owner);
+}
+
+static bool match_owner(const rgw_owner& owner, const RGWAccountInfo& account)
+{
+  return std::visit(fu2::overload(
+      [] (const rgw_user&) { return false; },
+      [&account] (const rgw_account_id& a) {
+        return a == account.id;
       }), owner);
 }
 
@@ -280,6 +296,10 @@ static auto transform_old_authinfo(const RGWUserInfo& user,
       return type;
     }
 
+    std::optional<rgw::ARN> get_caller_identity() const override {
+      return std::nullopt;
+    }
+
     string get_acct_name() const override {
       return {};
     }
@@ -345,7 +365,6 @@ auto transform_old_authinfo(const DoutPrefixProvider* dpp,
   }
   return transform_old_authinfo(info, std::move(account), std::move(policies), driver);
 }
-
 } /* namespace auth */
 } /* namespace rgw */
 
@@ -550,18 +569,18 @@ rgw::auth::Strategy::apply(const DoutPrefixProvider *dpp, const rgw::auth::Strat
 
       return 0;
     } catch (const int err) {
-      ldpp_dout(dpp, 5) << "applier throwed err=" << err << dendl;
+      ldpp_dout(dpp, 5) << "applier threw err=" << err << dendl;
       return err;
     } catch (const std::exception& e) {
-      ldpp_dout(dpp, 5) << "applier throwed unexpected err: " << e.what()
+      ldpp_dout(dpp, 5) << "applier threw unexpected err: " << e.what()
                         << dendl;
       return -EPERM;
     }
   } catch (const int err) {
-    ldpp_dout(dpp, 5) << "auth engine throwed err=" << err << dendl;
+    ldpp_dout(dpp, 5) << "auth engine threw err=" << err << dendl;
     return err;
   } catch (const std::exception& e) {
-    ldpp_dout(dpp, 5) << "auth engine throwed unexpected err: " << e.what()
+    ldpp_dout(dpp, 5) << "auth engine threw unexpected err: " << e.what()
                       << dendl;
   }
 
@@ -591,7 +610,11 @@ ACLOwner rgw::auth::WebIdentityApplier::get_aclowner() const
 
 bool rgw::auth::WebIdentityApplier::is_owner_of(const rgw_owner& o) const
 {
-  return match_owner(o, rgw_user{role_tenant, sub, "oidc"}, account);
+  if (account) {
+    return match_owner(o, *account);
+  } else {
+    return match_owner(o, rgw_user{role_tenant, sub, "oidc"});
+  }
 }
 
 void rgw::auth::WebIdentityApplier::to_str(std::ostream& out) const
@@ -783,6 +806,7 @@ bool rgw::auth::WebIdentityApplier::is_identity(const Principal& p) const
 
 const std::string rgw::auth::RemoteApplier::AuthInfo::NO_SUBUSER;
 const std::string rgw::auth::RemoteApplier::AuthInfo::NO_ACCESS_KEY;
+const std::string rgw::auth::RemoteApplier::AuthInfo::NO_KEYSTONE_USER;
 
 /* rgw::auth::RemoteAuthApplier */
 ACLOwner rgw::auth::RemoteApplier::get_aclowner() const
@@ -955,6 +979,11 @@ void rgw::auth::RemoteApplier::write_ops_log_entry(rgw_log_entry& entry) const
   if (account) {
     entry.account_id = account->id;
   }
+  entry.user = info.keystone_user;
+
+  if (info.keystone_scope.has_value()) {
+    entry.keystone_scope = info.keystone_scope;
+  }
 }
 
 /* TODO(rzarzynski): we need to handle display_name changes. */
@@ -1020,15 +1049,36 @@ auto rgw::auth::RemoteApplier::load_acct_info(const DoutPrefixProvider* dpp) con
   ldpp_dout(dpp, 0) << "NOTICE: couldn't map swift user " << acct_user << dendl;
   create_account(dpp, acct_user, implicit_tenant, user->get_info());
 
-  /* Succeeded if we are here (create_account() hasn't throwed). */
+  /* Succeeded if we are here (create_account() hasn't thrown). */
   return user;
 }
 
 void rgw::auth::RemoteApplier::modify_request_state(const DoutPrefixProvider* dpp, req_state* s) const
 {
+  string key = "aws:userid";
+  string value = info.acct_user.id;
+  s->env.emplace(key, value);
+
   // copy our identity policies into req_state
   s->iam_identity_policies.insert(s->iam_identity_policies.end(),
                                   policies.begin(), policies.end());
+
+  for (auto role : this->info.keystone_roles) {
+    // Keystone roles are case-insensitive. Normalize the roles to
+    // lowercase before placing them into the environment.
+    std::transform(role.begin(), role.end(), role.begin(),
+      [](unsigned char c){ return std::tolower(c); });
+    s->env.emplace("keystone:role", std::move(role));
+  }
+
+  if (!info.keystone_user_id.empty()) {
+    s->env.emplace("keystone:userid", info.keystone_user_id);
+  }
+}
+
+std::optional<rgw::ARN> rgw::auth::RemoteApplier::get_caller_identity() const 
+{
+  return rgw::ARN(owner_acct_user.id, "user", owner_acct_user.tenant, true);
 }
 
 /* rgw::auth::LocalApplier */
@@ -1138,6 +1188,10 @@ auto rgw::auth::LocalApplier::load_acct_info(const DoutPrefixProvider* dpp) cons
 
 void rgw::auth::LocalApplier::modify_request_state(const DoutPrefixProvider* dpp, req_state* s) const
 {
+  string key = "aws:userid";
+  string value = user_info.type == TYPE_ROOT ? user_info.account_id : user_info.user_id.id;
+  s->env.emplace(key, value);
+
   // copy our identity policies into req_state
   s->iam_identity_policies.insert(s->iam_identity_policies.end(),
                                   policies.begin(), policies.end());
@@ -1183,7 +1237,11 @@ ACLOwner rgw::auth::RoleApplier::get_aclowner() const
 
 bool rgw::auth::RoleApplier::is_owner_of(const rgw_owner& o) const
 {
-  return match_owner(o, token_attrs.user_id, role.account);
+  if (role.account) {
+    return match_owner(o, *role.account);
+  } else {
+    return match_owner(o, token_attrs.user_id);
+  }
 }
 
 void rgw::auth::RoleApplier::to_str(std::ostream& out) const {
@@ -1325,3 +1383,168 @@ rgw::auth::AnonymousEngine::authenticate(const DoutPrefixProvider* dpp, const re
     return result_t::grant(std::move(apl));
   }
 }
+
+namespace rgw::auth {
+ACLOwner
+PrincipalIdentity::get_aclowner() const
+{
+  ceph_abort();
+  return {};
+}
+
+uint32_t
+PrincipalIdentity::get_perms_from_aclspec(
+    const DoutPrefixProvider* dpp,
+    const aclspec_t& aclspec) const
+{
+  ceph_abort();
+  return 0;
+}
+
+bool
+PrincipalIdentity::is_admin() const
+{
+  ceph_abort();
+  return false;
+}
+
+bool
+PrincipalIdentity::is_owner_of(const rgw_owner& owner) const
+{
+  ceph_abort();
+  return false;
+}
+
+bool
+PrincipalIdentity::is_root() const
+{
+  ceph_abort();
+  return false;
+}
+
+uint32_t
+PrincipalIdentity::get_perm_mask() const
+{
+  ceph_abort();
+  return 0;
+}
+
+std::string
+PrincipalIdentity::get_acct_name() const
+{
+  ceph_abort();
+  return {};
+}
+
+std::string
+PrincipalIdentity::get_subuser() const
+{
+  ceph_abort();
+  return {};
+}
+
+const std::string&
+PrincipalIdentity::get_tenant() const
+{
+  ceph_abort();
+  static std::string empty;
+  return empty;
+}
+
+const std::optional<RGWAccountInfo>&
+PrincipalIdentity::get_account() const
+{
+  ceph_abort();
+  static std::optional<RGWAccountInfo> empty;
+  return empty;
+}
+
+void
+PrincipalIdentity::to_str(std::ostream& out) const
+{
+  out << id;
+}
+
+bool
+PrincipalIdentity::is_identity(const Principal& p) const
+{
+  // Wildcard on either side always matches.
+  if (p.is_wildcard() || id.is_wildcard()) {
+    return true;
+  } else if (p.is_account()) {
+    // Compare account to account, since we're matching principal to principal
+    return (id.get_account() == p.get_account());
+  } else if (p.is_user() || p.is_role()) {
+    // Parse out id/path/subuser to pass to match_principal
+    std::string_view name;
+    std::string path; // We need actual storage to prepend a `/`.
+    std::string_view subuser;
+    std::string_view res{id.get_id()};
+    if (id.is_user() || id.is_role()) {
+      auto pos = res.rfind('/');
+      if (pos != res.npos) {
+        path.push_back('/');
+        path.append(res, 0, pos + 1);
+        res = res.substr(pos + 1);
+      }
+    }
+    if (p.is_user()) {
+      if (!id.is_user()) {
+        return false;
+      }
+      auto pos = res.find(':');
+      if (pos != res.npos) {
+        subuser = res.substr(pos + 1, res.npos);
+        res = res.substr(0, pos);
+      }
+      name = res;
+    } else if (p.is_role()) {
+      if (!(id.is_role() || id.is_assumed_role())) {
+        return false;
+      }
+      if (id.is_assumed_role()) {
+        auto pos = res.rfind('/');
+        name = res.substr(0, pos);
+      } else {
+        name = res;
+      }
+    }
+    return ((id.get_account() == p.get_account()) &&
+            match_principal(path, name, subuser, p.get_id()));
+  } else if (p.is_assumed_role()) {
+    // Match role/session to role/session
+    auto role_session = id.get_role_session();
+    if (auto pos = role_session.rfind('/');
+        (pos != role_session.npos) && (pos != 0)) {
+      if (pos = role_session.rfind('/', pos - 1); pos != role_session.npos) {
+        role_session = role_session.substr(pos + 1);
+      }
+    }
+    return (id.is_assumed_role() && (id.get_account() == p.get_account()) &&
+            (role_session == p.get_role_session()));
+  } else if (p.is_oidc_provider()) {
+    return id.is_oidc_provider() && id.get_idp_url() == p.get_idp_url();
+  } else if (p.is_service()) {
+    return id.is_service() && id.get_service() == p.get_service();
+  }
+  return false;
+}
+
+uint32_t
+PrincipalIdentity::get_identity_type() const
+{
+  if (id.is_role() || id.is_assumed_role()) {
+    return TYPE_ROLE;
+  } else if (id.is_oidc_provider()) {
+    return TYPE_WEB;
+  } else {
+    return TYPE_RGW;
+  }
+}
+
+std::optional<rgw::ARN>
+PrincipalIdentity::get_caller_identity() const
+{
+  return std::nullopt;
+}
+} // namespace rgw::auth

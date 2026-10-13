@@ -1,5 +1,5 @@
-v2.30 Intel Intelligent Storage Acceleration Library Release Notes
-==================================================================
+v2.32 Intel Intelligent Storage Acceleration Library Release Notes
+====================================================================
 
 RELEASE NOTE CONTENTS
 1. KNOWN ISSUES
@@ -9,12 +9,39 @@ RELEASE NOTE CONTENTS
 1. KNOWN ISSUES
 ----------------
 
-* Perf tests do not run in Windows environment.
-
-* 32-bit lib is not supported in Windows.
-
 2. FIXED ISSUES
 ---------------
+v2.32
+
+* Fixed RAID performance application for MacOS.
+* Fixed DEFLATE header construction for constant 0x00 and 0xFF blocks in Big-Endian systems.
+* ec_init_tables now always return a `32-byte * k * rows` array, regardless the underlying implementation used
+  (in Release v2.31, it could return a `8-byte * k * rows` array if GFNI ISA was available in the system).
+
+v2.31.1
+
+* Fixed return type for PowerPC _gf_vect_mul_base function.
+* Fixed isal_deflate_icf_finish_lvl1 dispatcher for aarch64.
+* Fixed CRC compilation on aarch64.
+* Fixed MacOS-14 compilation.
+* Fixed MinGW build.
+* Fixed Clang compilation on igzip library on aarch64.
+* Fixed spelling mistakes and typos.
+* Fixed Windows build on erasure code performance applications.
+* Fixed FreeBSD build warnings.
+* Fixed compilation with YASM.
+
+v2.31
+
+* Fixed various compilation issues/warnings for different platforms.
+* Fixed documentation on xor/pq gen/check functions, with minimum
+  number of vectors.
+* Fixed potential out-of-bounds read on Adler32 Neon implementation.
+* Fixed potential out-of-bounds read on gf_vect_mul Neon implementation.
+* Fixed x86 load/store instructions in erasure coding functions (aligned moves
+  that should be unaligned).
+* Fixed memory leaks in unit tests.
+
 v2.30
 
 * Intel CET support.
@@ -114,6 +141,88 @@ v2.10
 
 3. CHANGE LOG & FEATURES ADDED
 ------------------------------
+
+v2.32
+
+* General:
+  - Added CMake build system (only verified for x86_64).
+  - Minimum NASM version required for x86 architecture is 2.14.01 now.
+  - 32-bit x86 support has been removed.
+
+* RISCV support.
+  - Initial riscv64 support with runtime and build-time CPU feature detection.
+
+* Igzip compression improvements:
+  - Added new RVV adler32 implementations.
+  - Added optimized RVV adler32 for VLEN=128.
+
+* Igzip:
+  - Added experimental ISA-L shim library to provide drop-in compatibility with zlib.
+
+* RAID improvements:
+  - Added new x86 AVX2+GFNI and AVX512+GFNI pq_gen implementations.
+  - Added new RVV xor_gen, pq_gen implementations.
+
+* Erasure coding improvements:
+  - Added new RVV ec_encode_data,ec_encode_data_update,gf_vect_mad, gf_vect_dot_prod, gf_vect_mul implementations.
+  - Added new AVX2+GFNI implementation for gf_vect_mul.
+  - Added new gf_vect_mul_init_base, to be used with any erasure coding base functions, such as gf_vect_mul_base.
+  - Enabled GFNI implementations for gf_vect_mad.
+  - gf_vect_mul_init is now a multi-binary function, backed by different implementations depending on the ISA available.
+
+* Zero-memory detection improvements:
+  - Added new RVV implementations.
+
+* CRC improvements:
+  - Added new AVX2+VCLMUL implementations for CRC64, CRC32 and CRC16 variants.
+  - CRC32 ISCSI AVX512+VCLMUL optimized for small buffers.
+  - CRC64 Rocksoft implementation on aarch64 optimized similar to other CRC64
+    implementations.
+  - Added new RVV CRC64/32/16 implementations.
+
+* Performance applications:
+  - Add consolidated CRC performance application.
+  - Add consolidated RAID performance application.
+
+* Test applications:
+  - Add fuzz test applications for CRC, RAID and Erasure Coding.
+
+v2.31
+
+* API changes:
+  - gf_vect_mul_base() function now returns an integer, matching the return type
+    of gf_vect_mul() function (not a breaking change).
+
+* Igzip compression improvements:
+  - Added compress/decompress with dictionary to perf test app.
+  - Zlib header can be now created on the fly when starting the compression.
+  - Added isal_zlib_hdr_init() function to initialize the zlib header to 0.
+
+* Zero-memory detection improvements:
+  - Optimized AVX implementation.
+  - Added new AVX2 and AVX512 implementations.
+
+* Erasure coding improvements:
+  - Added new AVX512 and AVX2 implementations using GFNI instructions.
+  - Added new SVE implementation.
+
+* CRC improvements:
+  - Added new CRC64 Rocksoft algorithm.
+  - CRC x86 implementations optimized using ternary logic instructions and
+    folding of bigger data on the last bytes.
+  - CRC16 T10dif aarch64 implementation improved.
+  - CRC aarch64 implementations optimized using XOR fusion feature.
+
+* Documentation:
+  - Added function overview documentation page.
+  - Added security file.
+
+* Performance apps:
+  - Changed performance tests to warm by default.
+
+* Example apps:
+  - Added CRC combine example `crc_combine_example` for multiple polynomials.
+
 v2.30
 
 * Igzip compression enhancements.
@@ -159,7 +268,7 @@ v2.25
 * Igzip performance improvements and features.
   - Performance improvements for uncompressable files. Random or uncompressable
     files can be up to 3x faster in level 1 or 2 compression.
-  - Additional small file performance improvments.
+  - Additional small file performance improvements.
   - New options in igzip cli: use name from header or not, test compressed file.
 
 * Multi-arch autoconf script.
@@ -281,7 +390,7 @@ v2.14
 
 v2.13
 
-* Erasure code improvments
+* Erasure code improvements
   - 32-bit port of optimized gf_vect_dot_prod() functions.  This makes
     ec_encode_data() functions much faster on 32-bit processors.
   - Avoton performance improvements.  Performance on Avoton for

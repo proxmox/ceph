@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #ifndef CEPH_LIBRBD_CLS_RBD_CLIENT_H
 #define CEPH_LIBRBD_CLS_RBD_CLIENT_H
@@ -331,8 +331,17 @@ void dir_remove_image(librados::ObjectWriteOperation *op,
 void dir_rename_image(librados::ObjectWriteOperation *op,
                       const std::string &src, const std::string &dest,
                       const std::string &id);
+[[deprecated("in favor of read/write variants")]]
 void dir_state_assert(librados::ObjectOperation *op,
                       cls::rbd::DirectoryState directory_state);
+template<typename ObjectOperation>
+void dir_state_assert(ObjectOperation *op,
+                      cls::rbd::DirectoryState directory_state)
+{
+  bufferlist bl;
+  encode(directory_state, bl);
+  op->exec(cls::rbd::method::dir_state_assert, bl);
+}
 int dir_state_assert(librados::IoCtx *ioctx, const std::string &oid,
                      cls::rbd::DirectoryState directory_state);
 void dir_state_set(librados::ObjectWriteOperation *op,

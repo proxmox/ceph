@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -28,9 +29,9 @@
 
 #include "include/types.h"
 #include "include/encoding.h"
+#include "include/expected.hpp"
 #include "common/simple_cache.hpp"
 #include "common/PriorityCache.h"
-#include "msg/Messenger.h"
 
 #include "osd/OSDMap.h"
 #include "osd/OSDMapMapping.h"
@@ -46,7 +47,15 @@ class Monitor;
 class PGMap;
 struct MonSession;
 class MOSDMap;
+struct Subscription;
 
+/// a common failure return type
+struct ErrorNMessage {
+  int error; ///\todo use std::error_code with positive err-vals
+  std::string message;
+  ErrorNMessage() : error(0) {}
+  ErrorNMessage(int e, const std::string &m) : error(e), message(m) {}
+};
 
 /// information about a particular peer's failure reports for one osd
 struct failure_reporter_t {
@@ -745,9 +754,9 @@ public:
       std::stringstream &ss,
       ceph::Formatter *f);
 
-  int enable_pool_ec_optimizations(pg_pool_t &pool,
-                                   std::stringstream *ss,
-                                   bool enable);
+  tl::expected<void, ErrorNMessage>
+  enable_pool_ec_optimizations(pg_pool_t &pool, bool enable);
+  void maybe_enable_pool_split_ops(pg_pool_t &p);
   int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);
 
@@ -850,7 +859,8 @@ public:
 			       const std::string& dividing_bucket,
 			       uint32_t bucket_count,
 			       const std::set<pg_pool_t*>& pools,
-			       const std::string& new_crush_rule);
+			       const std::string& new_crush_rule,
+			       CrushWrapper& crush);
   /**
   *
   * Set all stretch mode values of all pools back to pre-stretch mode values.

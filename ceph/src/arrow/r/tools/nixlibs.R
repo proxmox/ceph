@@ -120,11 +120,11 @@ validate_checksum <- function(binary_url, libfile, hush = quietly) {
     # The warnings from system2 if it fails pop up later in the log and thus are
     # more confusing than they are helpful (so we suppress them)
     checksum_ok <- suppressWarnings(system2(
-        "shasum",
-        args = c("--status", "-a", "512", "-c", checksum_file),
-        stdout = ifelse(quietly, FALSE, ""),
-        stderr = ifelse(quietly, FALSE, "")
-      )) == 0
+      "shasum",
+      args = c("--status", "-a", "512", "-c", checksum_file),
+      stdout = ifelse(quietly, FALSE, ""),
+      stderr = ifelse(quietly, FALSE, "")
+    )) == 0
 
     if (!checksum_ok) {
       checksum_ok <- suppressWarnings(system2(
@@ -221,8 +221,8 @@ check_allowlist <- function(os, allowed = "https://raw.githubusercontent.com/apa
   allowlist <- tryCatch(
     # Try a remote allowlist so that we can add/remove without a release
     suppressWarnings(readLines(allowed)),
-    # Fallback to default: allowed only on Ubuntu and CentOS/RHEL
-    error = function(e) c("ubuntu", "centos", "redhat", "rhel", "darwin")
+    # Fallback to default allow list shipped with the package
+    error = function(e) readLines("tools/nixlibs-allowlist.txt")
   )
   # allowlist should contain valid regular expressions (plain strings ok too)
   any(grepl(paste(allowlist, collapse = "|"), os))
@@ -386,9 +386,7 @@ distro <- function() {
   out$id <- tolower(out$id)
   # debian unstable & testing lsb_release `version` don't include numbers but we can map from pretty name
   if (is.null(out$version) || out$version %in% c("testing", "unstable")) {
-    if (grepl("bullseye", out$codename)) {
-      out$short_version <- "11"
-    } else if (grepl("bookworm", out$codename)) {
+    if (grepl("bookworm", out$codename)) {
       out$short_version <- "12"
     }
   } else if (out$id == "ubuntu") {
@@ -538,7 +536,7 @@ build_libarrow <- function(src_dir, dst_dir) {
   }
   cleanup(build_dir)
 
-  env_var_list <- c(
+  env_var_list <- list(
     SOURCE_DIR = src_dir,
     BUILD_DIR = build_dir,
     DEST_DIR = dst_dir,
@@ -565,8 +563,8 @@ build_libarrow <- function(src_dir, dst_dir) {
     env_var_list <- c(env_var_list, ARROW_DEPENDENCY_SOURCE = "BUNDLED")
   }
 
-  # On macOS, if not otherwise set, let's override Boost_SOURCE to be bundled 
-  # Necessary due to #39590 for CRAN 
+  # On macOS, if not otherwise set, let's override Boost_SOURCE to be bundled
+  # Necessary due to #39590 for CRAN
   if (on_macos) {
     # Using lowercase (e.g. Boost_SOURCE) to match the cmake args we use already.
     deps_to_bundle <- c("Boost", "lz4")
@@ -576,6 +574,14 @@ build_libarrow <- function(src_dir, dst_dir) {
         env_var_list <- c(env_var_list, setNames("BUNDLED", env_var))
       }
     }
+    # We also _do_ want to enable S3 and ZSTD by default
+    # so that binaries built on CRAN from source are fully featured
+    # but defer to the env vars if those are set
+    env_var_list <- c(
+      env_var_list,
+      ARROW_S3 = Sys.getenv("ARROW_S3", "ON"),
+      ARROW_WITH_ZSTD = Sys.getenv("ARROW_WITH_ZSTD", "ON")
+    )
   }
 
   env_var_list <- with_cloud_support(env_var_list)
@@ -816,8 +822,16 @@ set_thirdparty_urls <- function(env_var_list) {
   env_var_list
 }
 
-is_feature_requested <- function(env_varname, default = env_is("LIBARROW_MINIMAL", "false")) {
-  env_value <- tolower(Sys.getenv(env_varname))
+# this is generally about features that people asked for via environment variables, but
+# for some cases (like S3 when we override it in this script) we might find those in
+# env_var_list
+is_feature_requested <- function(env_varname, env_var_list, default = env_is("LIBARROW_MINIMAL", "false")) {
+  # look in the environment first, but then use the env_var_list if nothing is found
+  env_var_list_value <- env_var_list[[env_varname]]
+  if (is.null(env_var_list_value)) {
+    env_var_list_value <- ""
+  }
+  env_value <- tolower(Sys.getenv(env_varname, env_var_list_value))
   if (identical(env_value, "off")) {
     # If e.g. ARROW_MIMALLOC=OFF explicitly, override default
     requested <- FALSE
@@ -830,8 +844,8 @@ is_feature_requested <- function(env_varname, default = env_is("LIBARROW_MINIMAL
 }
 
 with_cloud_support <- function(env_var_list) {
-  arrow_s3 <- is_feature_requested("ARROW_S3")
-  arrow_gcs <- is_feature_requested("ARROW_GCS")
+  arrow_s3 <- is_feature_requested("ARROW_S3", env_var_list)
+  arrow_gcs <- is_feature_requested("ARROW_GCS", env_var_list)
 
   if (arrow_s3 || arrow_gcs) {
     # User wants S3 or GCS support.
@@ -906,27 +920,15 @@ on_windows <- tolower(Sys.info()[["sysname"]]) == "windows"
 # For local debugging, set ARROW_R_DEV=TRUE to make this script print more
 quietly <- !env_is("ARROW_R_DEV", "true")
 
-not_cran <- env_is("NOT_CRAN", "true")
-
-if (is_release) {
-  VERSION <- VERSION[1, 1:3]
-  arrow_repo <- paste0(getOption("arrow.repo", sprintf("https://apache.jfrog.io/artifactory/arrow/r/%s", VERSION)), "/libarrow/")
-} else {
-  not_cran <- TRUE
-  arrow_repo <- paste0(getOption("arrow.dev_repo", "https://nightlies.apache.org/arrow/r"), "/libarrow/")
-}
-
-if (!is_release && !test_mode) {
-  VERSION <- find_latest_nightly(VERSION)
-}
-
 # To collect dirs to rm on exit, use cleanup() to add dirs
 # we reset it to avoid errors on reruns in the same session.
 options(.arrow.cleanup = character())
 on.exit(unlink(getOption(".arrow.cleanup"), recursive = TRUE), add = TRUE)
 
-# enable full featured builds for macOS in case of CRAN source builds.
-if (not_cran || on_macos) {
+not_cran <- env_is("NOT_CRAN", "true")
+on_r_universe <- !env_is("MY_UNIVERSE", "")
+
+if (not_cran || on_r_universe) {
   # Set more eager defaults
   if (env_is("LIBARROW_BINARY", "")) {
     Sys.setenv(LIBARROW_BINARY = "true")
@@ -942,8 +944,36 @@ if (not_cran || on_macos) {
 build_ok <- !env_is("LIBARROW_BUILD", "false")
 
 # Check if we're authorized to download
-download_ok <- !test_mode && !env_is("TEST_OFFLINE_BUILD", "true")
+download_ok <- !test_mode && !env_is("ARROW_OFFLINE_BUILD", "true")
+if (!download_ok) {
+  lg("Dependency downloading disabled. Unset ARROW_OFFLINE_BUILD to enable", .indent = "***")
+}
+# If not forbidden from downloading, check if we are offline and turn off downloading.
+# The default libarrow source build will download its source dependencies and fail
+# if they can't be retrieved.
+# But, don't do this if the user has requested a binary or a non-minimal build:
+# we should error rather than silently succeeding with a minimal build.
+if (download_ok && Sys.getenv("LIBARROW_BINARY") %in% c("false", "") && !env_is("LIBARROW_MINIMAL", "false")) {
+  download_ok <- try_download("https://apache.jfrog.io/artifactory/arrow/r/", tempfile())
+  if (!download_ok) {
+    lg("Network connection not available", .indent = "***")
+  }
+}
+
 download_libarrow_ok <- download_ok && !env_is("LIBARROW_DOWNLOAD", "false")
+
+# Set binary repos
+if (is_release) {
+  VERSION <- VERSION[1, 1:3]
+  arrow_repo <- paste0(getOption("arrow.repo", sprintf("https://apache.jfrog.io/artifactory/arrow/r/%s", VERSION)), "/libarrow/")
+} else {
+  arrow_repo <- paste0(getOption("arrow.dev_repo", "https://nightlies.apache.org/arrow/r"), "/libarrow/")
+}
+
+# If we're on a dev version, look for the most recent libarrow binary version
+if (download_libarrow_ok && !is_release && !test_mode) {
+  VERSION <- find_latest_nightly(VERSION)
+}
 
 # This "tools/thirdparty_dependencies" path, within the tar file, might exist if
 # create_package_with_all_dependencies() was run, or if someone has created it

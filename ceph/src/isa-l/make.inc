@@ -39,7 +39,7 @@
 #	trace - get simulator trace
 #	clean - remove object files
 
-version ?= 2.30.0
+version ?= 2.32.0
 host_cpu ?= $(shell uname -m | sed -e 's/amd/x86_/')
 arch ?= $(shell uname | grep -v -e Linux -e BSD )
 
@@ -48,22 +48,20 @@ ifeq ($(host_cpu)_$(arch),aarch64_)
   arch = aarch64
 endif
 
-CC  = gcc
+CC  ?= gcc
 AS  = nasm
 AWK = awk
 
 DEBUG      = -g
-DEBUG_yasm = -g dwarf2
 DEBUG_nasm = -g
 
 # Default arch= build options
-CFLAGS_    = -Wall
+CFLAGS_    = -Wall -Wchar-subscripts -Wformat-security -Wnested-externs -Wpointer-arith -Wshadow -Wstrict-prototypes -Wtype-limits -fstack-protector -D_FORTIFY_SOURCE=2
 ASFLAGS_   = -f elf64
 ARFLAGS_   = cr $@
 STRIP_gcc  = strip -d -R .comment $@
 
 # arch=32 build options
-ASFLAGS_32 = -f elf32
 CFLAGS_32  = -m32
 ARFLAGS_32 = cr $@
 
@@ -76,12 +74,20 @@ ARFLAGS_win64 = -out:$@
 ASFLAGS_mingw = -f win64
 ARFLAGS_mingw = cr $@
 
-LDFLAGS_so = -Wl,-soname,$(soname)
+ifneq ($(arch),mingw)
+LDFLAGS_so = -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,-soname,$(soname)
+ifeq ($(shell uname),Linux)
+ifeq ($(host_cpu),x86_64)
+  CFLAGS_ += -fcf-protection=full
+  ASFLAGS_ += -DINTEL_CET_ENABLED
+  LDFLAGS += -Wl,-z,ibt -Wl,-z,shstk -Wl,-z,cet-report=error
+endif
+endif
+endif
 
 ifeq ($(arch),mingw)
   CC=x86_64-w64-mingw32-gcc
   AR=x86_64-w64-mingw32-ar
-  AS=yasm
   LDFLAGS += -Wl,--force-exe-suffix
   SIM=wine
   EXT=.exe
@@ -114,8 +120,9 @@ ifeq ($(shell uname),Darwin)
   STRIP_gcc  =
 endif
 
+D :=
 INCLUDE   = $(patsubst %,-I%/,$(subst :, ,$(VPATH)))
-CFLAGS   = $(CFLAGS_$(arch)) $(CFLAGS_$(CC)) $(DEBUG) -O2 $(DEFINES) $(INCLUDE)
+CFLAGS   = $(CFLAGS_$(arch)) $(CFLAGS_$(CC)) $(DEBUG) -O2 $(DEFINES) $(INCLUDE) -D$(host_cpu)
 ASFLAGS  = $(ASFLAGS_$(arch)) $(ASFLAGS_$(CC)) $(DEBUG_$(AS)) $(DEFINES) $(INCLUDE)
 ARFLAGS  = $(ARFLAGS_$(arch))
 DEFINES += $(addprefix -D , $D)
@@ -171,35 +178,21 @@ $(all_llvm_fuzz_tests): % : %.o $(lib_name)
 	$(CXX) $(CXXFLAGS)  $^ $(LDLIBS) $(FUZZLINK) -o $@
 
 
-# Check for modern as
-test-as = $(shell hash printf && printf $(3) > $(2) && $(AS) $(ASFLAGS) ${tmpf} -o /dev/null 2> /dev/null && echo $(1) || echo $(4))
-as_4  := "pblendvb xmm2, xmm1;"
-as_6  := "vinserti32x8 zmm0, ymm1, 1;"
-as_10 := "vpcompressb zmm0 {k1}, zmm1;"
-
-tmpf := $(shell mktemp)
-as_feature_level := $(call test-as, 4,  $(tmpf), $(as_4),  $(as_feature_level))
-as_feature_level := $(call test-as, 6,  $(tmpf), $(as_6),  $(as_feature_level))
-as_feature_level := $(call test-as, 10, $(tmpf), $(as_10), $(as_feature_level))
-tmpf := $(shell rm ${tmpf})
-
-ifneq ($(findstring $(as_feature_level),6 10),)
-  D_HAVE_AS_KNOWS_AVX512_y := -DHAVE_AS_KNOWS_AVX512
-endif
-
-CFLAGS  += -DAS_FEATURE_LEVEL=$(as_feature_level) $(D_HAVE_AS_KNOWS_AVX512_y)
-ASFLAGS += -DAS_FEATURE_LEVEL=$(as_feature_level) $(D_HAVE_AS_KNOWS_AVX512_y)
-
-
 # Check for pthreads
-have_threads ?= $(shell printf "\#include <pthread.h>\nint main(void){return 0;}\n" | $(CC) -x c - -o /dev/null -lpthread && echo y )
-THREAD_LD_$(have_threads) := -lpthread
+ifeq ($(arch),mingw)
+have_threads ?= y
+else
+have_threads ?= $(shell printf "int main(void){return 0;}\n" | $(CC) -x c - -o /dev/null -pthread && echo y )
+endif
+THREAD_LD_$(have_threads) := -pthread
 THREAD_CFLAGS_$(have_threads) := -DHAVE_THREADS
 
 progs: $(bin_PROGRAMS)
 $(bin_PROGRAMS): CFLAGS += -DVERSION=\"$(version)\"
 $(bin_PROGRAMS): LDLIBS += $(THREAD_LD_y)
 $(bin_PROGRAMS): CFLAGS += $(THREAD_CFLAGS_y)
+$(all_perf_tests): LDLIBS += $(THREAD_LD_y)
+$(all_perf_tests): CFLAGS += $(THREAD_CFLAGS_y)
 sim test trace: $(addsuffix .run,$(all_unit_tests))
 perf: $(addsuffix .run,$(all_perf_tests))
 check: $(addsuffix .run,$(all_check_tests))
@@ -226,7 +219,7 @@ $(addsuffix .run,$(all_tests)): %.run : %
 # Other build rules
 msg = $(if $(DEBUG),DEBUG) $(patsubst 32,32-bit,$(host_cpu)) $D
 
-# yasm/nasm assembly files
+# nasm assembly files
 $(O)/%.o: %.asm
 	@echo "  ---> Building $< $(msg)"
 	@$(AS) $(ASFLAGS) -o $@ $<
@@ -239,7 +232,7 @@ $(O)/%.o: $(host_cpu)/%.S
 $(O)/%.o   : $(host_cpu)/%.c
 	@echo "  ---> Building $< $(msg)"
 	@$(COMPILE.c) $(OUTPUT_OPTION) $<
-$(O)/%.o %.o: %.c
+$(O)/%.o: %.c
 	@echo "  ---> Building $< $(msg)"
 	@$(COMPILE.c) $(OUTPUT_OPTION) $<
 
@@ -254,6 +247,7 @@ $(bin_PROGRAMS): % : %_cli.c $(lib_name)
 
 # Target to build lib files
 lib: $(lib_name)
+$(lib_name): DEFINES+=-DISAL_DEPRECATED_INTERNAL
 ifneq ($(lib_debug),1)
  $(lib_name): DEBUG_$(AS)=	# Don't put debug symbols in the lib
  $(lib_name): DEBUG=
@@ -289,6 +283,7 @@ $(O)/shared_ver_%.o: %.c
 $(O)/shared_ver_%.o: $(host_cpu)/%.c
 	@echo "  ---> Building shared $< $(msg)"
 	@$(COMPILE.c) $(OUTPUT_OPTION) $<
+$(so_lib_name): DEFINES+=-DISAL_DEPRECATED_INTERNAL
 ifneq ($(lib_debug),1)
  $(so_lib_name): DEBUG_$(AS)=
  $(so_lib_name): DEBUG=
@@ -334,7 +329,6 @@ install: $(sort $(extern_hdrs)) | $(install_dirs) $(lib_name) $(so_lib_name) isa
 	install -m 644 $(lib_name) $(prefix)/lib/libisal.a
 	install -m 644 $^ $(prefix)/include/isa-l/.
 	install -m 664 isa-l.h $(prefix)/include/.
-	install -m 664 include/types.h $(prefix)/include/isa-l/.
 	install -m 664 $(so_lib_name) $(prefix)/lib/$(so_lib_ver)
 	(cd $(prefix)/lib && ln -f -s $(so_lib_ver) $(soname) && ln -f -s $(so_lib_ver) $(so_lib_inst))
 ifeq ($(shell uname),Darwin)
@@ -377,4 +371,22 @@ doc: isa-l.h
 	(cat Doxyfile; echo 'PROJECT_NUMBER=$(version)') | doxygen -
 	$(MAKE) -C generated_doc/latex &> generated_doc/latex_build_api.log
 	cp generated_doc/latex/refman.pdf isa-l_api_$(version).pdf
+
+# Check spelling in the code with codespell.
+# See https://github.com/codespell-project/codespell for more details.
+# Codespell options explained:
+# -d        -- disable colours (emacs colours it anyway)
+# -L        -- List of words to be ignored
+# -S <skip> -- skip file types
+# -I FILE   -- File containing words to be ignored
+#
+CODESPELL ?= codespell
+CS_IGNORE_WORDS ?= iinclude,struc,fo,ue,od,ba,padd,hist,unx,sav,datas,ro
+
+.PHONY: spellcheck
+spellcheck:
+	$(CODESPELL) -d -L $(CS_IGNORE_WORDS) \
+	-S "*.obj,*.o,*.a,*.so,*.lib,*~,*.so,*.so.*,*.d" \
+	./erasure_code ./examples ./igzip ./include ./mem ./misc ./programs ./raid ./tests README.md SECURITY.md CONTRIBUTING.md \
+	Makefile.unx Makefile.nmake Release_notes.txt LICENSE $(CS_EXTRA_OPTS)
 

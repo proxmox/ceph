@@ -65,7 +65,9 @@ import {
   GridModule,
   IconModule,
   IconService,
+  InlineLoadingModule,
   InputModule,
+  LoadingModule,
   ModalModule,
   NumberModule,
   RadioModule,
@@ -84,7 +86,7 @@ import {
 // Icons
 import ChevronDown from '@carbon/icons/es/chevron--down/16';
 import Close from '@carbon/icons/es/close/32';
-import AddFilled from '@carbon/icons/es/add--filled/32';
+import AddFilled from '@carbon/icons/es/add--filled/20';
 import SubtractFilled from '@carbon/icons/es/subtract--filled/32';
 import Reset from '@carbon/icons/es/reset/32';
 import SubtractAlt from '@carbon/icons/es/subtract--alt/20';
@@ -122,6 +124,8 @@ import { NvmeofTabsComponent } from './nvmeof-tabs/nvmeof-tabs.component';
     ButtonModule,
     GridModule,
     IconModule,
+    InlineLoadingModule,
+    LoadingModule,
     CheckboxModule,
     RadioModule,
     SelectModule,

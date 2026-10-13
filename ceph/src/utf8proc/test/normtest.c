@@ -1,21 +1,20 @@
 #include "tests.h"
 
 #define CHECK_NORM(NRM, norm, src) {                                 \
-    char *src_norm = (char*) utf8proc_ ## NRM((utf8proc_uint8_t*) src);      \
-    check(!strcmp(norm, src_norm),                                  \
+    unsigned char *src_norm = (unsigned char*) utf8proc_ ## NRM((utf8proc_uint8_t*) src);      \
+    check(!strcmp((char *) norm, (char *) src_norm),                                  \
           "normalization failed for %s -> %s", src, norm);          \
     free(src_norm);                                                 \
 }
 
 int main(int argc, char **argv)
 {
-     char *buf = NULL;
-     size_t bufsize = 0;
+     unsigned char buf[8192];
      FILE *f = argc > 1 ? fopen(argv[1], "r") : NULL;
-     char source[1024], NFC[1024], NFD[1024], NFKC[1024], NFKD[1024];
+     unsigned char source[1024], NFC[1024], NFD[1024], NFKC[1024], NFKD[1024];
 
      check(f != NULL, "error opening NormalizationTest.txt");
-     while (getline(&buf, &bufsize, f) > 0) {
+     while (simple_getline(buf, f) > 0) {
           size_t offset;
           lineno += 1;
 
@@ -28,11 +27,12 @@ int main(int argc, char **argv)
 
           if (buf[0] == '#') continue;
 
-          offset = encode(source, buf);
-          offset += encode(NFC, buf + offset);
-          offset += encode(NFD, buf + offset);
-          offset += encode(NFKC, buf + offset);
-          offset += encode(NFKD, buf + offset);
+          size_t len;
+          offset = encode(source, &len, buf);
+          offset += encode(NFC, &len, buf + offset);
+          offset += encode(NFD, &len, buf + offset);
+          offset += encode(NFKC, &len, buf + offset);
+          offset += encode(NFKD, &len, buf + offset);
 
           CHECK_NORM(NFC, NFC, source);
           CHECK_NORM(NFC, NFC, NFC);

@@ -4,22 +4,6 @@
 
 .. index:: mclock; configuration
 
-.. warning:: On large clusters with erasure-coded pools, operators may
-   observe slow ops during recovery or backfill (for example, when an
-   OSD is drained out). Under mClock, EC sub-operation reads issued
-   during recovery are currently routed through the ``immediate``
-   high-priority queue and bypass mClock throttling. When many OSDs
-   read concurrently from a single source OSD, this can saturate that
-   OSD's high-priority queue and starve client and background work.
-   As an interim measure, such deployments are advised to switch to
-   the ``WeightedPriorityQueue`` (``wpq``) scheduler. The change can
-   be applied cluster-wide and takes effect after each OSD is
-   restarted:
-
-   .. prompt:: bash #
-
-     ceph config set osd osd_op_queue wpq
-
 QoS support in Ceph is implemented using a queuing scheduler based on `the
 dmClock algorithm`_. See :ref:`dmclock-qos` section for more details.
 
@@ -112,7 +96,7 @@ balanced (*default*)
 The *balanced* profile is the default mClock profile. This profile allocates
 equal reservation/priority to client operations and background recovery
 operations. Background best-effort ops are given lower reservation and therefore
-take a longer time to complete when are are competing operations. This profile
+take a longer time to complete when there are competing operations. This profile
 helps meet the normal/steady-state requirements of the cluster. This is the
 case when external client performance requirement is not critical and there are
 other background operations that still need attention within the OSD.
@@ -136,7 +120,7 @@ high_client_ops
 This profile optimizes client performance over background activities by
 allocating more reservation and limit to client operations as compared to
 background operations in the OSD. This profile, for example, may be enabled
-to provide the needed performance for I/O intensive applications for a
+to provide the needed performance for I/O-intensive applications for a
 sustained period of time at the cost of slower recoveries. The table shows
 the resource control parameters set by the profile:
 
@@ -154,7 +138,7 @@ high_recovery_ops
 ^^^^^^^^^^^^^^^^^
 This profile optimizes background recovery performance as compared to external
 clients and other background operations within the OSD. This profile, for
-example, may be enabled by an administrator temporarily to speed-up background
+example, may be enabled by an administrator temporarily to speed up background
 recoveries during non-peak hours. The table shows the resource control
 parameters set by the profile:
 
@@ -234,6 +218,62 @@ change to the default HDD OSD shard configuration is made:
 | :confval:`osd_op_num_threads_per_shard_hdd` | 1                | 5              |
 +---------------------------------------------+------------------+----------------+
 
+.. index:: mclock; queue starvation
+
+.. _mclock-starvation-fix:
+
+mClock Queue Starvation Prevention
+==================================
+The mClock scheduler dequeues certain items -- ``immediate``-class traffic
+(for example, EC subop reads/writes/replies between shards of an
+erasure-coded PG, and scrub's own wire messages) along with any item at or
+above the scheduler's raw priority cutoff (for example, peering) -- ahead of,
+and independently from, the reservation/weight-governed queue that enforces
+the mClock parameters described above for the *client*, *background
+recovery*, and *background best-effort* client types.
+
+Under sustained high-priority load, this queue could previously stay
+continuously non-empty, meaning the mClock-managed queue was never even
+consulted regardless of the reservation or weight configured for the three
+client types above. On an erasure-coded pool under heavy client I/O, ordinary
+EC chunk fan-out is itself classified ``immediate``, which could result in
+indefinite starvation of *background best-effort* operations -- most visibly
+deep-scrub, whose own chunk-by-chunk progress events belong to that class.
+See https://tracker.ceph.com/issues/69078 for the original report.
+
+To bound this, the OSD tracks how long the mClock-managed queue has gone
+unserviced while the high-priority queue keeps refilling. Once that exceeds a
+device-aware threshold, the scheduler forces one dequeue attempt from the
+mClock-managed queue before resuming the high-priority drain. Whenever the
+mClock-managed queue is empty -- the common case -- this has no effect on
+scheduling behavior.
+
+The threshold is device-aware because the same absolute value does not make
+sense across device types: a rotational op's own natural per-op service time
+is multi-millisecond, so a several-hundred-millisecond threshold is a modest
+relative multiple of that, whereas flash completes a normal op in well under
+a millisecond, so the same absolute threshold would represent a much larger
+relative delay there -- and flash has far more IOPS headroom to spare for a
+tighter forced-check cadence in any case. On solid-state and NVMe media, this
+value (50ms) is fixed internally, validated by hardware testing. On
+rotational media, hardware validation of the equivalent default has not yet
+been possible, so instead of a hardcoded constant, the value is exposed as
+the tunable :confval:`osd_mclock_max_starve_time_hdd`.
+
+The option is bounded to a narrow range (100ms to 500ms) around its default
+(250ms), so that even without a way to automatically validate a given value
+against real hardware, it cannot be tuned into a state that erodes the
+low-latency treatment ``immediate``-class and other high-priority traffic
+depend on (i.e., too low) or silently re-opens the starvation this mechanism
+exists to prevent (i.e., too high). The option is configurable: a change made
+with ``ceph config set`` takes effect immediately (no OSD restart).
+For example, to raise the threshold to 400ms on all OSDs:
+
+  .. prompt:: bash #
+
+    ceph config set osd osd_mclock_max_starve_time_hdd 0.4
+
+
 .. index:: mclock; built-in profiles
 
 mClock Built-in Profiles -  Locked Config Options
@@ -244,7 +284,7 @@ in order to ensure mClock scheduler is able to provide predictable QoS.
 mClock Config Options
 ---------------------
 .. important:: These defaults cannot be changed using any of the config
-   subsytem commands like *config set* or via the *config daemon* or *config
+   subsystem commands like *config set* or via the *config daemon* or *config
    tell* interfaces. Although the above command(s) report success, the mclock
    QoS parameters are reverted to their respective built-in profile defaults.
 
@@ -628,9 +668,9 @@ Run custom drive benchmark if defaults are not accurate (manual)
 If the default OSD capacity is not accurate, the recommendation is to run a
 custom benchmark using your preferred tool (e.g. Fio) on the drive and then
 override the ``osd_mclock_max_capacity_iops_[hdd, ssd]`` option as described
-in the `Specifying  Max OSD Capacity`_ section.
+in the `Set or Override Max IOPS Capacity of an OSD`_ section.
 
-This step is highly recommended until an alternate mechansim is worked upon.
+This step is highly recommended until an alternate mechanism is worked upon.
 
 Steps to Manually Benchmark an OSD (Optional)
 =============================================
@@ -641,7 +681,7 @@ Steps to Manually Benchmark an OSD (Optional)
 
 .. tip:: If you have already determined the benchmark data and wish to manually
          override the max osd capacity for an OSD, you may skip to section
-         `Specifying  Max OSD Capacity`_.
+         `Set or Override Max IOPS Capacity of an OSD`_.
 
 
 Any existing benchmarking tool (e.g. Fio) can be used for this purpose. In this
@@ -729,6 +769,7 @@ overall throughput was roughly equal to the baseline throughput. Note that in
 general for HDDs, the bluestore throttle values are expected to be higher when
 compared to SSDs.
 
+.. _override_max_iops_capacity:
 
 Set or Override Max IOPS Capacity of an OSD
 -------------------------------------------
@@ -840,5 +881,6 @@ mClock Config Options
 .. confval:: osd_mclock_iops_capacity_low_threshold_hdd
 .. confval:: osd_mclock_iops_capacity_threshold_ssd
 .. confval:: osd_mclock_iops_capacity_low_threshold_ssd
+.. confval:: osd_mclock_max_starve_time_hdd
 
 .. _the dmClock algorithm: https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Gulati.pdf

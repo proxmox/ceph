@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
@@ -107,8 +107,7 @@ struct RGWServices_Def
 
   int init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
 	   bool raw_storage, bool run_sync, bool background_tasks,
-	   optional_yield y, const DoutPrefixProvider *dpp,
-     const rgw::SiteConfig* site);
+	   optional_yield y, const DoutPrefixProvider *dpp, rgw::sal::ConfigStore* cfgstore, const rgw::SiteConfig* site);
   void shutdown();
 };
 
@@ -145,19 +144,19 @@ struct RGWServices
 
   int do_init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
 	      bool raw_storage, bool run_sync, bool background_tasks, optional_yield y,
-	      const DoutPrefixProvider *dpp, const rgw::SiteConfig& site);
+	      const DoutPrefixProvider *dpp, const rgw::SiteConfig& site, rgw::sal::ConfigStore* cfgstore);
 
   int init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
 	   bool run_sync, bool background_tasks, optional_yield y, const DoutPrefixProvider *dpp,
-	   const rgw::SiteConfig& site) {
-    return do_init(cct, store, have_cache, false, run_sync, background_tasks, y, dpp, site);
+	   const rgw::SiteConfig& site, rgw::sal::ConfigStore* cfgstore) {
+    return do_init(cct, store, have_cache, false, run_sync, background_tasks, y, dpp, site, cfgstore);
   }
 
   int init_raw(CephContext *cct, rgw::sal::RadosStore* store,
 	       bool have_cache, optional_yield y,
 	       const DoutPrefixProvider *dpp,
-	       const rgw::SiteConfig& site) {
-    return do_init(cct, store, have_cache, true, false, false, y, dpp, site);
+	       const rgw::SiteConfig& site, rgw::sal::ConfigStore* cfgstore) {
+    return do_init(cct, store, have_cache, true, false, false, y, dpp, site, cfgstore);
   }
   void shutdown() {
     _svc.shutdown();
@@ -180,6 +179,7 @@ struct RGWCtlDef {
     std::unique_ptr<RGWMetadataHandler> user;
     std::unique_ptr<RGWMetadataHandler> otp;
     std::unique_ptr<RGWMetadataHandler> role;
+    std::unique_ptr<RGWMetadataHandler> oidc;
     std::unique_ptr<RGWMetadataHandler> topic;
     std::unique_ptr<RGWMetadataHandler> account;
     std::unique_ptr<RGWMetadataHandler> group;

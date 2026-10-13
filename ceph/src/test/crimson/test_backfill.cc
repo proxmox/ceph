@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <algorithm>
 #include <cstdlib>
@@ -165,6 +165,10 @@ class BackfillFixture : public crimson::osd::BackfillState::BackfillListener {
     const pg_shard_t& target,
     const hobject_t& obj,
     const eversion_t& v) override;
+
+  void send_recovery_deletes(
+    const hobject_t& obj,
+    const std::vector<pg_shard_t>& peers) override;
 
   void maybe_flush() override;
 
@@ -397,6 +401,13 @@ void BackfillFixture::enqueue_drop(
   const eversion_t& v)
 {
   enqueued_drops[target].emplace_back(obj, v);
+}
+
+void BackfillFixture::send_recovery_deletes(
+  const hobject_t& obj,
+  const std::vector<pg_shard_t>& peers)
+{
+  // no-op in test mock
 }
 
 void BackfillFixture::maybe_flush()

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <sys/mman.h>
 #include <string.h>
@@ -135,9 +135,10 @@ BlockRBManager::write_ertr::future<> BlockRBManager::write(
   ceph_assert(bptr.is_page_aligned());
   rbm_abs_addr addr = convert_paddr_to_abs_addr(paddr);
   if (!check_valid_range(addr, bptr)) {
-    return crimson::ct_error::erange::make();
+    co_return co_await write_ertr::future<>(
+      crimson::ct_error::erange::make());
   }
-  return device->write(
+  co_return co_await device->write(
     addr,
     bptr);
 }
@@ -150,9 +151,10 @@ BlockRBManager::read_ertr::future<> BlockRBManager::read(
   ceph_assert(bptr.is_page_aligned());
   rbm_abs_addr addr = convert_paddr_to_abs_addr(paddr);
   if (!check_valid_range(addr, bptr)) {
-    return crimson::ct_error::erange::make();
+    co_return co_await read_ertr::future<>(
+      crimson::ct_error::erange::make());
   }
-  return device->read(
+  co_return co_await device->read(
     addr,
     bptr);
 }
@@ -161,7 +163,7 @@ BlockRBManager::close_ertr::future<> BlockRBManager::close()
 {
   ceph_assert(device);
   allocator->close();
-  return device->close();
+  co_return co_await device->close();
 }
 
 BlockRBManager::write_ertr::future<> BlockRBManager::write(
@@ -179,7 +181,7 @@ BlockRBManager::write_ertr::future<> BlockRBManager::write(
     DEBUG("write: exception creating aligned buffer {}", e);
     ceph_assert(0 == "unhandled exception");
   }
-  return device->write(
+  co_return co_await device->write(
     addr,
     std::move(bptr));
 }
@@ -202,29 +204,5 @@ void BlockRBManager::prefill_fragmented_device()
   }
 }
 #endif
-
-std::ostream &operator<<(std::ostream &out, const rbm_superblock_t &header)
-{
-  out << " rbm_superblock_t(size=" << header.size
-       << ", block_size=" << header.block_size
-       << ", feature=" << header.feature
-       << ", journal_size=" << header.journal_size
-       << ", crc=" << header.crc
-       << ", config=" << header.config
-       << ", shard_num=" << header.shard_num
-       << ", end_to_end_data_protection=" << header.is_end_to_end_data_protection()
-       << ", device_block_size=" << header.nvme_block_size;
-  for (auto p : header.shard_infos) {
-    out << p;
-  }
-  return out << ")";
-}
-
-std::ostream &operator<<(std::ostream &out, const rbm_shard_info_t &shard)
-{
-  out << " rbm_shard_info_t(size=" << shard.size
-      << ", start_offset=" << shard.start_offset;
-  return out << ")";
-}
 
 }

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -17,11 +18,17 @@
 
 #include <mutex>
 #include <iostream>
+#include <sstream>
 
 #include <pthread.h>
 
 #include <boost/algorithm/string.hpp>
 
+#ifdef HAVE_BREAKPAD
+#include <breakpad/client/linux/handler/exception_handler.h>
+#endif
+
+#include "include/ceph_fs.h" // for CEPH_CRYPTO_NONE
 #include "include/common_fwd.h"
 #include "include/mempool.h"
 #include "include/stringify.h"
@@ -52,8 +59,18 @@
 #include "mon/MonMap.h"
 #endif
 
+#ifdef WITH_CRIMSON
+#include "crimson/common/perf_counters_collection.h"
+#else
+#include "common/perf_counters_collection.h"
+#endif
+
 // for CINIT_FLAGS
 #include "common/common_init.h"
+
+#ifdef WITH_CPUTRACE
+#include "common/cputrace.h"
+#endif
 
 #include <iostream>
 #include <pthread.h>
@@ -482,7 +499,7 @@ bool CephContext::check_experimental_feature_enabled(const std::string& feat,
   return enabled;
 }
 
-int CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
+[[gnu::noinline]] int CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
 			    Formatter *f,
 			    std::ostream& ss,
 			    bufferlist *out)
@@ -497,7 +514,8 @@ int CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
 
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
-static void leak_some_memory() {
+static void leak_some_memory(CephContext* cc) {
+  lgeneric_derr(cc) << "Leaking some memory" << dendl;
   volatile char *foo = new char[1234];
   (void)foo;
 }
@@ -521,7 +539,7 @@ int CephContext::_do_command(
     }
   }
   if (command == "leak_some_memory") {
-    leak_some_memory();
+    leak_some_memory(this);
   }
   else if (command == "perfcounters_dump" || command == "1" ||
       command == "perf dump") {
@@ -673,6 +691,24 @@ int CephContext::_do_command(
     else if (command == "log reopen") {
       _log->reopen_log_file();
     }
+#ifdef WITH_CPUTRACE
+    else if (command == "cputrace start") {
+      cputrace_start(f);
+    }
+    else if (command == "cputrace stop") {
+      cputrace_stop(f);
+    }
+    else if (command == "cputrace dump") {
+      std::string logger;
+      std::string counter;
+      cmd_getval(cmdmap, "logger", logger);
+      cmd_getval(cmdmap, "counter", counter);
+      cputrace_dump(f, logger, counter);
+    }
+    else if (command == "cputrace reset") {
+      cputrace_reset(f);
+    }
+#endif
     else {
       ceph_abort_msg("registered under wrong command?");    
     }
@@ -766,6 +802,13 @@ CephContext::CephContext(uint32_t module_type_,
   _admin_socket->register_command("log flush", _admin_hook, "flush log entries to log file");
   _admin_socket->register_command("log dump", _admin_hook, "dump recent log entries to log file");
   _admin_socket->register_command("log reopen", _admin_hook, "reopen log file");
+
+#ifdef WITH_CPUTRACE
+  _admin_socket->register_command("cputrace start", _admin_hook, "start cpu profiling");
+  _admin_socket->register_command("cputrace stop", _admin_hook, "stop cpu profiling");
+  _admin_socket->register_command("cputrace reset", _admin_hook, "reset cpu profiling");
+  _admin_socket->register_command("cputrace dump name=logger,type=CephString,req=false name=counter,type=CephString,req=false", _admin_hook, "dump cpu profiling results");
+#endif
 
   _crypto_random.reset(new CryptoRandom());
   _crypto_mgr.reset(new CryptoManager(this));
@@ -1025,6 +1068,19 @@ void CephContext::_refresh_perf_values()
 AdminSocket *CephContext::get_admin_socket()
 {
   return _admin_socket;
+}
+
+void CephContext::drop_temp_messenger_obj()
+{
+  auto i = associated_objs.begin();
+  while (i != associated_objs.end()) {
+    if (i->first.first.find("AsyncMessenger::NetworkStack") != std::string::npos) {
+      i = associated_objs.erase(i);
+      break;
+    } else {
+      ++i;
+    }
+  }
 }
 
 void CephContext::notify_pre_fork()

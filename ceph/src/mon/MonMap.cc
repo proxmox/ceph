@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "MonMap.h"
 
@@ -132,17 +132,19 @@ void mon_info_t::dump(ceph::Formatter *f) const
   encode_json("crush_location", crush_loc, f);
 }
 
-void mon_info_t::generate_test_instances(list<mon_info_t*>& ls)
+list<mon_info_t> mon_info_t::generate_test_instances()
 {
-  ls.push_back(new mon_info_t);
-  ls.push_back(new mon_info_t);
-  ls.back()->name = "noname";
-  ls.back()->public_addrs.parse("v1:1.2.3.4:567/890");
-  ls.back()->priority = 1;
-  ls.back()->weight = 1.0;
-  ls.back()->crush_loc.emplace("root", "default");
-  ls.back()->crush_loc.emplace("host", "foo");
-  ls.back()->time_added = ceph::real_clock::from_time_t(1);
+  list<mon_info_t> ls;
+  ls.emplace_back();
+  ls.emplace_back();
+  ls.back().name = "noname";
+  ls.back().public_addrs.parse("v1:1.2.3.4:567/890");
+  ls.back().priority = 1;
+  ls.back().weight = 1.0;
+  ls.back().crush_loc.emplace("root", "default");
+  ls.back().crush_loc.emplace("host", "foo");
+  ls.back().time_added = ceph::real_clock::from_time_t(1);
+  return ls;
 }
 namespace {
   struct rank_cmp {
@@ -366,16 +368,18 @@ void MonMap::decode(ceph::buffer::list::const_iterator& p)
   DECODE_FINISH(p);
 }
 
-void MonMap::generate_test_instances(list<MonMap*>& o)
+list<MonMap> MonMap::generate_test_instances()
 {
-  o.emplace_back(new MonMap); /* empty */
+  list<MonMap> o;
+
+  o.emplace_back(); /* empty */
 
   {
-    auto* map = o.emplace_back(new MonMap);
-    map->epoch = 1;
-    map->last_changed = utime_t(123, 456);
-    map->created = utime_t(789, 101112);
-    auto& info = map->add("one", entity_addrvec_t());
+    auto& map = o.emplace_back();
+    map.epoch = 1;
+    map.last_changed = utime_t(123, 456);
+    map.created = utime_t(789, 101112);
+    auto& info = map.add("one", entity_addrvec_t());
     info.time_added = ceph::real_clock::from_time_t(2468);
   }
 
@@ -413,8 +417,9 @@ void MonMap::generate_test_instances(list<MonMap*>& o)
       auto& info = m.add("empty_addr_zero", entity_addrvec_t());
       info.time_added = ceph::real_clock::from_time_t(1);
     }
-    o.push_back(new MonMap(std::move(m)));
+    o.push_back(std::move(m));
   }
+  return o;
 }
 
 // read from/write to a file

@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -24,6 +25,8 @@
 #include "include/common_fwd.h"
 #include "include/Context.h" // for C_GatherBase
 #include "include/mempool.h"
+
+#include "messages/MClientReclaimReply.h"
 
 #ifdef WITH_CRIMSON
 #include "crimson/common/perf_counters_collection.h"
@@ -70,7 +73,6 @@ class MClientRequest;
 class MClientSession;
 class MClientSnap;
 class MClientReclaim;
-class MClientReclaimReply;
 class MLock;
 class MMDSPeerRequest;
 class filepath;
@@ -110,6 +112,7 @@ enum {
   l_mdss_req_snapdiff_latency,
   l_mdss_req_rmdir_latency,
   l_mdss_req_rmsnap_latency,
+  l_mdss_req_snap_md_op_latency,
   l_mdss_req_rmxattr_latency,
   l_mdss_req_setattr_latency,
   l_mdss_req_setdirlayout_latency,
@@ -119,6 +122,10 @@ enum {
   l_mdss_req_symlink_latency,
   l_mdss_req_unlink_latency,
   l_mdss_cap_revoke_eviction,
+  l_mdss_cache_trim_throttle,
+  l_mdss_session_recall_throttle,
+  l_mdss_session_recall_throttle2o,
+  l_mdss_global_recall_throttle,
   l_mdss_cap_acquisition_throttle,
   l_mdss_req_getvxattr_latency,
   l_mdss_req_file_blockdiff_latency,
@@ -341,7 +348,8 @@ public:
   void handle_client_rmsnap(const MDRequestRef& mdr);
   void _rmsnap_finish(const MDRequestRef& mdr, CInode *diri, snapid_t snapid);
   void handle_client_renamesnap(const MDRequestRef& mdr);
-  void _renamesnap_finish(const MDRequestRef& mdr, CInode *diri, snapid_t snapid);
+  void handle_client_snap_md_op(const MDRequestRef& mdr);
+  void _snap_mutate_generic_finish(const MDRequestRef& mdr, CInode *diri, snapid_t snapid);
   void handle_client_readdir_snapdiff(const MDRequestRef& mdr);
   void handle_client_file_blockdiff(const MDRequestRef& mdr);
   void handle_file_blockdiff_finish(const MDRequestRef& mdr, CInode *in, const BlockDiff &block_diff,
@@ -496,7 +504,8 @@ private:
            xattr_name == "ceph.dir.charmap"sv ||
            xattr_name == "ceph.dir.normalization"sv ||
            xattr_name == "ceph.dir.encoding"sv ||
-           xattr_name == "ceph.dir.casesensitive"sv;
+           xattr_name == "ceph.dir.casesensitive"sv ||
+           xattr_name == "ceph.dir.subvolume.snaps.visible"sv;
   }
 
   static bool is_ceph_dir_vxattr(std::string_view xattr_name) {
@@ -516,7 +525,8 @@ private:
 	   xattr_name == "ceph.dir.normalization"sv ||
 	   xattr_name == "ceph.dir.encoding"sv ||
 	   xattr_name == "ceph.dir.casesensitive"sv ||
-	   xattr_name == "ceph.dir.subvolume"sv;
+	   xattr_name == "ceph.dir.subvolume"sv ||
+     xattr_name == "ceph.dir.subvolume.snaps.visible"sv;
   }
 
   static bool is_ceph_file_vxattr(std::string_view xattr_name) {

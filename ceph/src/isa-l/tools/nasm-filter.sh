@@ -1,4 +1,4 @@
-#/bin/sh
+#!/bin/sh
 
 # Filter out unnecessary options added by automake
 
@@ -12,6 +12,11 @@ while [ -n "$*" ]; do
 	    ;;
 	-I | -i )
 	    options="$options $1 $2/"
+	    shift
+	    shift
+	    ;;
+	-isysroot | -iframeworkwithsysroot | -iwithsysroot | -framework | -arch )
+	    # Unsupported options with arg
 	    shift
 	    shift
 	    ;;

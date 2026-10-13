@@ -83,7 +83,7 @@ int LFUDAPolicy::init(CephContext* cct, const DoutPrefixProvider* dpp, asio::io_
     req.push("MULTI");
     req.push("HSET", "lfuda", "minLocalWeights_sum", std::to_string(weightSum), /* New cache node will always have the minimum average weight */
               "minLocalWeights_size", std::to_string(entries_map.size()), 
-              "minLocalWeights_address", dpp->get_cct()->_conf->rgw_d4n_l1_datacache_address);
+              "minLocalWeights_address", dpp->get_cct()->_conf->rgw_d4n_local_rgw_address);
     req.push("HSETNX", "lfuda", "age", age); /* Only set maximum age if it doesn't exist */
     req.push("EXEC");
   
@@ -176,7 +176,7 @@ int LFUDAPolicy::local_weight_sync(const DoutPrefixProvider* dpp, optional_yield
 	request req;
 	req.push("HSET", "lfuda", "minLocalWeights_sum", std::to_string(weightSum), 
                   "minLocalWeights_size", std::to_string(entries_map.size()), 
-                  "minLocalWeights_address", dpp->get_cct()->_conf->rgw_d4n_l1_datacache_address);
+                  "minLocalWeights_address", dpp->get_cct()->_conf->rgw_d4n_local_rgw_address);
 
 	redis_exec(conn, ec, req, resp, y);
 
@@ -197,7 +197,7 @@ int LFUDAPolicy::local_weight_sync(const DoutPrefixProvider* dpp, optional_yield
     boost::system::error_code ec;
     response<ignore_t> resp;
     request req;
-    req.push("HSET", dpp->get_cct()->_conf->rgw_d4n_l1_datacache_address, "avgLocalWeight_sum", std::to_string(weightSum), 
+    req.push("HSET", dpp->get_cct()->_conf->rgw_d4n_local_rgw_address, "avgLocalWeight_sum", std::to_string(weightSum), 
               "avgLocalWeight_size", std::to_string(entries_map.size()));
 
     redis_exec(conn, ec, req, resp, y);
@@ -277,8 +277,9 @@ bool LFUDAPolicy::invalidate_dirty_object(const DoutPrefixProvider* dpp, const s
 }
 
 CacheBlock* LFUDAPolicy::get_victim_block(const DoutPrefixProvider* dpp, optional_yield y) {
-  if (entries_heap.empty())
+  if (entries_heap.empty()) {
     return nullptr;
+  }
 
   /* Get victim cache block */
   LFUDAEntry* entry = entries_heap.top();
@@ -321,7 +322,7 @@ int LFUDAPolicy::exist_key(const std::string& key) {
 
 int LFUDAPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional_yield y) {
   int ret = -1;
-  uint64_t freeSpace = cacheDriver->get_free_space(dpp);
+  uint64_t freeSpace = cacheDriver->get_free_space(dpp, y);
 
   while (freeSpace < size) { // TODO: Think about parallel reads and writes; can this turn into an infinite loop?
     std::unique_lock<std::mutex> l(lfuda_lock);
@@ -346,7 +347,7 @@ int LFUDAPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional
     /* the following part takes care of updating the weight (globalWeight) of the block if this is the last copy in a remote setup
        and is pushed out to a remote cache where space is available */
 #if 0
-    if (victim->cacheObj.hostsList.size() == 1 && *(victim->cacheObj.hostsList.begin()) == dpp->get_cct()->_conf->rgw_d4n_l1_datacache_address) { /* Last copy */
+    if (victim->cacheObj.hostsList.size() == 1 && *(victim->cacheObj.hostsList.begin()) == dpp->get_cct()->_conf->rgw_d4n_local_rgw_address) { /* Last copy */
       if (victim->globalWeight) {
 	it->second->localWeight += victim->globalWeight;
         (*it->second->handle)->localWeight = it->second->localWeight;
@@ -380,7 +381,7 @@ int LFUDAPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional
     l.unlock();
 
     //Need to get and then update the host atomically in a remote setup
-    if ((ret = blockDir->remove_host(dpp, victim, dpp->get_cct()->_conf->rgw_d4n_l1_datacache_address, y)) < 0) {
+    if ((ret = blockDir->remove_host(dpp, victim, dpp->get_cct()->_conf->rgw_d4n_local_rgw_address, y)) < 0) {
       delete victim;
       return ret;
     }
@@ -396,7 +397,7 @@ int LFUDAPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional
     if (perfcounter) {
       perfcounter->inc(l_rgw_d4n_cache_evictions);
     }
-    freeSpace = cacheDriver->get_free_space(dpp);
+    freeSpace = cacheDriver->get_free_space(dpp, y);
   }
   
   return 0;
@@ -414,21 +415,20 @@ bool LFUDAPolicy::update_refcount_if_key_exists(const DoutPrefixProvider* dpp, c
   refcount = entry->refcount;
   ldpp_dout(dpp, 20) << "LFUDAPolicy::" << __func__ << "(): old refcount is: " << refcount << dendl;
   if (op == RefCount::INCR) {
-    refcount += 1; 
-  }
-  if (op == RefCount::DECR) {
-    if (refcount > 1) {
+    refcount += 1;
+  } else if (op == RefCount::DECR) {
+    if (refcount > 0) {
       refcount -= 1;
     }
   }
   (*entry->handle)->refcount = refcount;
+  entries_heap.update(entry->handle);
   ldpp_dout(dpp, 20) << "LFUDAPolicy::" << __func__ << "(): updated refcount is: " << (*entry->handle)->refcount << dendl;
-	entries_heap.update(entry->handle);
 
   return true;
 }
 
-void LFUDAPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, uint64_t offset, uint64_t len, const std::string& version, bool dirty, uint8_t op, optional_yield y, std::string& restore_val)
+void LFUDAPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, uint64_t offset, uint64_t len, const std::string& version, std::optional<bool> dirty, uint8_t op, optional_yield y, std::string& restore_val)
 {
   ldpp_dout(dpp, 10) << "LFUDAPolicy::" << __func__ << "(): updating entry: " << key << dendl;
   using handle_type = boost::heap::fibonacci_heap<LFUDAEntry*, boost::heap::compare<EntryComparator<LFUDAEntry>>>::handle_type;
@@ -447,12 +447,16 @@ void LFUDAPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, 
   /* check the dirty flag in the existing entry for the key and the incoming dirty flag. If the
      incoming dirty flag is false, that means update() is invoked as part of cleaning process,
      so we must not update its localWeight. */
-  if (entry != nullptr) {
+  if (entry) {
     refcount = entry->refcount;
-    if ((entry->dirty && !dirty)) {
-      localWeight = entry->localWeight;
-      updateLocalWeight = false;
-    } else {
+    if (entry->dirty && dirty.has_value()) {
+      bool is_dirty = dirty.value();
+      if (!is_dirty) {
+        localWeight = entry->localWeight;
+        updateLocalWeight = false;
+      }
+    }
+    if (updateLocalWeight) {
       localWeight = entry->localWeight + age;
     }
     if (op == RefCount::INCR) {
@@ -463,13 +467,31 @@ void LFUDAPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, 
         refcount -= 1;
       }
     }
-  }  
-  _erase(dpp, key, y);
+  }
+  //pick the existing value of dirty, if no value has been passed in
+  bool is_dirty = false;
+  if (dirty.has_value()) {
+    is_dirty = dirty.value();
+  } else if (entry) {
+    is_dirty = entry->dirty;
+  }
   ldpp_dout(dpp, 10) << "LFUDAPolicy::" << __func__ << "(): updated refcount is: " << refcount << dendl;
-  LFUDAEntry* e = new LFUDAEntry(key, offset, len, version, dirty, refcount, localWeight);
-  handle_type handle = entries_heap.push(e);
-  e->set_handle(handle);
-  entries_map.emplace(key, e);
+
+  if (entry) {
+    entry->key = key;
+    entry->offset = offset;
+    entry->len = len;
+    entry->version = version;
+    entry->dirty = is_dirty;
+    entry->refcount = refcount;
+    entry->localWeight = localWeight;
+    entries_heap.update(entry->handle, entry);
+  } else {
+    LFUDAEntry* e = new LFUDAEntry(key, offset, len, version, is_dirty, refcount, localWeight);
+    handle_type handle = entries_heap.push(e);
+    e->set_handle(handle);
+    entries_map.emplace(key, e);
+  }
 
   if (updateLocalWeight) {
     int ret = -1;
@@ -664,7 +686,9 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 	  } else {
 	    ldpp_dout(dpp, 0) << "Failed to delete blocks for: " << e->key << ", ret=" << ret << dendl;
 	  }
-	}
+	} else {
+    erase_dirty_object(dpp, e->key, null_yield);
+  }
       } else {
 	rgw_user c_rgw_user = e->user; 
 	//writing data to the backend
@@ -698,17 +722,14 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 	ldpp_dout(dpp, 10) << __func__ << "(): e->key=" << e->key << dendl;
 	int op_ret;
 	if (e->delete_marker) {
-	  bool null_delete_marker = (c_obj->get_instance() == "null");
-	  if (null_delete_marker) {
-	    //clear the instance for backend store
-	    c_obj->clear_instance();
-	  }
 	  std::unique_ptr<rgw::sal::Object::DeleteOp> del_op = c_obj->get_delete_op();
 	  del_op->params.obj_owner = owner;
 	  del_op->params.bucket_owner = c_bucket->get_owner();
 	  del_op->params.versioning_status = c_bucket->get_info().versioning_status();
 	  //populate marker_version_id only when delete marker is not null
-	  del_op->params.marker_version_id = e->version;
+    if (!null_instance) {
+	    del_op->params.marker_version_id = e->version;
+    }
 	  op_ret = del_op->delete_obj(dpp, null_yield, rgw::sal::FLAG_LOG_OP);
 	  if (op_ret >= 0) {
 	    bool delete_marker = del_op->result.delete_marker;
@@ -719,10 +740,6 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 	    ldpp_dout(dpp, 20) << __func__ << "delete_obj returned ret=" << op_ret << dendl;
 	    erase_dirty_object(dpp, e->key, null_yield);
 	    continue;
-	  }
-	  if (null_delete_marker) {
-	    //restore instance for directory data processing in later steps
-	    c_obj->set_instance("null");
 	  }
 	} else { //end-if delete_marker
 
@@ -939,9 +956,8 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 		}
 	      }
 	      //delete entry from ordered set of objects, as older versions would have been written to the backend store
-	      ret = bucketDir->zrem(dpp, e->bucket_id, c_obj->get_name(), y, true);
+	      ret = bucketDir->zrem(dpp, e->bucket_id, c_obj->get_name(), y);
 	      if (ret < 0) {
-		blockDir->discard(dpp, y);
 		ldpp_dout(dpp, 0) << __func__ << "(): Failed to queue zrem for object entry: " << c_obj->get_name() << ", ret=" << ret << dendl;
 		continue;
 	      }
@@ -951,7 +967,7 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 	      .objName = c_obj->get_name(),
 	      .bucketName = c_obj->get_bucket()->get_bucket_id(),
 	    };
-	    ret = objDir->zremrangebyscore(dpp, &dir_obj, e->creationTime, e->creationTime, y, true);
+	    ret = objDir->zremrangebyscore(dpp, &dir_obj, e->creationTime, e->creationTime, y);
 	    if (ret < 0) {
 	      ldpp_dout(dpp, 0) << __func__ << "(): Failed to remove object from ordered set with error: " << ret << dendl;
 	      continue;
@@ -963,7 +979,11 @@ void LFUDAPolicy::cleaning(const DoutPrefixProvider* dpp)
 	erase_dirty_object(dpp, e->key, null_yield);
       }
     } else if (diff < interval) { //end-if std::difftime(time(NULL), e->creationTime) > interval
-      std::this_thread::sleep_for(std::chrono::seconds(interval - diff));
+      {
+        std::unique_lock<std::mutex> wait_lock(lfuda_cleaning_lock);
+        cond.wait_for(wait_lock, std::chrono::seconds(interval - diff), []{ return quit.load(); });
+      }
+      continue;
     }
   } //end-while true
 }
@@ -980,7 +1000,7 @@ int LRUPolicy::exist_key(const std::string& key)
 int LRUPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional_yield y)
 {
   const std::lock_guard l(lru_lock);
-  uint64_t freeSpace = cacheDriver->get_free_space(dpp);
+  uint64_t freeSpace = cacheDriver->get_free_space(dpp, y);
 
   while (freeSpace < size) {
     auto p = entries_lru_list.front();
@@ -992,17 +1012,21 @@ int LRUPolicy::eviction(const DoutPrefixProvider* dpp, uint64_t size, optional_y
       return ret;
     }
 
-    freeSpace = cacheDriver->get_free_space(dpp);
+    freeSpace = cacheDriver->get_free_space(dpp, y);
   }
 
   return 0;
 }
 
-void LRUPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, uint64_t offset, uint64_t len, const std::string& version, bool dirty, uint8_t op, optional_yield y, std::string& restore_val)
+void LRUPolicy::update(const DoutPrefixProvider* dpp, const std::string& key, uint64_t offset, uint64_t len, const std::string& version, std::optional<bool> dirty, uint8_t op, optional_yield y, std::string& restore_val)
 {
   const std::lock_guard l(lru_lock);
   _erase(dpp, key, y);
-  Entry* e = new Entry(key, offset, len, version, dirty, 0);
+  bool is_dirty = false;
+  if (dirty.has_value()) {
+    is_dirty = dirty.value();
+  }
+  Entry* e = new Entry(key, offset, len, version, is_dirty, 0);
   entries_lru_list.push_back(*e);
   entries_map.emplace(key, e);
 }

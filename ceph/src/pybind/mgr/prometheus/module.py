@@ -185,7 +185,7 @@ HEALTH_CHECKS = [
     alert_metric('SLOW_OPS', 'OSD or Monitor requests taking a long time to process'),
 ]
 
-HEALTHCHECK_DETAIL = ('name', 'severity')
+HEALTHCHECK_DETAIL = ('name', 'severity', 'message')
 
 
 class Severity(enum.Enum):
@@ -1106,6 +1106,30 @@ class Module(MgrModule, OrchestratorClientMixin):
         self.log.info('Config changed, signaling serve loop to restart engine')
         self.config_change_event.set()
 
+    def _process_cert_health_detail(self, alert_id: str, health_data: dict) -> None:
+        """Process certificate health check details and set metrics."""
+        severity = health_data.get('severity', 'unknown')
+        detail_messages = health_data.get('detail', [])
+        if not detail_messages:
+            return
+
+        for detail_entry in detail_messages:
+            message = detail_entry.get('message', '')
+            if not message:
+                continue
+
+            try:
+                self.metrics['health_detail'].set(
+                    1,
+                    (
+                        alert_id,
+                        str(severity),
+                        str(message)
+                    )
+                )
+            except Exception as e:
+                self.log.error(f"Failed to process {alert_id} message '{message}': {e}")
+
     @profile_method()
     def get_health(self) -> None:
 
@@ -1155,14 +1179,22 @@ class Module(MgrModule, OrchestratorClientMixin):
                     # health check is not active, so give it a default of 0
                     self.metrics[path].set(0)
 
+        for alert_id in ('CEPHADM_CERT_ERROR', 'CEPHADM_CERT_WARNING'):
+            if alert_id in active_names:
+                self._process_cert_health_detail(alert_id, active_healthchecks[alert_id])
+
         self.health_history.check(health)
 
         for name, info in self.health_history.healthcheck.items():
+            # Skip CEPHADM_CERT_ERROR and CEPHADM_CERT_WARNING as they're handled specially above with message details
+            if name in ('CEPHADM_CERT_ERROR', 'CEPHADM_CERT_WARNING'):
+                continue
             v = 1 if info.active else 0
             self.metrics['health_detail'].set(
                 v, (
                     name,
-                    str(info.severity))
+                    str(info.severity),
+                    '')
             )
 
     @profile_method()
@@ -1422,6 +1454,11 @@ class Module(MgrModule, OrchestratorClientMixin):
             obj_store = osd_metadata.get('osd_objectstore', '')
             f_iface = osd_metadata.get('front_iface', '')
             b_iface = osd_metadata.get('back_iface', '')
+            bs_min_alloc = osd_metadata.get('bluestore_min_alloc_size', '')
+            bs_dedicated_db = osd_metadata.get('bluestore_dedicated_db', '')
+            bs_dedicated_wal = osd_metadata.get('bluestore_dedicated_wal', '')
+            c_version_created = osd_metadata.get('ceph_version_when_created', '')
+            c_created_at = osd_metadata.get('created_at', '')
 
             self.metrics['osd_metadata'].set(1, (
                 b_iface,
@@ -1432,7 +1469,12 @@ class Module(MgrModule, OrchestratorClientMixin):
                 osd_version[0],
                 obj_store,
                 p_addr,
-                osd_version[1]
+                osd_version[1],
+                bs_min_alloc,
+                bs_dedicated_db,
+                bs_dedicated_wal,
+                c_version_created,
+                c_created_at
             ))
 
             # collect osd status
@@ -2010,15 +2052,16 @@ class Module(MgrModule, OrchestratorClientMixin):
             try:
                 smb_data = json.loads(out)
 
+                self.log.info("Processing SMB share resource")
                 for resource in smb_data.get('resources', []):
                     if resource.get('resource_type') == 'ceph.smb.share':
-                        self.log.info("Processing SMB share resource")
                         cluster_id = resource.get('cluster_id')
                         if not cluster_id:
                             self.log.debug("Skipping share with missing cluster_id")
                             continue
 
                         share_id = resource.get('share_id', '')
+                        self.log.debug(f"Processing SMB share resource: {share_id} in cluster {cluster_id}")
                         cephfs = resource.get('cephfs', {})
                         cephfs_volume = cephfs.get('volume', '')
                         cephfs_subvolumegroup = cephfs.get('subvolumegroup', '_nogroup')
@@ -2166,6 +2209,23 @@ class Module(MgrModule, OrchestratorClientMixin):
     def get_hardware_metrics(self) -> None:
         """Fetch node-proxy fullreport and export all hardware metrics."""
         if not self.orch_is_available():
+            return
+
+        # node-proxy is only implemented by the cephadm orchestrator backend.
+        # Other backends (e.g. rook) report available() as True but don't
+        # implement node_proxy_fullreport(), so calling it every scrape would
+        # raise NotImplementedError on every invocation for no reason.
+        #
+        # Read the backend name directly from config instead of asking the
+        # orchestrator module for it: orch_is_available() above already
+        # makes that exact remote() call internally (via available()), so
+        # a second self.remote() here would just repeat the same
+        # dispatch_remote() round trip for no benefit.
+        try:
+            if self.get_module_option_ex('orchestrator', 'orchestrator') != 'cephadm':
+                return
+        except Exception as e:
+            self.log.debug(f"Failed to determine orchestrator backend: {e}")
             return
 
         try:

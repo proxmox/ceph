@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 #pragma once
 
 #include <compare>
@@ -8,6 +9,10 @@
 #include "include/utime.h"
 #include "osd/osd_types.h"
 #include "osd/scrubber_common.h"
+
+namespace ceph {
+class Formatter;
+}  // namespace ceph
 
 namespace Scrub {
 
@@ -83,6 +88,8 @@ struct SchedEntry {
   /// either 'none', or the reason for the latest failure/delay (for
   /// logging/reporting purposes)
   delay_cause_t last_issue{delay_cause_t::none};
+
+  void dump(ceph::Formatter& f) const;
 };
 
 
@@ -100,8 +107,8 @@ static inline std::weak_ordering cmp_ripe_entries(
       cmp != 0) {
     return cmp;
   }
-  if (r.level < l.level) {
-    return std::weak_ordering::less;
+  if (auto cmp = r.level <=> l.level; cmp != 0) {
+    return cmp;
   }
   if (auto cmp = std::weak_order(
 	  double(l.schedule.not_before), double(r.schedule.not_before));
@@ -129,8 +136,8 @@ static inline std::weak_ordering cmp_future_entries(
       cmp != 0) {
     return cmp;
   }
-  if (r.level < l.level) {
-    return std::weak_ordering::less;
+  if (auto cmp = r.level <=> l.level; cmp != 0) {
+    return cmp;
   }
   return std::weak_ordering::greater;
 }
@@ -210,7 +217,7 @@ struct formatter<Scrub::SchedEntry> {
   auto format(const Scrub::SchedEntry& st, FormatContext& ctx) const
   {
     return fmt::format_to(
-	ctx.out(), "{}/{},nb:{:s},({},tr:{:s})", st.pgid,
+	ctx.out(), "{}/{},nb:{:s},({},tr:{:s})", st.pgid.pgid,
 	(st.level == scrub_level_t::deep ? "dp" : "sh"), st.schedule.not_before,
 	st.urgency, st.schedule.scheduled_at);
   }

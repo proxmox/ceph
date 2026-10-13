@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=2 sw=2 expandtab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=2 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -1035,6 +1035,7 @@ int DaosObject::restore_obj_from_cloud(Bucket* bucket,
           uint64_t olh_epoch,
           std::optional<uint64_t> days,
 	  bool& in_progress,
+	  uint64_t& size,
           const DoutPrefixProvider* dpp, 
           optional_yield y)
 {
@@ -1695,9 +1696,6 @@ int DaosMultipartUpload::complete(
     prefix_map_t& processed_prefixes) {
   ldpp_dout(dpp, 20) << "DEBUG: complete" << dendl;
   char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
-  char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
-  std::string etag;
-  bufferlist etag_bl;
   MD5 hash;
   // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
   hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
@@ -1830,15 +1828,14 @@ int DaosMultipartUpload::complete(
   } while (truncated);
   hash.Final((unsigned char*)final_etag);
 
-  buf_to_hex((unsigned char*)final_etag, sizeof(final_etag), final_etag_str);
-  snprintf(&final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2],
-           sizeof(final_etag_str) - CEPH_CRYPTO_MD5_DIGESTSIZE * 2, "-%lld",
-           (long long)part_etags.size());
-  etag = final_etag_str;
-  ldpp_dout(dpp, 10) << "calculated etag: " << etag << dendl;
 
-  etag_bl.append(etag);
-
+  append_bl(etag_bl, CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16, [&](auto iter) {
+    auto start = iter;
+    iter = buf_to_hex(final_etag, iter);
+    iter = fmt::format_to(iter, "-{}", part_etags.size());
+    ldpp_dout(dpp, 10) << "calculated etag: " << std::string_view{start, iter} << dendl;
+    return iter;
+  });
   attrs[RGW_ATTR_ETAG] = etag_bl;
 
   if (compressed) {
@@ -2138,7 +2135,8 @@ int DaosStore::list_roles(const DoutPrefixProvider *dpp,
 int DaosStore::store_oidc_provider(const DoutPrefixProvider* dpp,
                                    optional_yield y,
                                    const RGWOIDCProviderInfo& info,
-                                   bool exclusive) {
+                                   bool exclusive,
+                                   RGWObjVersionTracker* objv_tracker) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
@@ -2146,7 +2144,9 @@ int DaosStore::load_oidc_provider(const DoutPrefixProvider* dpp,
                                   optional_yield y,
                                   std::string_view tenant,
                                   std::string_view url,
-                                  RGWOIDCProviderInfo& info) {
+                                  RGWOIDCProviderInfo& info,
+                                  RGWObjVersionTracker* objv_tracker)
+{
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 

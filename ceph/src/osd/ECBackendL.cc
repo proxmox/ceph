@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -1218,7 +1219,7 @@ void ECBackendL::handle_sub_write_reply(
       "{ \"prefix\": \"osd down\", \"ids\": [\"" + std::to_string( get_parent()->whoami() ) + "\"] }";
     vector<std::string> vcmd{cmd};
     dout(0) << __func__ << " Error inject - marking OSD down" << dendl;
-    get_parent()->start_mon_command(vcmd, {}, nullptr, nullptr, nullptr);
+    get_parent()->start_mon_command(std::move(vcmd), {}, nullptr, nullptr, nullptr);
   }
   rmw_pipeline.check_ops();
 }
@@ -1455,7 +1456,7 @@ struct ECClassicalOp : ECCommonL::RMWPipeline::Op {
       DoutPrefixProvider *dpp,
       const ceph_release_t require_osd_release) final
   {
-    assert(t);
+    ceph_assert(t);
     ECTransactionL::generate_transactions(
       t.get(),
       plan,
@@ -1572,7 +1573,7 @@ void ECBackendL::submit_transaction(
   rmw_pipeline.start_rmw(std::move(op));
 }
 
-int ECBackendL::objects_read_sync(
+int ECBackendL::objects_read_local(
   const hobject_t &hoid,
   uint64_t off,
   uint64_t len,
@@ -1620,17 +1621,20 @@ void ECBackendL::objects_read_async(
     list<pair<ec_align_t,
 	      pair<bufferlist*, Context*> > > to_read;
     unique_ptr<Context> on_complete;
+    CephContext *cct;
     cb(const cb&) = delete;
     cb(cb &&) = default;
     cb(ECBackendL *ec,
        const hobject_t &hoid,
        const list<pair<ec_align_t,
                   pair<bufferlist*, Context*> > > &to_read,
-       Context *on_complete)
+       Context *on_complete,
+       CephContext *cct)
       : ec(ec),
 	hoid(hoid),
 	to_read(to_read),
-	on_complete(on_complete) {}
+	on_complete(on_complete),
+        cct(cct) {}
     void operator()(ECCommonL::ec_extents_t &&results) {
       auto dpp = ec->get_parent()->get_dpp();
       ldpp_dout(dpp, 20) << "objects_read_async_cb: got: " << results
@@ -1663,6 +1667,10 @@ void ECBackendL::objects_read_async(
           ldpp_dout(dpp, 20) << "length: " << length << dendl;
           ldpp_dout(dpp, 20) << "range length: " << range_length << dendl;
 	  ceph_assert(offset + length <= range_offset + range_length);
+          if (cct->_conf->bluestore_debug_inject_read_err &&
+              ECInject::test_parity_read(hoid)) {
+            length = range_length;
+          }
 	  read.second.first->substr_of(
 	    range.first.get_val(),
 	    offset - range_offset,
@@ -1693,7 +1701,8 @@ void ECBackendL::objects_read_async(
 	cb(this,
 	   hoid,
 	   to_read,
-	   on_complete)));
+	   on_complete,
+           cct)));
 }
 
 void ECBackendL::objects_read_and_reconstruct(
@@ -1747,10 +1756,6 @@ int ECBackendL::be_deep_scrub(
   dout(10) << __func__ << " " << poid << " pos " << pos << dendl;
   int r;
 
-  uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
-                           CEPH_OSD_OP_FLAG_FADVISE_DONTNEED |
-                           CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE;
-
   utime_t sleeptime;
   sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
   if (sleeptime != utime_t()) {
@@ -1775,7 +1780,7 @@ int ECBackendL::be_deep_scrub(
       poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
     pos.data_pos,
     stride, bl,
-    fadvise_flags);
+    ECCommonL::scrub_fadvise_flags);
   if (r < 0) {
     dout(20) << __func__ << "  " << poid << " got "
 	     << r << " on read, read_error" << dendl;

@@ -1,11 +1,12 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 /**
  * Server-side encryption integrations with Key Management Systems (SSE-KMS)
  */
 
 #include <sys/stat.h>
+#include <optional>
 #include "include/str_map.h"
 #include "common/safe_io.h"
 #include "rgw/rgw_crypt.h"
@@ -13,11 +14,15 @@
 #include "rgw/rgw_b64.h"
 #include "rgw/rgw_kms.h"
 #include "rgw/rgw_kmip_client.h"
+#include "rgw/rgw_perf_counters.h"
+#include "rgw_kms_cache.h"
+#include "rgw_string.h"
 #include <rapidjson/allocators.h>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include "rapidjson/error/error.h"
 #include "rapidjson/error/en.h"
+#include <regex>
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -117,6 +122,14 @@ static void concat_url(std::string &url, std::string path) {
     }
     url.append(path);
   }
+}
+
+static bool validate_barbican_key_id(std::string_view key_id) {
+  // Barbican expects UUID4 secret ids.
+  // See barbican: common/utils.py, api/controllers/secrets.py
+  static const std::regex uuid_4_re{
+      R"(^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"};
+  return std::regex_match(key_id.data(), uuid_4_re);
 }
 
 /**
@@ -279,12 +292,11 @@ protected:
     if (postdata.length()) {
       secret_req.set_post_data(postdata);
       secret_req.set_send_length(postdata.length());
+      secret_req.append_header("Content-Type", "application/json");
     }
 
-    secret_req.append_header("X-Vault-Token", vault_token);
-    if (!vault_token.empty()){
+    if (!vault_token.empty()) {
       secret_req.append_header("X-Vault-Token", vault_token);
-      vault_token.replace(0, vault_token.length(), vault_token.length(), '\000');
     }
 
     string vault_namespace = kctx.k_namespace();
@@ -494,6 +506,8 @@ public:
     int res = send_request(dpp, "POST", "/datakey/plaintext/", key_id,
                            post_data, y, secret_bl);
     if (res < 0) {
+      ldpp_dout(dpp, 0) << "ERROR: Failed to send request to Vault, res: "
+                        << res << " response: " << string_view(secret_bl.c_str(), secret_bl.length()) << dendl;
       return res;
     }
 
@@ -579,6 +593,8 @@ public:
     int res = send_request(dpp, "POST", "/decrypt/", key_id,
                            post_data, y, secret_bl);
     if (res < 0) {
+      ldpp_dout(dpp, 0) << "ERROR: Failed to send request to Vault for decrypt, res: "
+                        << res << " response: " << string_view(secret_bl.c_str(), secret_bl.length()) << dendl;
       return res;
     }
 
@@ -647,12 +663,11 @@ public:
     int res = send_request(dpp, "POST", "/keys/", key_name,
                            post_data, y, dummy_bl);
     if (res < 0) {
-      return res;
-    }
-    if (dummy_bl.length() != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: unexpected response from Vault making a key: "
+      ldpp_dout(dpp, 0) << "ERROR: key creation failed by Vault, ret: "
+        << res << " response: "
         << std::string_view(dummy_bl.c_str(), dummy_bl.length())
         << dendl;
+      return res;
     }
     return 0;
   }
@@ -919,6 +934,10 @@ static int request_key_from_barbican(const DoutPrefixProvider *dpp,
                                      const std::string& barbican_token,
                                      optional_yield y,
                                      std::string& actual_key) {
+  if (!validate_barbican_key_id(key_id)) {
+    return -EINVAL;
+  }
+
   int res;
 
   CephContext* cct = dpp->get_cct();
@@ -929,6 +948,7 @@ static int request_key_from_barbican(const DoutPrefixProvider *dpp,
   }
   concat_url(secret_url, "/v1/secrets/");
   concat_url(secret_url, std::string(key_id));
+  concat_url(secret_url, "/payload");
 
   bufferlist secret_bl;
   RGWHTTPTransceiver secret_req(cct, "GET", secret_url, &secret_bl);
@@ -1164,41 +1184,97 @@ public:
   };
 };
 
-int reconstitute_actual_key_from_kms(const DoutPrefixProvider *dpp,
-                                     map<string, bufferlist>& attrs,
-                                     optional_yield y,
-                                     std::string& actual_key)
-{
-  std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
-  KMSContext kctx { dpp->get_cct() };
-  const std::string &kms_backend { kctx.backend() };
+static int maybe_cache_kms_fetch(
+    const DoutPrefixProvider* dpp, const std::string& cache_prefix,
+    const std::string& key_id, rgw::kms::KMSCache* kms_cache,
+    const kms::KMSCache::FetchFn& fetch, std::string& actual_key,
+    optional_yield y) {
+  if (kms_cache == nullptr ||
+      !dpp->get_cct()->_conf->rgw_crypt_s3_kms_cache_enabled) {
+    const auto ret = fetch(actual_key);
+    if (perfcounter) {
+      if (ret == -ENOENT) {
+        perfcounter->inc(l_rgw_kms_error_permanent);
+      } else if (ret < 0) {
+        perfcounter->inc(l_rgw_kms_error_transient);
+      }
+    }
+    return ret;
+  }
+  return kms_cache->do_cache(dpp, cache_prefix, key_id, fetch, actual_key, y);
+}
 
-  ldpp_dout(dpp, 20) << "Getting KMS encryption key for key " << key_id << dendl;
+int reconstitute_actual_key_from_kms(
+    const DoutPrefixProvider* dpp, map<string, bufferlist>& attrs,
+    rgw::kms::KMSCache* kms_cache, optional_yield y, std::string& actual_key) {
+  std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
+  KMSContext kctx{dpp->get_cct()};
+  const std::string& kms_backend{kctx.backend()};
+
+  ldpp_dout(dpp, 20) << "Getting KMS encryption key for key " << key_id
+                     << dendl;
   ldpp_dout(dpp, 20) << "SSE-KMS backend is " << kms_backend << dendl;
 
-  if (RGW_SSE_KMS_BACKEND_BARBICAN == kms_backend) {
-    return get_actual_key_from_barbican(dpp, key_id, y, actual_key);
+  std::string cache_key_id = key_id;
+  if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend &&
+      kctx.secret_engine() == RGW_SSE_KMS_VAULT_SE_TRANSIT) {
+    const std::string wrapped_key =
+        get_str_attribute(attrs, RGW_ATTR_CRYPT_DATAKEY);
+    // Vault Transit in "old" compat mode behaves like the other K/V
+    // style KMS in that it does not use DATAKEY.
+    if (!wrapped_key.empty()) {
+      cache_key_id = string_cat_reserve(
+          key_id, "T", calc_hash_sha256(wrapped_key).to_str());
+    }
+  } else if (RGW_SSE_KMS_BACKEND_TESTING == kms_backend) {
+    // The testing backend uses keysel to derive per-object keys with
+    // the same keyid.
+    const std::string key_selector =
+        get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYSEL);
+    if (!key_selector.empty()) {
+      cache_key_id = string_cat_reserve(
+          key_id, "S", calc_hash_sha256(key_selector).to_str());
+    }
   }
 
-  if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend) {
-    return reconstitute_actual_key_from_vault(dpp, kctx, attrs, y, actual_key);
-  }
+  const auto fetch = [&](std::string& out_secret) -> int {
+    std::optional<PerfGuard> perf;
+    if (perfcounter) {
+      perf.emplace(perfcounter, l_rgw_kms_fetch_lat);
+    }
+    if (RGW_SSE_KMS_BACKEND_BARBICAN == kms_backend) {
+      return get_actual_key_from_barbican(dpp, key_id, y, out_secret);
+    }
 
-  if (RGW_SSE_KMS_BACKEND_KMIP == kms_backend) {
-    return get_actual_key_from_kmip(dpp, key_id, y, actual_key);
-  }
+    if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend) {
+      return reconstitute_actual_key_from_vault(
+          dpp, kctx, attrs, y, out_secret);
+    }
 
-  if (RGW_SSE_KMS_BACKEND_TESTING == kms_backend) {
-    std::string key_selector = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYSEL);
-    return get_actual_key_from_conf(dpp, key_id, key_selector, actual_key);
-  }
+    if (RGW_SSE_KMS_BACKEND_KMIP == kms_backend) {
+      return get_actual_key_from_kmip(dpp, key_id, y, out_secret);
+    }
 
-  ldpp_dout(dpp, 0) << "ERROR: Invalid rgw_crypt_s3_kms_backend: " << kms_backend << dendl;
-  return -EINVAL;
+    if (RGW_SSE_KMS_BACKEND_TESTING == kms_backend) {
+      std::string key_selector =
+          get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYSEL);
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds(
+              dpp->get_cct()->_conf->rgw_crypt_s3_kms_testing_delay));
+      return get_actual_key_from_conf(dpp, key_id, key_selector, out_secret);
+    }
+    ldpp_dout(dpp, 0) << "ERROR: Invalid rgw_crypt_s3_kms_backend: "
+                      << kms_backend << dendl;
+    return -EINVAL;
+  };
+  const std::string cache_prefix = string_cat_reserve("kms_", kms_backend);
+  return maybe_cache_kms_fetch(
+      dpp, cache_prefix, cache_key_id, kms_cache, fetch, actual_key, y);
 }
 
 int make_actual_key_from_kms(const DoutPrefixProvider *dpp,
                              map<string, bufferlist>& attrs,
+                             rgw::kms::KMSCache* kms_cache,
                              optional_yield y,
                              std::string& actual_key)
 {
@@ -1206,7 +1282,7 @@ int make_actual_key_from_kms(const DoutPrefixProvider *dpp,
   const std::string &kms_backend { kctx.backend() };
   if (RGW_SSE_KMS_BACKEND_VAULT == kms_backend)
     return make_actual_key_from_vault(dpp, kctx, attrs, y, actual_key);
-  return reconstitute_actual_key_from_kms(dpp, attrs, y, actual_key);
+  return reconstitute_actual_key_from_kms(dpp, attrs, kms_cache, y, actual_key);
 }
 
 int reconstitute_actual_key_from_sse_s3(const DoutPrefixProvider *dpp,

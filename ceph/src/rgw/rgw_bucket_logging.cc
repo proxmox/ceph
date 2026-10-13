@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include <time.h>
 #include <random>
@@ -477,7 +477,7 @@ int log_record(rgw::sal::Driver* driver,
   int ret = rgw_parse_url_bucket(conf.target_bucket, s->bucket_tenant, target_tenant_name, target_bucket_name);
   if (ret < 0) {
     ldpp_dout(dpp, 1) << "ERROR: failed to parse logging bucket name '" << conf.target_bucket << "', ret = " << ret << dendl;
-    set_journal_err(fmt::format("Faild to parse logging bucket name '{}'", conf.target_bucket));
+    set_journal_err(fmt::format("Failed to parse logging bucket name '{}'", conf.target_bucket));
     return ret;
   }
   const rgw_bucket target_bucket_id(target_tenant_name, target_bucket_name);
@@ -486,7 +486,7 @@ int log_record(rgw::sal::Driver* driver,
                                &target_bucket, y);
   if (ret < 0) {
     ldpp_dout(dpp, 1) << "ERROR: failed to load logging bucket '" << target_bucket_id << "'. ret = " << ret << dendl;
-    set_journal_err(fmt::format("Faild to load logging bucket '{}'", target_bucket_id.bucket_id));
+    set_journal_err(fmt::format("Failed to load logging bucket '{}'", target_bucket_id.bucket_id));
     return ret;
   }
 
@@ -522,7 +522,7 @@ int log_record(rgw::sal::Driver* driver,
         return ret;
       }
     } else {
-      ldpp_dout(dpp, 20) << "INFO: record will be written to current logging object '" << obj_name << "'. will be comitted at: " << time_to_commit << dendl;
+      ldpp_dout(dpp, 20) << "INFO: record will be written to current logging object '" << obj_name << "'. will be committed at: " << time_to_commit << dendl;
     }
   } else if (ret == -ENOENT) {
     // try to create the temporary log object for the first time
@@ -536,13 +536,13 @@ int log_record(rgw::sal::Driver* driver,
     } else {
       ldpp_dout(dpp, 1) << "ERROR: failed to create first time logging object of logging bucket '" <<
         target_bucket_id << "' and prefix '" << conf.target_prefix << "'. ret = " << ret << dendl;
-      set_journal_err(fmt::format("Faild create first time logging object of logging bucket '{}'", target_bucket->get_name()));
+      set_journal_err(fmt::format("Failed to create first time logging object of logging bucket '{}'", target_bucket->get_name()));
       return ret;
     }
   } else {
     ldpp_dout(dpp, 1) << "ERROR: failed to get name of logging object of logging bucket '" <<
       target_bucket_id << "'. ret = " << ret << dendl;
-      set_journal_err(fmt::format("Faild to get name of logging object of logging bucket '{}'", target_bucket->get_name()));
+      set_journal_err(fmt::format("Failed to get name of logging object of logging bucket '{}'", target_bucket->get_name()));
     return ret;
   }
 
@@ -550,9 +550,19 @@ int log_record(rgw::sal::Driver* driver,
   const auto tt = ceph::coarse_real_time::clock::to_time_t(s->time);
   std::tm t{};
   localtime_r(&tt, &t);
-  auto user_or_account = s->account_name;
+  // AWS S3 spec: log the assumed-role ARN for STS-credentialed requests.
+  std::string user_or_account;
+  if (s->auth.identity && s->auth.identity->get_identity_type() == TYPE_ROLE) {
+    if (auto caller_arn = s->auth.identity->get_caller_identity(); caller_arn) {
+      user_or_account = caller_arn->to_string();
+    }
+  }
   if (user_or_account.empty()) {
-    s->user->get_id().to_str(user_or_account);
+    if (s->account_name.empty()) {
+      s->user->get_id().to_str(user_or_account);
+    } else {
+      user_or_account = s->account_name;
+    }
   }
   auto fqdn = s->info.host;
   if (!s->info.domain.empty() && !fqdn.empty()) {
@@ -585,7 +595,7 @@ int log_record(rgw::sal::Driver* driver,
         t,
         s->info.env->get("REMOTE_ADDR", "-"),
         dash_if_empty(user_or_account),
-        dash_if_empty(s->req_id),
+        dash_if_empty(s->trans_id),
         op_name,
         dash_if_empty_or_null(obj, obj->get_name()),
         s->info.method,
@@ -632,7 +642,7 @@ int log_record(rgw::sal::Driver* driver,
   if (ret = get_owner_quota_info(dpp, y, driver, target_bucket->get_owner(), user_quota); ret < 0) {
     ldpp_dout(dpp, 1) << "ERROR: failed to get quota of owner of logging bucket '" <<
       target_bucket_id << "' failed. ret = " << ret << dendl;
-    set_journal_err(fmt::format("Faild to get quota of owner of logging bucket '{}'", target_bucket->get_name()));
+    set_journal_err(fmt::format("Failed to get quota of owner of logging bucket '{}'", target_bucket->get_name()));
     return ret;
   }
   // start with system default quota
@@ -991,7 +1001,7 @@ int verify_target_bucket_policy(const DoutPrefixProvider* dpp,
     const auto source_account = to_string(s->bucket_owner.id);
     s->env.emplace("aws:SourceArn", source_bucket_arn);
     s->env.emplace("aws:SourceAccount", source_account);
-    if (policy.eval(s->env, ident, rgw::IAM::s3PutObject, target_resource_arn) != rgw::IAM::Effect::Allow) {
+    if (policy.eval(dpp, s->env, ident, rgw::IAM::s3PutObject, target_resource_arn) != rgw::IAM::Effect::Allow) {
       ldpp_dout(dpp, 1) << "ERROR: logging bucket: '" << target_bucket_id <<
         "' must have a bucket policy that allows logging service principal to put objects in the following resource ARN: '" <<
         target_resource_arn.to_string() << "' from source bucket ARN: '" << source_bucket_arn <<

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #pragma once
 
@@ -633,7 +633,7 @@ public:
     }
 
     PeeringCtxWrapper &get_recovery_ctx() {
-      assert(state->rctx);
+      ceph_assert(state->rctx);
       return *(state->rctx);
     }
 
@@ -1582,9 +1582,13 @@ public:
   /**
    * Per-PG latch state for rebuild time tracking. Cleared after each
    * completed rebuild event is recorded in the perf counters.
-   * The state is also cleared in clear_primary_state() so that an interval
-   * change or role transition (primary -> replica) does not carry a stale
-   * start time or baseline recovered count into a future interval.
+   * The state is also cleared in start_peering_interval() when the
+   * primary role actually changes across the transition, so that a
+   * role change (primary -> replica, or vice versa) does not carry a
+   * stale start time or baseline recovered count into a future primary
+   * stint. Peering-interval restarts that leave this OSD as primary
+   * throughout preserve the latch so an in-progress rebuild keeps
+   * accruing across them.
    */
   utime_t rebuild_start_time;
   int64_t rebuild_base_recovered = 0;
@@ -1834,7 +1838,7 @@ private:
 
   void update_blocked_by();
   void update_calc_stats();
-  void increment_stats_invalidations_counter(bool invalidation_state);
+  void increment_stats_invalidations_counter(int stats_invalidation_counter, bool invalidation_state);
 
   void add_log_entry(const pg_log_entry_t& e, ObjectStore::Transaction &t, bool applied);
 
@@ -2446,13 +2450,13 @@ public:
       return pg_log.get_missing();
     } else {
       auto it = peer_missing.find(peer);
-      assert(it != peer_missing.end());
+      ceph_assert(it != peer_missing.end());
       return it->second;
     }
   }
   const pg_info_t&get_peer_info(pg_shard_t peer) const {
     auto it = peer_info.find(peer);
-    assert(it != peer_info.end());
+    ceph_assert(it != peer_info.end());
     return it->second;
   }
   bool has_peer_info(pg_shard_t peer) const {
@@ -2462,7 +2466,7 @@ public:
   bool needs_recovery() const;
   bool needs_backfill() const;
 
-  bool can_serve_replica_read(const hobject_t &hoid);
+  bool can_serve_read(const hobject_t &hoid);
 
   /**
    * Returns whether the current acting set is able to go active

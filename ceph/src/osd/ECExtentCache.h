@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 /* EC "extent" cache.  This extent cache attempts to improve performance,
  * particularly for small sequential writes, by caching the results of recent
@@ -104,21 +104,10 @@ class ECExtentCache {
 
   class LRU {
    public:
-    class Key {
-     public:
+    struct Key {
       uint64_t offset;
       hobject_t oid;
-
-      Key(uint64_t offset, const hobject_t &oid) : offset(offset), oid(oid) {};
-
-      friend bool operator==(const Key &lhs, const Key &rhs) {
-        return lhs.offset == rhs.offset
-            && lhs.oid == rhs.oid;
-      }
-
-      friend bool operator!=(const Key &lhs, const Key &rhs) {
-        return !(lhs == rhs);
-      }
+      bool operator==(const Key&) const = default;
     };
 
     struct KeyHash {

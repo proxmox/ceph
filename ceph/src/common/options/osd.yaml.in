@@ -329,6 +329,13 @@ options:
     under most load conditions.
   default: 10.0
   with_legacy: true
+- name: osd_scrub_queued_snaptrims_limit
+  type: uint
+  level: advanced
+  desc: Do not initiate periodic scrubs when the total snap-trim queues across all
+    PGs exceeds this value. A value of '0' disables this limit.
+  default: 500
+  with_legacy: false
 - name: osd_scrub_min_interval
   type: float
   level: advanced
@@ -519,7 +526,7 @@ options:
   level: advanced
   desc: Number of bytes to read from an object at a time during deep scrub
   fmt_desc: Read size when doing a deep scrub.
-  default: 512_K
+  default: 4_M
   with_legacy: true
 - name: osd_deep_scrub_keys
   type: int
@@ -1086,6 +1093,7 @@ options:
     of 0 specifies the lowest possible reservation. Any value greater than
     0 and up to 1.0 specifies the minimum IO proportion to reserve for each
     client in terms of a fraction of the OSD's maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO proportion reserved for each client (default).
   default: 0
@@ -1093,15 +1101,18 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_client_wgt
   type: uint
   level: advanced
   desc: IO share for each client (default) over reservation
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO share for each client (default) over reservation.
   default: 1
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_client_lim
   type: float
   level: advanced
@@ -1111,6 +1122,7 @@ options:
     than 0 and up to 1.0 specifies the upper IO limit over reservation
     that each client receives in terms of a fraction of the OSD's
     maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO limit for each client (default) over reservation.
   default: 0
@@ -1118,6 +1130,7 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_recovery_res
   type: float
   level: advanced
@@ -1126,6 +1139,7 @@ options:
     greater than 0 and up to 1.0 specifies the minimum IO proportion to
     reserve for background recovery operations in terms of a fraction of
     the OSD's maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO proportion reserved for background recovery (default).
   default: 0
@@ -1133,15 +1147,18 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_recovery_wgt
   type: uint
   level: advanced
   desc: IO share for each background recovery over reservation
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO share for each background recovery over reservation.
   default: 1
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_recovery_lim
   type: float
   level: advanced
@@ -1151,6 +1168,7 @@ options:
     OSD. Any value greater than 0 and up to 1.0 specifies the upper IO
     limit over reservation that background recovery operation receives in
     terms of a fraction of the OSD's maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO limit for background recovery over reservation.
   default: 0
@@ -1158,6 +1176,7 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_best_effort_res
   type: float
   level: advanced
@@ -1166,6 +1185,7 @@ options:
     greater than 0 and up to 1.0 specifies the minimum IO proportion to
     reserve for background best_effort operations in terms of a fraction
     of the OSD's maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO proportion reserved for background best_effort (default).
   default: 0
@@ -1173,15 +1193,18 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_best_effort_wgt
   type: uint
   level: advanced
   desc: IO share for each background best_effort over reservation
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO share for each background best_effort over reservation.
   default: 1
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_background_best_effort_lim
   type: float
   level: advanced
@@ -1191,6 +1214,7 @@ options:
     OSD. Any value greater than 0 and up to 1.0 specifies the upper IO
     limit over reservation that background best_effort operation receives
     in terms of a fraction of the OSD's maximum IOPS capacity.
+    Ignored unless osd_mclock_profile is set to 'custom'.
   long_desc: Only considered for osd_op_queue = mclock_scheduler
   fmt_desc: IO limit for background best_effort over reservation.
   default: 0
@@ -1198,6 +1222,7 @@ options:
   max: 1.0
   see_also:
   - osd_op_queue
+  - osd_mclock_profile
 - name: osd_mclock_scheduler_anticipation_timeout
   type: float
   level: advanced
@@ -1400,6 +1425,29 @@ options:
   - osd_mclock_max_capacity_iops_ssd
   flags:
   - runtime
+- name: osd_mclock_max_starve_time_hdd
+  type: float
+  level: advanced
+  desc: Maximum time (seconds) the mclock-managed queue is allowed to be
+    starved by the immediate-class queue and other high-priority traffic (raw
+    priority at or above the scheduler's cutoff) before a forced dequeue
+    attempt yields it one turn, on rotational media. Bounds worst-case
+    starvation of mclock-managed classes under sustained high-priority load.
+  long_desc: The default (0.25s) is a starting-point value reasoned from
+    rotational media's own multi-millisecond natural per-op service time.
+    Bounded to a narrow range around that default. Too low erodes the
+    low-latency treatment immediate-class and other high-priority traffic (e.g.
+    client-driven EC subop I/O, peering) depends on; too high silently
+    re-opens the starvation this bound exists to prevent.
+  fmt_desc: Maximum time (seconds) the mclock-managed queue may be starved
+    by the immediate-class and high-priority queues before a forced
+    dequeue attempt, on rotational media.
+  default: 0.25
+  min: 0.1
+  max: 0.5
+  see_also:
+  - osd_op_queue
+  - osd_mclock_profile
 # Set to true for testing.  Users should NOT set this.
 # If set to true even after reading enough shards to
 # decode the object, any error will be reported.

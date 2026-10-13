@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include <boost/program_options/variables_map.hpp>
 #include <boost/program_options/parsers.hpp>
@@ -16,6 +16,7 @@
 #include "common/ceph_argparse.h"
 #include "include/stringify.h"
 #include "common/errno.h"
+#include "common/JSONFormatter.h"
 #include "common/safe_io.h"
 
 #include "os/bluestore/BlueFS.h"
@@ -343,6 +344,7 @@ int main(int argc, char **argv)
     ("command", po::value<string>(&action),
         "fsck, "
         "qfsck, "
+        "recovery-compare, "
         "allocmap, "
         "restore_cfb, "
         "repair, "
@@ -357,6 +359,7 @@ int main(int argc, char **argv)
         "show-label, "
         "show-label-at, "
         "set-label-key, "
+	"create-bdev-labels, "
         "rm-label-key, "
         "prime-osd-dir, "
         "bluefs-super-dump, "
@@ -489,6 +492,7 @@ int main(int argc, char **argv)
   if (action == "fsck" || action == "repair" ||
       action == "quick-fix" || action == "allocmap" ||
       action == "qfsck" || action == "restore_cfb" ||
+      action == "recovery-compare" ||
       action == "revert-wal-to-plain") {
     if (path.empty()) {
       cerr << "must specify bluestore path" << std::endl;
@@ -517,6 +521,16 @@ int main(int argc, char **argv)
     }
     if (action == "set-label-key" && value.size() == 0) {
       cerr << "must specify a value with -v" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  if (action == "create-bdev-labels") {
+    if (path.empty()) {
+      cerr << "must specify bluestore path" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (devs.size() != 1) {
+      cerr << "must specify the main bluestore device" << std::endl;
       exit(EXIT_FAILURE);
     }
   }
@@ -702,6 +716,18 @@ int main(int argc, char **argv)
     }
 #endif
   }
+  else if( action == "recovery-compare" ) {
+    cout << action << " bluestore compare new and legacy onode recovery" << std::endl;
+    validate_path(cct.get(), path, false);
+    BlueStore bluestore(cct.get(), path);
+    int r = bluestore.compare_allocation_recovery_for_bluestore_tool(cout);
+    if (r < 0) {
+      cerr << action << " failed: " << cpp_strerror(r) << std::endl;
+      exit(EXIT_FAILURE);
+    } else {
+      cout << action << " success" << std::endl;
+    }
+  }
   else if (action == "fsck" ||
       action == "repair" ||
       action == "quick-fix" ||
@@ -836,6 +862,32 @@ int main(int argc, char **argv)
     jf.close_section();
     jf.close_section();
     jf.flush(cout);
+  }
+  else if (action == "create-bdev-labels") {
+
+    std::vector<uint64_t> valid_positions = {0};
+
+    bool force = vm.count("yes-i-really-really-mean-it");
+    int r = BlueStore::create_bdev_labels(cct.get(), path, devs, &valid_positions, force);
+    if (r == -EPERM && !force) {
+      cerr << "device " << devs.front()
+           << " already supports bdev label refusing to create a new label without --yes-i-really-really-mean-it"
+           << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    if (r == -EEXIST && !force) {
+      cerr << "device " << devs.front() << " already has a label" << std::endl;
+      cerr << "Creating a new label on top of an existing one is a dangerous operation "
+	   << "which could cause data loss.\n"
+	   << "Please confirm with --yes-i-really-really-mean-it option" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    if (r < 0) {
+      cerr << "Failed to create bdev label: " << cpp_strerror(r) << std::endl;
+      exit(EXIT_FAILURE);
+    }
   }
   else if (action == "set-label-key") {
     bluestore_bdev_label_t label;

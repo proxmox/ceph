@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -91,14 +92,9 @@ struct mon_info_t {
   void decode(ceph::buffer::list::const_iterator& p);
   void print(std::ostream& out) const;
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(std::list<mon_info_t*>& ls);
+  static std::list<mon_info_t> generate_test_instances();
 };
 WRITE_CLASS_ENCODER_FEATURES(mon_info_t)
-
-inline std::ostream& operator<<(std::ostream& out, const mon_info_t& mon) {
-  mon.print(out);
-  return out;
-}
 
 class MonMap {
  public:
@@ -483,7 +479,7 @@ public:
 
   void check_health(health_check_map_t *checks) const;
 
-  static void generate_test_instances(std::list<MonMap*>& o);
+  static std::list<MonMap> generate_test_instances();
 protected:
   /**
    * build a monmap from a list of entity_addrvec_t's

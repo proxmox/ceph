@@ -1,10 +1,11 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #pragma once
 
 #include <boost/intrusive_ptr.hpp>
 #include "include/ceph_assert.h"
+#include "include/timegm.h" // for internal_timegm()
 #include "rgw_coroutine.h"
 #include "rgw_sal.h"
 #include "rgw_sal_rados.h"
@@ -45,6 +46,20 @@ public:
   void send_request(const DoutPrefixProvider *dpp) {
     get();
     retcode = _send_request(dpp);
+    {
+      std::lock_guard l{lock};
+      if (notifier) {
+        notifier->cb(); // drops its own ref
+        notifier = nullptr;
+      }
+    }
+    put();
+  }
+
+  // Complete immediately with a specific rc without sending any request.
+  void complete_immediate(int rc) {
+    get();
+    retcode = rc;
     {
       std::lock_guard l{lock};
       if (notifier) {
@@ -370,35 +385,6 @@ public:
 			    std::map<std::string, bufferlist> _attrs, bool exclusive);
 
   RGWObjVersionTracker objv_tracker;
-};
-
-class RGWAsyncLockSystemObj : public RGWAsyncRadosRequest {
-  rgw::sal::RadosStore* store;
-  rgw_raw_obj obj;
-  std::string lock_name;
-  std::string cookie;
-  uint32_t duration_secs;
-
-protected:
-  int _send_request(const DoutPrefixProvider *dpp) override;
-public:
-  RGWAsyncLockSystemObj(RGWCoroutine *caller, RGWAioCompletionNotifier *cn, rgw::sal::RadosStore* _store,
-                        RGWObjVersionTracker *_objv_tracker, const rgw_raw_obj& _obj,
-		        const std::string& _name, const std::string& _cookie, uint32_t _duration_secs);
-};
-
-class RGWAsyncUnlockSystemObj : public RGWAsyncRadosRequest {
-  rgw::sal::RadosStore* store;
-  rgw_raw_obj obj;
-  std::string lock_name;
-  std::string cookie;
-
-protected:
-  int _send_request(const DoutPrefixProvider *dpp) override;
-public:
-  RGWAsyncUnlockSystemObj(RGWCoroutine *caller, RGWAioCompletionNotifier *cn, rgw::sal::RadosStore* _store,
-                        RGWObjVersionTracker *_objv_tracker, const rgw_raw_obj& _obj,
-		        const std::string& _name, const std::string& _cookie);
 };
 
 template <class T>
@@ -770,8 +756,8 @@ class RGWSimpleRadosLockCR : public RGWSimpleCoroutine {
     uint32_t duration;
 
     rgw_raw_obj obj;
-
-    RGWAsyncLockSystemObj *req;
+    rgw_rados_ref ref;
+    boost::intrusive_ptr<RGWAioCompletionNotifier> cn;
 
 public:
   RGWSimpleRadosLockCR(RGWAsyncRadosProcessor *_async_rados, rgw::sal::RadosStore* _store,
@@ -802,8 +788,8 @@ class RGWSimpleRadosUnlockCR : public RGWSimpleCoroutine {
   std::string cookie;
 
   rgw_raw_obj obj;
-
-  RGWAsyncUnlockSystemObj *req;
+  rgw_rados_ref ref;
+  boost::intrusive_ptr<RGWAioCompletionNotifier> cn;
 
 public:
   RGWSimpleRadosUnlockCR(RGWAsyncRadosProcessor *_async_rados, rgw::sal::RadosStore* _store,
@@ -868,9 +854,9 @@ public:
 		        store(_store), op(_op), num_shards(_num_shards) {
     shards.reserve(num_shards);
     for (int i = 0; i < num_shards; ++i) {
-      char buf[oid_prefix.size() + 16];
-      snprintf(buf, sizeof(buf), "%s.%d", oid_prefix.c_str(), i);
-      RGWOmapAppend *shard = new RGWOmapAppend(async_rados, store, rgw_raw_obj(pool, buf));
+      RGWOmapAppend *shard = new RGWOmapAppend(
+	async_rados, store, rgw_raw_obj(pool,
+					fmt::format("{}.{}", oid_prefix, i)));
       shard->get();
       shards.push_back(shard);
       op->spawn(shard, false);

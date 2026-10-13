@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "rgw_realm_reloader.h"
 
@@ -7,7 +7,7 @@
 #include "rgw_bucket.h"
 #include "rgw_log.h"
 #include "rgw_rest.h"
-#include "rgw_user.h"
+#include "driver/rados/rgw_user.h"
 #include "rgw_process_env.h"
 #include "rgw_sal.h"
 #include "rgw_sal_rados.h"
@@ -118,8 +118,7 @@ void RGWRealmReloader::reload()
       ldpp_dout(&dp, 1) << "Creating new driver" << dendl;
 
       // recreate and initialize a new driver
-      DriverManager::Config cfg;
-      cfg.store_name = "rados";
+      DriverManager::Config cfg = DriverManager::get_config(false, g_ceph_context);
       cfg.filter_name = "none";
       env.driver = DriverManager::get_storage(&dp, cct, cfg, io_context,
 	  *env.site,
@@ -132,7 +131,7 @@ void RGWRealmReloader::reload()
           true,
           true, // run notification thread
           true, // run bucket logging thread
-          null_yield,
+          null_yield, env.cfgstore,
           cct->_conf->rgw_cache_enabled);
     }
 
@@ -194,8 +193,12 @@ void RGWRealmReloader::reload()
   if (env.lua.manager.get()) {
     env.lua.manager = env.driver->get_lua_manager(
         env.lua.manager->luarocks_path());
-    if (env.lua.background) {
-      env.lua.background->set_manager(env.lua.manager.get());
+    if (env.driver->get_name() == "rados") {
+      static_cast<rgw::sal::RadosLuaManager*>(env.lua.manager.get())->watch_reload(&dp);
+      if (env.lua.background) {
+        env.lua.background->set_manager(env.lua.manager.get());
+        env.lua.manager.get()->set_lua_background(env.lua.background);
+      }
     }
   }
 

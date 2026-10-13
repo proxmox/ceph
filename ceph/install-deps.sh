@@ -39,8 +39,8 @@ function munge_ceph_spec_in {
     local OUTFILE=$1
     sed -e 's/@//g' < ceph.spec.in > $OUTFILE
     # http://rpm.org/user_doc/conditional_builds.html
-    if $with_crimson; then
-        sed -i -e 's/%bcond_with crimson/%bcond_without crimson/g' $OUTFILE
+    if ! $with_crimson; then
+        sed -i -e 's/%bcond_without crimson/%bcond_with crimson/g' $OUTFILE
     fi
     if $for_make_check; then
         sed -i -e 's/%bcond_with make_check/%bcond_without make_check/g' $OUTFILE
@@ -426,6 +426,12 @@ else
 	# Put this before any other invocation of apt so it can clean
 	# up in a broken case.
         clean_boost_on_ubuntu
+
+        # update the local package index before installing any packages from the
+        # official repo
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update \
+            -y -o Acquire::Languages=none -o Acquire::Translation=none || true
+
         if [ "$INSTALL_EXTRA_PACKAGES" ]; then
             if ! $SUDO apt-get install -y $INSTALL_EXTRA_PACKAGES ; then
                 # try again. ported over from run-make.sh (orignally e278295)
@@ -451,8 +457,9 @@ else
                 [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu focal
                 ;;
             *Jammy*)
-                [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu jammy
                 $SUDO apt-get install -y gcc
+		ensure_decent_gcc_on_ubuntu 12 jammy
+                [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu jammy
                 ;;
             *)
                 $SUDO apt-get install -y gcc
@@ -515,33 +522,12 @@ else
                     $SUDO dnf -y install --nogpgcheck https://dl.fedoraproject.org/pub/epel/epel-release-latest-$MAJOR_VERSION.noarch.rpm
                 $SUDO rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-$MAJOR_VERSION
                 $SUDO rm -f /etc/yum.repos.d/dl.fedoraproject.org*
-                if test $ID = centos -a $MAJOR_VERSION = 8 ; then
-                    # for grpc-devel
-                    # See https://copr.fedorainfracloud.org/coprs/ceph/grpc/
-                    # epel is enabled for all major versions couple of lines above
-                    $SUDO dnf copr enable -y ceph/grpc
-
-                    # Enable 'powertools' or 'PowerTools' repo
-                    $SUDO dnf config-manager --set-enabled $(dnf repolist --all 2>/dev/null|gawk 'tolower($0) ~ /^powertools\s/{print $1}')
-                    dts_ver=11
-                    # before EPEL8 and PowerTools provide all dependencies, we use sepia for the dependencies
-                    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
-                    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
-                    $SUDO dnf -y module enable javapackages-tools
-                elif { [ "$ID" = centos ] || [ "$ID" = rocky ]; } && [ "$MAJOR_VERSION" -ge 9 ]; then
+                if { [ "$ID" = centos ] || [ "$ID" = rocky ]; } && [ "$MAJOR_VERSION" -ge 9 ]; then
+                    dts_ver=13
                     $SUDO dnf config-manager --set-enabled crb
                     if [ "$MAJOR_VERSION" -eq 10 ]; then
                         setup_lab_extras_repo
                     fi
-                elif test $ID = rhel -a $MAJOR_VERSION = 8 ; then
-                    dts_ver=11
-                    $SUDO dnf config-manager --set-enabled "codeready-builder-for-rhel-8-${ARCH}-rpms"
-                    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
-                    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
-                    $SUDO dnf -y module enable javapackages-tools
-
-                    # Enable ceph/grpc from copr for el8, this is needed for nvmeof management.
-                    $SUDO dnf copr enable -y ceph/grpc
                 fi
                 ;;
         esac

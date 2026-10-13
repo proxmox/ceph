@@ -48,17 +48,18 @@ extern pq_check_sse
 extern xor_check_base
 extern xor_check_sse
 
-%ifdef HAVE_AS_KNOWS_AVX512
- extern xor_gen_avx512
- extern pq_gen_avx512
-%endif
+extern xor_gen_avx512
+extern pq_gen_avx512
+
+extern pq_gen_avx512_gfni
+extern pq_gen_avx2_gfni
 
 mbin_interface xor_gen
 mbin_interface pq_gen
 
 
 mbin_dispatch_init6 xor_gen, xor_gen_base, xor_gen_sse, xor_gen_avx, xor_gen_avx, xor_gen_avx512
-mbin_dispatch_init6 pq_gen, pq_gen_base, pq_gen_sse, pq_gen_avx, pq_gen_avx2, pq_gen_avx512
+mbin_dispatch_init8 pq_gen, pq_gen_base, pq_gen_sse, pq_gen_avx, pq_gen_avx2, pq_gen_avx512, pq_gen_avx2_gfni, pq_gen_avx512_gfni
 
 section .data
 
@@ -135,9 +136,3 @@ xor_check_dispatch_init:
 	pop     rbx
 	pop     rax
 	ret
-
-;;;       func          	core, ver, snum
-slversion xor_gen,		00,   03,  0126
-slversion xor_check,		00,   03,  0127
-slversion pq_gen,		00,   03,  0128
-slversion pq_check,		00,   03,  0129

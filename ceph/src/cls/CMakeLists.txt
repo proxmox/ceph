@@ -48,8 +48,6 @@ if (WITH_RBD)
 
   set(cls_rbd_client_srcs rbd/cls_rbd_client.cc rbd/cls_rbd_types.cc)
   add_library(cls_rbd_client STATIC ${cls_rbd_client_srcs})
-  target_link_libraries(cls_rbd_client cls_lock_client)
-
 endif (WITH_RBD)
 
 # cls_lock
@@ -83,12 +81,20 @@ if (WITH_RADOSGW)
     INSTALL_RPATH ""
     CXX_VISIBILITY_PRESET hidden)
   install(TARGETS cls_otp DESTINATION ${cls_dir})
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_otp PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
 
   set(cls_otp_client_srcs
     otp/cls_otp_client.cc
     otp/cls_otp_types.cc
     )
   add_library(cls_otp_client STATIC ${cls_otp_client_srcs})
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_otp_client PUBLIC
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
 endif (WITH_RADOSGW)
 
 # cls_refcount
@@ -97,7 +103,6 @@ set(cls_refcount_srcs
   refcount/cls_refcount_ops.cc
   ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
 add_library(cls_refcount SHARED ${cls_refcount_srcs})
-target_link_libraries(cls_refcount json_spirit)
 set_target_properties(cls_refcount PROPERTIES
   VERSION "1.0.0"
   SOVERSION "1"
@@ -200,7 +205,7 @@ if (WITH_RADOSGW)
     rgw/cls_rgw_types.cc
     ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
   add_library(cls_rgw SHARED ${cls_rgw_srcs})
-  target_link_libraries(cls_rgw ${FMT_LIB} json_spirit)
+  target_link_libraries(cls_rgw ${FMT_LIB})
   target_include_directories(cls_rgw
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw")
@@ -209,6 +214,10 @@ if (WITH_RADOSGW)
     SOVERSION "1"
     INSTALL_RPATH ""
     CXX_VISIBILITY_PRESET hidden)
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_rgw PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
   install(TARGETS cls_rgw DESTINATION ${cls_dir})
 
   set(cls_rgw_client_srcs
@@ -219,6 +228,10 @@ if (WITH_RADOSGW)
   target_include_directories(cls_rgw_client
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw")
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_rgw_client PUBLIC
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
 
 endif (WITH_RADOSGW)
 
@@ -242,6 +255,7 @@ endif (WITH_CEPHFS)
 
 if (NOT WIN32)
   # cls_lua
+  find_package(Lua 5.3 REQUIRED)
   set(cls_lua_srcs
       lua/cls_lua.cc
       lua/lua_bufferlist.cc)
@@ -253,8 +267,7 @@ if (NOT WIN32)
     CXX_VISIBILITY_PRESET hidden)
   install(TARGETS cls_lua DESTINATION ${cls_dir})
   target_link_libraries(cls_lua
-      ${LUA_LIBRARIES}
-      json_spirit)
+      ${LUA_LIBRARIES})
   target_include_directories(cls_lua PRIVATE "${LUA_INCLUDE_DIR}")
 endif (NOT WIN32)
 
@@ -316,6 +329,10 @@ if (WITH_RADOSGW)
     SOVERSION "1"
     INSTALL_RPATH ""
     CXX_VISIBILITY_PRESET hidden)
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_rgw_gc PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
   install(TARGETS cls_rgw_gc DESTINATION ${cls_dir})
 
   set(cls_rgw_gc_client_srcs
@@ -325,6 +342,10 @@ if (WITH_RADOSGW)
   target_include_directories(cls_rgw_gc_client
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
 	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw")
+  if(COMPILER_SUPPORTS_VLA_ERROR)
+    target_compile_options(cls_rgw_gc_client PUBLIC
+      $<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>)
+  endif()
 endif (WITH_RADOSGW)
 
 

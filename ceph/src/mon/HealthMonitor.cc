@@ -1,5 +1,6 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -19,6 +20,8 @@
 #include <time.h>
 #include <iterator>
 
+#include "crush/CrushWrapper.h"
+
 #include "include/ceph_assert.h"
 #include "include/common_fwd.h"
 #include "include/stringify.h"
@@ -27,11 +30,16 @@
 #include "mon/MonMap.h"
 #include "mon/HealthMonitor.h"
 #include "mon/OSDMonitor.h"
+#include "osd/OSDMap.h"
+
 
 #include "messages/MMonCommand.h"
 #include "messages/MMonHealthChecks.h"
 
+#include "common/debug.h"
 #include "common/Formatter.h"
+#include "common/prime.h"
+#include "crush/CrushWrapper.h"
 
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
@@ -761,10 +769,46 @@ bool HealthMonitor::check_leader_health()
   // STRETCH MODE
   check_mon_crush_loc_stretch_mode(&pending);
 
+  //CHECK_ERASURE_CODE_PROFILE
+  check_erasure_code_profiles(&pending);
+
+  // MON_COLOCATED
+  if (g_conf().get_val<bool>("mon_warn_on_colocated_monitors")) {
+    check_for_colocated_monitors(&pending);
+  }
+
   if (pending != leader_checks.get_map()) {
     changed = true;
   }
   return changed;
+}
+
+void HealthMonitor::check_for_colocated_monitors(health_check_map_t *checks)
+{
+  std::unordered_map<std::string, std::vector<std::string>> unique_addrs;
+  for (auto& [mon_id, mon_info] : mon.monmap->mon_info) {
+    std::string ip = mon_info.public_addrs.msgr2_addr().ip_only_to_str();
+    unique_addrs[ip].push_back(mon_id);
+  }
+
+  bool has_colocated_mon = false;
+  ostringstream ss, ds;
+  for (const auto& [ip, mon_ids]: unique_addrs) {
+    unsigned size = mon_ids.size();
+    if (size > 1) {
+      has_colocated_mon = true;
+      fmt::print(ss, "{} monitors ({}) share the same ip = {}\n",
+                 size, fmt::join(mon_ids, ","), ip);
+      for (const auto& name: mon_ids) {
+        ds << "mon." << name << " is on the same node as another monitor\n";
+      }
+    }
+  }
+  
+  if (has_colocated_mon) {
+    auto& d = checks->add("MON_COLOCATED", HEALTH_WARN, ss.str(), 1);
+    d.detail.push_back(ds.str());
+  }
 }
 
 void HealthMonitor::check_for_older_version(health_check_map_t *checks)
@@ -1331,5 +1375,91 @@ void HealthMonitor::check_netsplit(health_check_map_t *checks, std::set<std::str
       first = false;
     }
     *_dout << "}" << dendl;
+  }
+}
+
+void HealthMonitor::check_erasure_code_profiles(health_check_map_t *checks)
+{
+  list<string> blaum_roth_details;
+  list<string> deprecated_details;
+  
+  //This is a loop that will go through all the erasure code profiles 
+  for (auto& erasure_code_profile : mon.osdmon()->osdmap.get_erasure_code_profiles()) {
+    dout(20) << "check_erasure_code_profiles " << "checking " << erasure_code_profile << dendl;
+
+    //This will look at the erasure code profiles technique is blaum_roth 
+    //and will check that the w key exists
+    auto technique = erasure_code_profile.second.find("technique");
+    if (technique != erasure_code_profile.second.end()) {
+      if (erasure_code_profile.second.at("technique") == "blaum_roth" && 
+      erasure_code_profile.second.count("w") == 1) {
+        //Read the w value from the profile and convert it to an int 
+        int w = std::stoi(erasure_code_profile.second.at("w"));
+        if ((w <= 2) || (w >= 256)) {
+          ostringstream ds;
+          ds << "The value of w must be greater than 2 and less than 256";
+          blaum_roth_details.push_back(ds.str());
+        }
+        if (!is_prime(w + 1)) {
+          ostringstream ds;
+          ds << "w+1="<< w+1 << " for the EC profile " << erasure_code_profile.first 
+            << " is not prime and could lead to data corruption";
+          blaum_roth_details.push_back(ds.str());
+        }
+      }
+    }
+
+    // Check for plugins and techniques that are deprecated in Umbrella
+    auto plugin = erasure_code_profile.second.find("plugin");
+    if (plugin != erasure_code_profile.second.end()) {
+      const string& plugin_name = erasure_code_profile.second.at("plugin");
+
+      // Check if plugin is clay, shec (including legacy variants) or legacy jerasure
+      if (plugin_name == "clay" ||
+          plugin_name == "shec" ||
+          plugin_name == "shec_generic" ||
+          plugin_name == "shec_sse3" ||
+          plugin_name == "shec_sse4" ||
+          plugin_name == "shec_neon" ||
+          plugin_name == "jerasure_generic" ||
+          plugin_name == "jerasure_sse3" ||
+          plugin_name == "jerasure_sse4" ||
+          plugin_name == "jerasure_neon") {
+        ostringstream ds;
+        ds << "EC profile '" << erasure_code_profile.first
+           << "' uses deprecated plugin '" << plugin_name << "'";
+        deprecated_details.push_back(ds.str());
+      }
+      // Check if plugin is jerasure with non-reed_sol_van technique
+      else if (plugin_name == "jerasure") {
+        auto technique_it = erasure_code_profile.second.find("technique");
+        if (technique_it != erasure_code_profile.second.end()) {
+          const string& technique_name = erasure_code_profile.second.at("technique");
+          if (technique_name != "reed_sol_van") {
+            ostringstream ds;
+            ds << "EC profile '" << erasure_code_profile.first
+               << "' uses deprecated jerasure technique '" << technique_name << "'";
+            deprecated_details.push_back(ds.str());
+          }
+        }
+      }
+    }
+  }
+
+  if (!blaum_roth_details.empty()) {
+    ostringstream ss;
+    ss << "1 or more EC profiles have a w value such that w+1 is not prime."
+      << " This can result in data corruption";
+    auto &d = checks->add("BLAUM_ROTH_W_IS_NOT_PRIME", HEALTH_WARN, ss.str(), blaum_roth_details.size());
+    d.detail.swap(blaum_roth_details);
+  }
+
+  if (!deprecated_details.empty()) {
+    ostringstream ss;
+    ss << "1 or more EC profiles are using a plugin and/or technique that are "
+       << "deprecated in the Umbrella release. This will be unsupported in the V release. "
+       << "Migrate objects to a new pool that uses a supported plugin and technique. ";
+    auto &d = checks->add("DEPRECATED_EC_PLUGIN", HEALTH_WARN, ss.str(), deprecated_details.size());
+    d.detail.swap(deprecated_details);
   }
 }

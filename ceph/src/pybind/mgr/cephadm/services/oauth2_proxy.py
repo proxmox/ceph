@@ -2,7 +2,7 @@ import logging
 from typing import List, Any, Tuple, Dict, cast, Optional, TYPE_CHECKING
 from copy import copy
 
-from orchestrator import DaemonDescription
+from orchestrator import DaemonDescription, DaemonDescriptionStatus
 from ceph.deployment.service_spec import OAuth2ProxySpec, MgmtGatewaySpec, ServiceSpec
 from cephadm.services.cephadmservice import CephadmService, CephadmDaemonDeploySpec
 from .service_registry import register_cephadm_service
@@ -20,6 +20,7 @@ class OAuth2ProxyService(CephadmService):
 
     def prepare_create(self, daemon_spec: CephadmDaemonDeploySpec) -> CephadmDaemonDeploySpec:
         assert self.TYPE == daemon_spec.daemon_type
+        super().prepare_create(daemon_spec)
         daemon_spec.final_config, daemon_spec.deps = self.generate_config(daemon_spec)
         return daemon_spec
 
@@ -33,7 +34,8 @@ class OAuth2ProxyService(CephadmService):
             for service in ['mgmt-gateway']
             for d in mgr.cache.get_daemons_by_service(service)
         ]
-        return deps
+        parent_deps = super().get_dependencies(mgr, spec, daemon_type)
+        return sorted(deps + parent_deps)
 
     def get_service_ips_and_hosts(self, service_name: str) -> List[str]:
         entries = set()
@@ -58,47 +60,26 @@ class OAuth2ProxyService(CephadmService):
         # if empty list provided, return empty Daemon Desc
         return DaemonDescription()
 
-    def get_certificates(self, svc_spec: OAuth2ProxySpec, daemon_spec: CephadmDaemonDeploySpec) -> Tuple[str, str]:
-        cert = self.mgr.cert_mgr.get_cert('oauth2_proxy_cert')
-        key = self.mgr.cert_mgr.get_key('oauth2_proxy_key')
-        user_made = False
-        if not (cert and key):
-            # not available on store, check if provided on the spec
-            if svc_spec.ssl_cert and svc_spec.ssl_key:
-                user_made = True
-                cert = svc_spec.ssl_cert
-                key = svc_spec.ssl_key
-            else:
-                # not provided on the spec, let's generate self-sigend certificates
-                addr = self.mgr.inventory.get_addr(daemon_spec.host)
-                host_fqdn = self.mgr.get_fqdn(daemon_spec.host)
-                cert, key = self.mgr.cert_mgr.generate_cert(host_fqdn, addr)
-            # save certificates
-            if cert and key:
-                self.mgr.cert_mgr.save_cert('oauth2_proxy_cert', cert, user_made=user_made)
-                self.mgr.cert_mgr.save_key('oauth2_proxy_key', key, user_made=user_made)
-            else:
-                logger.error("Failed to obtain certificate and key from mgmt-gateway.")
-        return cert, key
-
     def generate_config(self, daemon_spec: CephadmDaemonDeploySpec) -> Tuple[Dict[str, Any], List[str]]:
         assert self.TYPE == daemon_spec.daemon_type
         svc_spec = cast(OAuth2ProxySpec, self.mgr.spec_store[daemon_spec.service_name].spec)
         allowlist_domains = copy(svc_spec.allowlist_domains) or []
         allowlist_domains += self.get_service_ips_and_hosts('mgmt-gateway')
+        email_domains = copy(svc_spec.email_domains) or []
         context = {
             'spec': svc_spec,
             'cookie_secret': svc_spec.cookie_secret,
             'allowlist_domains': allowlist_domains,
+            'email_domains': email_domains,
             'redirect_url': svc_spec.redirect_url or self.get_redirect_url()
         }
 
-        cert, key = self.get_certificates(svc_spec, daemon_spec)
+        tls_pair = self.get_certificates(daemon_spec)
         daemon_config = {
             "files": {
                 "oauth2-proxy.conf": self.mgr.template.render(self.SVC_TEMPLATE_PATH, context),
-                "oauth2-proxy.crt": cert,
-                "oauth2-proxy.key": key,
+                "oauth2-proxy.crt": tls_pair.cert,
+                "oauth2-proxy.key": tls_pair.key,
             }
         }
 
@@ -106,8 +87,20 @@ class OAuth2ProxyService(CephadmService):
 
     def post_remove(self, daemon: DaemonDescription, is_failed_deploy: bool) -> None:
         """
-        Called before mgmt-gateway daemon is removed.
+        Called after an oauth2-proxy daemon is removed.
+        Disables Dashboard OAuth2 SSO if no other oauth2-proxy daemons remain running.
         """
-        # delete cert/key entires for this mgmt-gateway daemon
-        self.mgr.cert_mgr.rm_cert('oauth2_proxy_cert')
-        self.mgr.cert_mgr.rm_key('oauth2_proxy_key')
+        remaining_running = any(
+            dd.status == DaemonDescriptionStatus.running and dd.name() != daemon.name()
+            for dd in self.mgr.cache.get_daemons_by_service('oauth2-proxy')
+        )
+        if not remaining_running:
+            try:
+                if 'dashboard' in self.mgr.get('mgr_map')['modules'] \
+                        and self.mgr.get_module_option_ex('dashboard', 'sso_oauth2'):
+                    logger.warning('Last oauth2-proxy daemon removed, disabling Dashboard OAuth2 SSO')
+                    self.mgr.remote('dashboard', 'disable_oauth2_sso')
+            except Exception as e:
+                logger.warning('Failed to disable OAuth2 SSO after oauth2-proxy removal: %s', e)
+
+        super().post_remove(daemon, is_failed_deploy=is_failed_deploy)

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab
 
 #include "gtest/gtest.h"
 #include "os/bluestore/BlueStore.h"
@@ -22,10 +22,9 @@ TEST(rocksdb_bluefs_vselector, basic) {
     1ull << 30,
     level_base,
     level_multi,
-    g_ceph_context->_conf->bluestore_volume_selection_reserved_factor,
-    g_ceph_context->_conf->bluestore_volume_selection_reserved,
     g_ceph_context->_conf->bluestore_volume_selection_policy.find("use_some_extra")
       == 0);
+  selector.update_from_config(g_ceph_context);
 
   // taken from RocksDBBlueFSVolumeSelector::
   size_t log_bdev = 1; // LEVEL_LOG
@@ -35,7 +34,8 @@ TEST(rocksdb_bluefs_vselector, basic) {
   bluefs_extent_t e;
 
   ASSERT_EQ(4, selector.get_extra_level());
-  ASSERT_EQ(30ull << 30, selector.get_available_extra()); // 168GB - 1GB (L0) - 1GB (L1) - 8GB (L2) - 2*64GB (L3)
+  ASSERT_EQ(30ull << 30, selector.get_max_extra()); // 168GB - 1GB (L0) - 1GB (L1) - 8GB (L2) - 2*64GB (L3)
+  ASSERT_EQ(30ull << 30, selector.get_effective_extra()); // no history so we get max extra
 
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)log_bdev));
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)wal_bdev));
@@ -47,18 +47,34 @@ TEST(rocksdb_bluefs_vselector, basic) {
     e.length = 1ull * (1 << 30);
     selector.add_usage((void*)db_bdev, e);
   }
+
+  ASSERT_EQ(30ull << 30, selector.get_effective_extra()); // still 30GB is available
+
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)log_bdev));
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)wal_bdev));
   ASSERT_EQ(1, selector.select_prefer_bdev((void*)db_bdev));
   ASSERT_EQ(1, selector.select_prefer_bdev((void*)slow_bdev));
 
-  // 'Use' 30GB Slow level data at DB vol
-  for (size_t i = 0; i < 30; i++) {
+  // 'Use' 20GB Slow level data at DB vol
+  for (size_t i = 0; i < 20; i++) {
     e.bdev = 1; // DB dev
     e.length = 1ull * (1 << 30);
     ASSERT_EQ(1, selector.select_prefer_bdev((void*)slow_bdev));
     selector.add_usage((void*)slow_bdev, e);
   }
+  ASSERT_EQ(0, selector.select_prefer_bdev((void*)log_bdev));
+  ASSERT_EQ(0, selector.select_prefer_bdev((void*)wal_bdev));
+  ASSERT_EQ(1, selector.select_prefer_bdev((void*)db_bdev));
+  ASSERT_EQ(1, selector.select_prefer_bdev((void*)slow_bdev));
+
+  // 'Use' 10GB more Slow level data at DB vol
+  for (size_t i = 0; i < 10; i++) {
+    e.bdev = 1; // DB dev
+    e.length = 1ull * (1 << 30);
+    ASSERT_EQ(1, selector.select_prefer_bdev((void*)slow_bdev));
+    selector.add_usage((void*)slow_bdev, e);
+  }
+  // now slow data to be targeted to slow dev
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)log_bdev));
   ASSERT_EQ(0, selector.select_prefer_bdev((void*)wal_bdev));
   ASSERT_EQ(1, selector.select_prefer_bdev((void*)db_bdev));
@@ -94,6 +110,9 @@ TEST(rocksdb_bluefs_vselector, basic) {
     ASSERT_EQ(1, selector.select_prefer_bdev((void*)slow_bdev));
     selector.add_usage((void*)db_bdev, e);
   }
+  ASSERT_EQ(10ull << 30, selector.get_effective_extra()); // reduced extra due to historic usage
+
+  // 'Use' 10GB more slw level data at DB vol
   for (size_t i = 0; i < 10; i++) {
     e.bdev = 1; // DB dev
     e.length = 1ull * (1 << 30);
@@ -101,6 +120,7 @@ TEST(rocksdb_bluefs_vselector, basic) {
     selector.add_usage((void*)slow_bdev, e);
   }
   ASSERT_EQ(2, selector.select_prefer_bdev((void*)slow_bdev));
+  ASSERT_EQ(10ull << 30, selector.get_effective_extra()); // reduced extra due to historic usage
 
   // 'Unuse' remaining 10GB Slow level data at DB vol
   for (size_t i = 0; i < 10; i++) {
@@ -116,6 +136,7 @@ TEST(rocksdb_bluefs_vselector, basic) {
     selector.add_usage((void*)db_bdev, e);
   }
   ASSERT_EQ(2, selector.select_prefer_bdev((void*)slow_bdev));
+  ASSERT_EQ(0, selector.get_effective_extra()); // historic usage results in no extra
 
   // 'Unuse' 50GB DB level data, thi s wouldn't let slow data use DB volume anyway
   // due to updated historic maximum
@@ -125,11 +146,23 @@ TEST(rocksdb_bluefs_vselector, basic) {
     selector.sub_usage((void*)db_bdev, e);
   }
   ASSERT_EQ(2, selector.select_prefer_bdev((void*)slow_bdev));
+  ASSERT_EQ(0, selector.get_effective_extra()); // historic usage results in no extra
 
+  {
+    std::stringstream ss;
+    selector.dump(ss);
+    std::cout << ss.str() << std::endl;
+  }
+  {
+    std::stringstream ss;
+    ASSERT_NE(0, selector.get_max_db_total());
+    selector.reset_history(ss);
+    ASSERT_EQ(0, selector.get_max_db_total());
+    selector.dump(ss);
+    std::cout << ss.str() << std::endl;
+    ASSERT_EQ(30ull << 30, selector.get_effective_extra()); // no history any more
+  }
 
-  std::stringstream ss;
-  selector.dump(ss);
-  std::cout << ss.str() << std::endl;
 }
 
 int main(int argc, char **argv) {

@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*- 
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 #include "rgw_kafka.h"
 #include "rgw_url.h"
@@ -77,10 +77,14 @@ connection_id_t::connection_id_t(
     const boost::optional<const std::string&>& _ca_location,
     const boost::optional<const std::string&>& _mechanism,
     bool _ssl,
+    bool _verify_ssl,
     const boost::optional<const std::string&>& _ssl_certificate,
     const boost::optional<const std::string&>& _ssl_key,
-    const boost::optional<const std::string&>& _ssl_key_password)
-    : broker(_broker), user(_user), password(_password), ssl(_ssl) {
+    const boost::optional<const std::string&>& _ssl_key_password
+  )
+    : broker(_broker), user(_user), password(_password), ssl(_ssl),
+      verify_ssl(_verify_ssl) {
+
   if (_ca_location.has_value()) {
     ca_location = _ca_location.get();
   }
@@ -104,6 +108,7 @@ bool operator==(const connection_id_t& lhs, const connection_id_t& rhs) {
   return lhs.broker == rhs.broker && lhs.user == rhs.user &&
          lhs.password == rhs.password && lhs.ca_location == rhs.ca_location &&
          lhs.mechanism == rhs.mechanism && lhs.ssl == rhs.ssl &&
+         lhs.verify_ssl == rhs.verify_ssl &&
          lhs.ssl_certificate == rhs.ssl_certificate &&
          lhs.ssl_key == rhs.ssl_key &&
          lhs.ssl_key_password == rhs.ssl_key_password;
@@ -118,6 +123,7 @@ struct connection_id_hasher {
     boost::hash_combine(h, k.ca_location);
     boost::hash_combine(h, k.mechanism);
     boost::hash_combine(h, k.ssl);
+    boost::hash_combine(h, k.verify_ssl);
     boost::hash_combine(h, k.ssl_certificate);
     boost::hash_combine(h, k.ssl_key);
     boost::hash_combine(h, k.ssl_key_password);
@@ -177,7 +183,7 @@ struct connection_t {
   CallbackList callbacks;
   const std::string broker;
   const bool use_ssl;
-  const bool verify_ssl; // TODO currently ignored, not supported in librdkafka v0.11.6
+  const bool verify_ssl;
   const boost::optional<std::string> ca_location;
   const std::string user;
   const std::string password;
@@ -222,7 +228,7 @@ struct connection_t {
           const boost::optional<const std::string&>& _ssl_key,
           const boost::optional<const std::string&>& _ssl_key_password) :
       cct(_cct), broker(_broker), use_ssl(_use_ssl), verify_ssl(_verify_ssl), ca_location(_ca_location), user(_user), password(_password), mechanism(_mechanism),
-      ssl_certificate(_ssl_certificate), ssl_key(_ssl_key), ssl_key_password(_ssl_key_password) {}
+      ssl_certificate(_ssl_certificate), ssl_key(_ssl_key), ssl_key_password(_ssl_key_password) {}                                                                                                                                                        
 
   // dtor also destroys the internals
   ~connection_t() {
@@ -311,9 +317,22 @@ bool new_producer(connection_t* conn) {
   // however, testing with librdkafka v1.6.1 did not expire the message in that case. hence, a value of zero is changed to 1ms
   constexpr std::uint64_t min_message_timeout = 1;
   const auto message_timeout = std::max(min_message_timeout, conn->cct->_conf->rgw_kafka_message_timeout);
+  const auto batch_size = conn->cct->_conf->rgw_kafka_max_batch_size;
+  ldout(conn->cct, 1) << "Kafka connect: broker=" << conn->broker
+      << " use_ssl=" << conn->use_ssl
+      << " user=" << conn->user
+      << " message_timeout=" << message_timeout
+      << " batch_size=" << batch_size << dendl;
+
   if (rd_kafka_conf_set(conf.get(), "message.timeout.ms", 
         std::to_string(message_timeout).c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
 
+  if (batch_size > 0) {
+    if (rd_kafka_conf_set(conf.get(), "batch.size",
+        std::to_string(batch_size).c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
+    if (rd_kafka_conf_set(conf.get(), "message.max.bytes",
+        std::to_string(batch_size).c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
+  }
   // get list of brokers based on the bootstrap broker
   if (rd_kafka_conf_set(conf.get(), "bootstrap.servers", conn->broker.c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
 
@@ -343,6 +362,11 @@ bool new_producer(connection_t* conn) {
       ldout(conn->cct, 20) << "Kafka connect: successfully configured CA location" << dendl;
     } else {
       ldout(conn->cct, 20) << "Kafka connect: using default CA location" << dendl;
+    }
+    if (rd_kafka_conf_set(conf.get(), "enable.ssl.certificate.verification",
+                          conn->verify_ssl ? "true" : "false",
+                          errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+      goto conf_error;
     }
     if (conn->ssl_certificate) {
       if (rd_kafka_conf_set(conf.get(), "ssl.certificate.location", conn->ssl_certificate->c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
@@ -691,7 +715,7 @@ public:
     }
 
     connection_id_t tmp_id(broker_list, user, password, ca_location, mechanism,
-                           use_ssl, ssl_certificate, ssl_key, ssl_key_password);
+                           use_ssl, verify_ssl, ssl_certificate, ssl_key, ssl_key_password);
     std::lock_guard lock(connections_lock);
     const auto it = connections.find(tmp_id);
     // note that ssl vs. non-ssl connection to the same host are two separate connections

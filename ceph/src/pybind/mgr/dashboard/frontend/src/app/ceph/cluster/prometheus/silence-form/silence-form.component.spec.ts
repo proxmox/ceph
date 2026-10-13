@@ -1,5 +1,5 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
-import { ComponentFixture, fakeAsync, TestBed } from '@angular/core/testing';
+import { ComponentFixture, fakeAsync, flush, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
@@ -7,7 +7,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { NgbPopoverModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
 import moment from 'moment';
-import { ToastrModule } from 'ngx-toastr';
+
 import { of, throwError } from 'rxjs';
 
 import { DashboardNotFoundError } from '~/app/core/error/error';
@@ -62,7 +62,6 @@ describe('SilenceFormComponent', () => {
       HttpClientTestingModule,
       RouterTestingModule.withRoutes(routes),
       SharedModule,
-      ToastrModule.forRoot(),
       NgbTooltipModule,
       NgbPopoverModule,
       ReactiveFormsModule
@@ -313,12 +312,14 @@ describe('SilenceFormComponent', () => {
         changeStartDate('2022-12-31 22:00');
         expect(form.getValue('duration')).toEqual('2h');
         expect(form.getValue('endsAt')).toEqual('2023-01-01 00:00');
+        flush();
       }));
 
       it('changes duration if start date does not exceed end date ', fakeAsync(() => {
         changeStartDate('2022-02-22 00:45');
         expect(form.getValue('duration')).toEqual('1h 15m');
         expect(form.getValue('endsAt')).toEqual('2022-02-22 02:00');
+        flush();
       }));
 
       it('should raise invalid start date error', fakeAsync(() => {
@@ -326,6 +327,7 @@ describe('SilenceFormComponent', () => {
         formHelper.expectError('startsAt', 'format');
         expect(form.getValue('startsAt').toString()).toBe('No valid date');
         expect(form.getValue('endsAt')).toEqual('2022-02-22 02:00');
+        flush();
       }));
     });
 
@@ -343,12 +345,14 @@ describe('SilenceFormComponent', () => {
         changeEndDate('2022-02-28 04:05');
         expect(form.getValue('duration')).toEqual('6d 4h 5m');
         expect(form.getValue('startsAt')).toEqual(baseTime);
+        flush();
       }));
 
       it('changes start date if end date happens before it', fakeAsync(() => {
         changeEndDate('2022-02-21 02:00');
         expect(form.getValue('duration')).toEqual('2h');
         expect(form.getValue('startsAt')).toEqual('2022-02-21 00:00');
+        flush();
       }));
 
       it('should raise invalid end date error', fakeAsync(() => {
@@ -356,6 +360,7 @@ describe('SilenceFormComponent', () => {
         formHelper.expectError('endsAt', 'format');
         expect(form.getValue('endsAt').toString()).toBe('No valid date');
         expect(form.getValue('startsAt')).toEqual(baseTime);
+        flush();
       }));
     });
   });

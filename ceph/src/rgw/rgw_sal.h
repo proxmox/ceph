@@ -1,5 +1,5 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab ft=cpp
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 sts=2 expandtab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -64,6 +64,10 @@ namespace rgw {
 namespace rgw::restore {
   class Restore;
   struct RestoreEntry;
+}
+
+namespace rgw::lua {
+  class Background;
 }
 
 class RGWGetDataCB {
@@ -265,9 +269,6 @@ struct TopicList {
   std::string next_marker;
 };
 
-/** A list of key-value attributes */
-  using Attrs = std::map<std::string, ceph::buffer::list>;
-
 /**
  * @brief A factory for DataProcessor instances
  *
@@ -289,6 +290,16 @@ class DataProcessorFactory {
   virtual RGWGetObj_Filter* get_filter() = 0;
   virtual bool need_copy_data() = 0;
   virtual void finalize_attrs(Attrs& attrs) { /* default implementation does nothing */ }
+
+  /*
+   * Override the accounted size for the bucket index.  Called after
+   * finalize_attrs().  Returns the logical object size when the
+   * factory knows better than the default heuristic, e.g. after
+   * decompressing data whose recompression was a no-op.
+   */
+  virtual uint64_t get_accounted_size(uint64_t default_size) {
+    return default_size;
+  }
 };
 
 /**
@@ -678,12 +689,14 @@ class Driver {
     virtual int store_oidc_provider(const DoutPrefixProvider* dpp,
                                     optional_yield y,
                                     const RGWOIDCProviderInfo& info,
-                                    bool exclusive) = 0;
+                                    bool exclusive,
+                                    RGWObjVersionTracker* objv_tracker) = 0;
     virtual int load_oidc_provider(const DoutPrefixProvider* dpp,
                                    optional_yield y,
                                    std::string_view tenant,
                                    std::string_view url,
-                                   RGWOIDCProviderInfo& info) = 0;
+                                   RGWOIDCProviderInfo& info,
+                                   RGWObjVersionTracker* objv_tracker) = 0;
     virtual int delete_oidc_provider(const DoutPrefixProvider* dpp,
                                      optional_yield y,
                                      std::string_view tenant,
@@ -1279,7 +1292,7 @@ class Object {
      * deleted.  @note the attribute APIs may be revisited in the future. */
     virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, uint32_t flags) = 0;
     /** Get attributes for this object */
-    virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj = NULL) = 0;
+    virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp) = 0;
     /** Modify attributes for this object. */
     virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp,
                                  uint32_t flags = rgw::sal::FLAG_LOG_OP) = 0;
@@ -1290,7 +1303,7 @@ class Object {
     /** Create a randomized instance ID for this object */
     virtual void gen_rand_obj_instance_name() = 0;
     /** Get a multipart serializer for this object */
-    virtual std::unique_ptr<MPSerializer> get_serializer(const DoutPrefixProvider *dpp,
+    virtual std::unique_ptr<MPSerializer> get_serializer(const DoutPrefixProvider *dpp, optional_yield y,
 							 const std::string& lock_name) = 0;
     /** Move the data of an object to new placement storage */
     virtual int transition(Bucket* bucket,
@@ -1314,6 +1327,7 @@ class Object {
 			   CephContext* cct,
 		           std::optional<uint64_t> days,
    	 		   bool& in_progress,
+			   uint64_t& size,
 			   const DoutPrefixProvider* dpp,
 			   optional_yield y) = 0;
     /** Check to see if two placement rules match */
@@ -1340,7 +1354,7 @@ class Object {
     /** If multipart, enumerate (a range [marker..marker+[min(max_parts, parts_count-1)] of) parts of the object */
     virtual int list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			   int max_parts, int marker, int* next_marker,
-			   bool* truncated, list_parts_each_t each_func,
+			   bool* truncated, list_parts_each_t&& each_func,
 			   optional_yield y) = 0;
 
     /** Get the cached attributes for this object */
@@ -1539,6 +1553,9 @@ public:
   /** Get the Object that represents this upload */
   virtual std::unique_ptr<rgw::sal::Object> get_meta_obj() = 0;
 
+  /** True if this store persists per-part GCM salts; gates AEAD UploadPart salt emission. */
+  virtual bool supports_crypt_part_salts() const { return false; }
+
   /** Initialize this upload */
   virtual int init(const DoutPrefixProvider* dpp, optional_yield y, ACLOwner& owner, rgw_placement_rule& dest_placement, rgw::sal::Attrs& attrs) = 0;
   /** List all the parts of this upload, filling the parts cache */
@@ -1610,9 +1627,9 @@ public:
   virtual ~Serializer() = default;
 
   /** Try to take the lock for the given amount of time. */
-  virtual int try_lock(const DoutPrefixProvider *dpp, utime_t dur, optional_yield y) = 0;
+  virtual int try_lock(const DoutPrefixProvider *dpp, ceph::timespan dur, optional_yield y) = 0;
   /** Unlock the lock */
-  virtual int unlock()  = 0;
+  virtual int unlock(const DoutPrefixProvider *dpp, optional_yield y)  = 0;
 
   /** Print the Serializer to @a out */
   virtual void print(std::ostream& out) const = 0;
@@ -1924,6 +1941,8 @@ public:
 
   /** Get a script named with the given key from the backing store */
   virtual int get_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, std::string& script) = 0;
+  /** Get a copy of the lua bytecode if it exists, else the script named with the given key from the backing store */
+  virtual std::tuple<rgw::lua::LuaCodeType, int> get_script_or_bytecode(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key) = 0;
   /** Put a script named with the given key to the backing store */
   virtual int put_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, const std::string& script) = 0;
   /** Delete a script named with the given key from the backing store */
@@ -1940,6 +1959,8 @@ public:
   virtual const std::string& luarocks_path() const = 0;
   /** Set the path to the loarocks install location **/
   virtual void set_luarocks_path(const std::string& path) = 0;
+
+  virtual void set_lua_background(rgw::lua::Background* background) = 0;
 };
 
 /** @} namespace rgw::sal in group RGWSAL */
@@ -1979,8 +2000,10 @@ public:
 				      bool run_bucket_logging_thread,
 				      bool background_tasks,
 				      optional_yield y,
+              rgw::sal::ConfigStore* cfgstore,
 				      bool use_cache = true,
-				      bool use_gc = true) {
+				      bool use_gc = true,
+                                      bool admin = false) {
     rgw::sal::Driver* driver = init_storage_provider(dpp, cct, cfg, io_context,
 						   site_config,
 						   use_gc_thread,
@@ -1989,20 +2012,22 @@ public:
 						   quota_threads,
 						   run_sync_thread,
 						   run_reshard_thread,
-                                                   run_notification_thread,
+               run_notification_thread,
 				                   run_bucket_logging_thread,
 						   use_cache, use_gc,
-						   background_tasks, y);
+						   background_tasks, y, cfgstore, admin);
     return driver;
   }
   /** Get a stripped down driver by service name */
   static rgw::sal::Driver* get_raw_storage(const DoutPrefixProvider* dpp,
 					  CephContext* cct, const Config& cfg,
 					  boost::asio::io_context& io_context,
-					  const rgw::SiteConfig& site_config) {
+					  const rgw::SiteConfig& site_config,
+            rgw::sal::ConfigStore* cfgstore) {
     rgw::sal::Driver* driver = init_raw_storage_provider(dpp, cct, cfg,
 							 io_context,
-							 site_config);
+							 site_config,
+               cfgstore);
     return driver;
   }
   /** Initialize a new full Driver */
@@ -2021,13 +2046,14 @@ public:
                                                 bool run_bucket_logging_thread,
 						bool use_metadata_cache,
 						bool use_gc, bool background_tasks,
-						optional_yield y);
+						optional_yield y, rgw::sal::ConfigStore* cfgstore, bool admin);
   /** Initialize a new raw Driver */
   static rgw::sal::Driver* init_raw_storage_provider(const DoutPrefixProvider* dpp,
 						    CephContext* cct,
 						    const Config& cfg,
 						    boost::asio::io_context& io_context,
-						    const rgw::SiteConfig& site_config);
+						    const rgw::SiteConfig& site_config,
+                rgw::sal::ConfigStore* cfgstore);
   /** Close a Driver when it's no longer needed */
   static void close_storage(rgw::sal::Driver* driver);
 
@@ -2041,7 +2067,9 @@ public:
 
 };
 
+#ifdef WITH_RADOSGW_RADOS
 std::optional<neorados::RADOS>
 make_neorados(CephContext* cct, boost::asio::io_context& io_context);
+#endif
 
 /** @} */

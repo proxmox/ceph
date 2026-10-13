@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -95,31 +96,46 @@ std::string FormatStatValue(Type::type parquet_type, ::std::string_view val) {
 
   const char* bytes = val.data();
   switch (parquet_type) {
-    case Type::BOOLEAN:
-      result << reinterpret_cast<const bool*>(bytes)[0];
+    case Type::BOOLEAN: {
+      bool value{};
+      std::memcpy(&value, bytes, sizeof(bool));
+      result << value;
       break;
-    case Type::INT32:
-      result << reinterpret_cast<const int32_t*>(bytes)[0];
+    }
+    case Type::INT32: {
+      int32_t value{};
+      std::memcpy(&value, bytes, sizeof(int32_t));
+      result << value;
       break;
-    case Type::INT64:
-      result << reinterpret_cast<const int64_t*>(bytes)[0];
+    }
+    case Type::INT64: {
+      int64_t value{};
+      std::memcpy(&value, bytes, sizeof(int64_t));
+      result << value;
       break;
-    case Type::DOUBLE:
-      result << reinterpret_cast<const double*>(bytes)[0];
+    }
+    case Type::DOUBLE: {
+      double value{};
+      std::memcpy(&value, bytes, sizeof(double));
+      result << value;
       break;
-    case Type::FLOAT:
-      result << reinterpret_cast<const float*>(bytes)[0];
+    }
+    case Type::FLOAT: {
+      float value{};
+      std::memcpy(&value, bytes, sizeof(float));
+      result << value;
       break;
+    }
     case Type::INT96: {
-      auto const i32_val = reinterpret_cast<const int32_t*>(bytes);
-      result << i32_val[0] << " " << i32_val[1] << " " << i32_val[2];
+      std::array<int32_t, 3> values{};
+      std::memcpy(values.data(), bytes, 3 * sizeof(int32_t));
+      result << values[0] << " " << values[1] << " " << values[2];
       break;
     }
-    case Type::BYTE_ARRAY: {
-      return std::string(val);
-    }
+    case Type::BYTE_ARRAY:
     case Type::FIXED_LEN_BYTE_ARRAY: {
-      return std::string(val);
+      result << val;
+      break;
     }
     case Type::UNDEFINED:
     default:
@@ -175,6 +191,16 @@ std::string TypeToString(Type::type t) {
     default:
       return "UNKNOWN";
   }
+}
+
+std::string TypeToString(Type::type t, int type_length) {
+  auto s = TypeToString(t);
+  if (t == Type::FIXED_LEN_BYTE_ARRAY) {
+    s += '(';
+    s += std::to_string(type_length);
+    s += ')';
+  }
+  return s;
 }
 
 std::string ConvertedTypeToString(ConvertedType::type t) {
@@ -345,15 +371,25 @@ std::shared_ptr<const LogicalType> LogicalType::FromConvertedType(
     case ConvertedType::DATE:
       return DateLogicalType::Make();
     case ConvertedType::TIME_MILLIS:
-      return TimeLogicalType::Make(true, LogicalType::TimeUnit::MILLIS);
+      // ConvertedType::TIME_{*} are deprecated in favor of LogicalType::Time, the
+      // compatibility for ConvertedType::TIME_{*} are listed in
+      // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-time-convertedtype
+      return TimeLogicalType::Make(/*is_adjusted_to_utc=*/true,
+                                   LogicalType::TimeUnit::MILLIS);
     case ConvertedType::TIME_MICROS:
-      return TimeLogicalType::Make(true, LogicalType::TimeUnit::MICROS);
+      return TimeLogicalType::Make(/*is_adjusted_to_utc=*/true,
+                                   LogicalType::TimeUnit::MICROS);
     case ConvertedType::TIMESTAMP_MILLIS:
-      return TimestampLogicalType::Make(true, LogicalType::TimeUnit::MILLIS,
+      // ConvertedType::TIMESTAMP_{*} are deprecated in favor of LogicalType::Timestamp,
+      // the compatibility for ConvertedType::TIMESTAMP_{*} are listed in
+      // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-timestamp-convertedtype
+      return TimestampLogicalType::Make(/*is_adjusted_to_utc=*/true,
+                                        LogicalType::TimeUnit::MILLIS,
                                         /*is_from_converted_type=*/true,
                                         /*force_set_converted_type=*/false);
     case ConvertedType::TIMESTAMP_MICROS:
-      return TimestampLogicalType::Make(true, LogicalType::TimeUnit::MICROS,
+      return TimestampLogicalType::Make(/*is_adjusted_to_utc=*/true,
+                                        LogicalType::TimeUnit::MICROS,
                                         /*is_from_converted_type=*/true,
                                         /*force_set_converted_type=*/false);
     case ConvertedType::INTERVAL:
