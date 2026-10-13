@@ -104,7 +104,7 @@ ${DSC}: ${BUILDSRC}
 .PHONY: download
 download:
 	rm -rf ${SRCDIR}.tmp ${SRCDIR}
-	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-tentacle -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph bookworm ./${SRCDIR}.tmp
+	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-umbrella -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph trixie ./${SRCDIR}.tmp
 	@echo "WARNING"
 	@echo "Check output above for verification errors!"
 	@echo "WARNING"
