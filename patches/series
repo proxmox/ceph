@@ -8,7 +8,6 @@
 0009-disable-elastic_shared_blob-to-prevent-crashing-OSDs.patch
 0010-d-rules-disable-jaeger-telemetry.patch
 0011-debian-do-not-ship-legacy-init.d-ceph-script-anymore.patch
-0012-mgr-fix-module-import-by-making-NOTIFY_TYPES-in-py-m.patch
 0013-pybind-rbd-disable-on_progress-callbacks-to-prevent-.patch
 0014-restore-the-auth_supported-config-option.patch
 0015-auth-cephx-check-cipher-policy-and-derive-session-ke.patch
