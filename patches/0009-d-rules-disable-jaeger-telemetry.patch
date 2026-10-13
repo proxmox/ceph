@@ -16,15 +16,15 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/rules b/debian/rules
-index 48f2aad2e1b..fa7e55b03be 100755
+index ddd5a3923ce..fc72ed0c78d 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -21,7 +21,7 @@ ifneq ($(filter pkg.ceph.arrow,$(DEB_BUILD_PROFILES)),)
-   extraopts += -DWITH_SYSTEM_ARROW=ON
+@@ -19,7 +19,7 @@ ifneq ($(filter pkg.ceph.crimson,$(DEB_BUILD_PROFILES)),)
+   extraopts += -DWITH_CRIMSON=ON
  endif
  
 -extraopts += -DWITH_JAEGER=ON
 +extraopts += -DWITH_JAEGER=OFF
+ extraopts += -DWITH_SYSTEM_JERASURE=ON
  extraopts += -DWITH_SYSTEM_UTF8PROC=ON
  extraopts += -DWITH_OCF=ON -DWITH_LTTNG=ON
- extraopts += -DWITH_MGR_DASHBOARD_FRONTEND=OFF

@@ -11,10 +11,10 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/ceph-crash.in b/src/ceph-crash.in
-index 0e02837fadd..010d6ea2e82 100755
+index 25d7ca4e0a4..bc73dc5a485 100755
 --- a/src/ceph-crash.in
 +++ b/src/ceph-crash.in
-@@ -97,7 +97,7 @@ def drop_privs():
+@@ -104,7 +104,7 @@ def drop_privs():
      if os.getuid() == 0:
          try:
              ceph_uid = pwd.getpwnam("ceph").pw_uid

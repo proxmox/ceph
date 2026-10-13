@@ -123,7 +123,7 @@ index 976aed5fa4d..eda3253fe36 100644
  	}
  
 diff --git a/src/common/options/mon.yaml.in b/src/common/options/mon.yaml.in
-index 95ce95d225b..1e95aa385f4 100644
+index a45c1fa7a3e..4165762dafc 100644
 --- a/src/common/options/mon.yaml.in
 +++ b/src/common/options/mon.yaml.in
 @@ -856,6 +856,19 @@ options:

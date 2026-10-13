@@ -12,7 +12,7 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 7 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index a0e8c583ab5..8cfeb056d4a 100644
+index a93a38d7501..b645b494095 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -42,17 +42,10 @@ endif(WITH_LIBCEPHFS)

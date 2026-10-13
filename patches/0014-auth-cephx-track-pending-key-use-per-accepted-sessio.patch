@@ -115,10 +115,10 @@ index a047db87de8..ea6723a7050 100644
        ret = 0;
      }
 diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
-index ef47123315f..e9f251ca681 100644
+index e41f08aba0a..4cd24096ba7 100644
 --- a/src/mon/Monitor.cc
 +++ b/src/mon/Monitor.cc
-@@ -6883,11 +6883,11 @@ int Monitor::handle_auth_request(
+@@ -6874,11 +6874,11 @@ int Monitor::handle_auth_request(
        &auth_meta->session_key,
        &auth_meta->connection_secret);
    }

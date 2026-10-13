@@ -1,4 +1,4 @@
-From 8e68cb4b9bf0941fe3a2f20678844a0721de9904 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Viliam Durina <viliam.durina@gmail.com>
 Date: Tue, 1 Sep 2026 10:58:18 +0200
 Subject: [PATCH] os/bluestore: Re-introduce truncation in
@@ -28,10 +28,10 @@ Signed-off-by: Viliam Durina <viliam.durina@gmail.com>
  create mode 100644 src/test/objectstore/test_bluerocksenv.cc
 
 diff --git a/src/os/bluestore/BlueFS.cc b/src/os/bluestore/BlueFS.cc
-index a30f3580a50a..54d49a368775 100644
+index 2d449de09be..7582c1217a2 100644
 --- a/src/os/bluestore/BlueFS.cc
 +++ b/src/os/bluestore/BlueFS.cc
-@@ -4313,9 +4313,8 @@ uint64_t BlueFS::_flush_special(FileWriter *h)
+@@ -4329,9 +4329,8 @@ uint64_t BlueFS::_flush_special(FileWriter *h)
    return new_data;
  }
  
@@ -42,7 +42,7 @@ index a30f3580a50a..54d49a368775 100644
    std::lock_guard hl(h->lock);
    auto& fnode = h->file->fnode;
  
-@@ -4345,6 +4344,34 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
+@@ -4361,6 +4360,34 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
        offset = h->file->fnode.size;
      }
    }
@@ -78,11 +78,11 @@ index a30f3580a50a..54d49a368775 100644
      ceph_abort_msg("truncate up not supported");
    }
 diff --git a/src/os/bluestore/BlueFS.h b/src/os/bluestore/BlueFS.h
-index b320d57a951b..19e7d5178bd7 100644
+index ecc9b21f44e..a8104fb5e28 100644
 --- a/src/os/bluestore/BlueFS.h
 +++ b/src/os/bluestore/BlueFS.h
-@@ -666,6 +666,11 @@ class BlueFS {
-   int _flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool buffered);
+@@ -704,6 +704,11 @@ private:
+   uint64_t _flush_data(FileWriter *h, uint64_t end, bool buffered);
    int _flush_F(FileWriter *h, bool force, bool *flushed = nullptr);
    int _flush_envelope_F(FileWriter *h);
 +  // Truncates file to 'offset', which must be expressed in on-disk units
@@ -93,7 +93,7 @@ index b320d57a951b..19e7d5178bd7 100644
    int _fsync(FileWriter *h, bool force_dirty);
    uint64_t _flush_special(FileWriter *h);
  
-@@ -915,6 +920,9 @@ class BlueFS {
+@@ -964,6 +969,9 @@ public:
    void invalidate_cache(FileRef f, uint64_t offset, uint64_t len);
    int preallocate(FileRef f, uint64_t offset, uint64_t len);
    int truncate(FileWriter *h, uint64_t offset);
@@ -104,7 +104,7 @@ index b320d57a951b..19e7d5178bd7 100644
    size_t probe_alloc_avail(int dev, uint64_t alloc_size);
  
 diff --git a/src/os/bluestore/BlueRocksEnv.cc b/src/os/bluestore/BlueRocksEnv.cc
-index fc4f60e1fc9e..991a92c58d25 100644
+index 36b39f75832..27875eb7a00 100644
 --- a/src/os/bluestore/BlueRocksEnv.cc
 +++ b/src/os/bluestore/BlueRocksEnv.cc
 @@ -221,6 +221,13 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
@@ -135,10 +135,10 @@ index fc4f60e1fc9e..991a92c58d25 100644
      h->write_hint = (const int)hint;
    }
 diff --git a/src/test/objectstore/CMakeLists.txt b/src/test/objectstore/CMakeLists.txt
-index d72d99ec37cc..f0960c2eb3bf 100644
+index 67a00c910dc..7cf197e4d4b 100644
 --- a/src/test/objectstore/CMakeLists.txt
 +++ b/src/test/objectstore/CMakeLists.txt
-@@ -126,6 +126,13 @@ if(WITH_BLUESTORE)
+@@ -128,6 +128,13 @@ if(WITH_BLUESTORE)
    add_ceph_unittest(unittest_bluefs)
    target_link_libraries(unittest_bluefs os global)
  
@@ -153,10 +153,10 @@ index d72d99ec37cc..f0960c2eb3bf 100644
    add_executable(unittest_bluefs_ex
      test_bluefs_ex.cc
 diff --git a/src/test/objectstore/test_bluefs.cc b/src/test/objectstore/test_bluefs.cc
-index ab0501cd8c24..0bc926a7236a 100644
+index f8bbc633513..2f3872b20cd 100644
 --- a/src/test/objectstore/test_bluefs.cc
 +++ b/src/test/objectstore/test_bluefs.cc
-@@ -2244,6 +2244,71 @@ TEST(BlueFS, truncate_drops_allocations) {
+@@ -2240,6 +2240,71 @@ TEST(BlueFS, truncate_drops_allocations) {
  
  
  
@@ -230,7 +230,7 @@ index ab0501cd8c24..0bc926a7236a 100644
    ConfSaver conf(g_ceph_context->_conf);
 diff --git a/src/test/objectstore/test_bluerocksenv.cc b/src/test/objectstore/test_bluerocksenv.cc
 new file mode 100644
-index 000000000000..201de7696d10
+index 00000000000..201de7696d1
 --- /dev/null
 +++ b/src/test/objectstore/test_bluerocksenv.cc
 @@ -0,0 +1,159 @@

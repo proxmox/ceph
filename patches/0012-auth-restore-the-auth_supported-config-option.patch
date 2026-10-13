@@ -27,7 +27,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  4 files changed, 27 insertions(+), 16 deletions(-)
 
 diff --git a/src/auth/AuthRegistry.cc b/src/auth/AuthRegistry.cc
-index 60cf275a300..743280a3b0f 100644
+index 5200ff46989..2ed1471b6d2 100644
 --- a/src/auth/AuthRegistry.cc
 +++ b/src/auth/AuthRegistry.cc
 @@ -38,6 +38,7 @@ AuthRegistry::~AuthRegistry()
@@ -69,10 +69,10 @@ index 60cf275a300..743280a3b0f 100644
  		   &mon_cluster_modes);
    _parse_mode_list(cct->_conf.get_val<string>("ms_mon_service_mode"),
 diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
-index 2ef6c99ea8c..bfb28970a55 100644
+index 34a9c48e694..f74a58e278a 100644
 --- a/src/common/options/global.yaml.in
 +++ b/src/common/options/global.yaml.in
-@@ -2154,6 +2154,7 @@ options:
+@@ -2165,6 +2165,7 @@ options:
    default: cephx
    flags:
      - runtime
@@ -80,7 +80,7 @@ index 2ef6c99ea8c..bfb28970a55 100644
  - name: auth_exit_on_failure
    type: int
    level: dev
-@@ -2172,6 +2173,7 @@ options:
+@@ -2183,6 +2184,7 @@ options:
    default: cephx
    flags:
      - runtime
@@ -88,7 +88,7 @@ index 2ef6c99ea8c..bfb28970a55 100644
  # what clients require of daemons
  - name: auth_client_required
    type: str
-@@ -2183,6 +2185,13 @@ options:
+@@ -2194,6 +2196,13 @@ options:
    default: cephx, none
    flags:
      - runtime
@@ -103,10 +103,10 @@ index 2ef6c99ea8c..bfb28970a55 100644
    type: int
    level: advanced
 diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
-index ace3fce7091..cfd6ff2b369 100644
+index 98d71e7ad00..e41f08aba0a 100644
 --- a/src/mon/Monitor.cc
 +++ b/src/mon/Monitor.cc
-@@ -178,8 +178,12 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
+@@ -223,8 +223,12 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
    logger(NULL), cluster_logger(NULL), cluster_logger_registered(false),
    monmap(map),
    log_client(cct_, messenger, monmap, LogClient::FLAG_MON),
@@ -122,10 +122,10 @@ index ace3fce7091..cfd6ff2b369 100644
    mgr_client(cct_, mgr_m, monmap),
    gss_ktfile_client(cct->_conf.get_val<std::string>("gss_ktab_client_file")),
 diff --git a/src/test/mon/test_mon_workloadgen.cc b/src/test/mon/test_mon_workloadgen.cc
-index dc1b6222b0d..a8c01cda8f2 100644
+index 48e8976237a..046a4ac2dd8 100644
 --- a/src/test/mon/test_mon_workloadgen.cc
 +++ b/src/test/mon/test_mon_workloadgen.cc
-@@ -355,6 +355,8 @@ class OSDStub : public TestStub
+@@ -357,6 +357,8 @@ class OSDStub : public TestStub
        gen(whoami),
        mon_osd_rng(STUB_MON_OSD_FIRST, STUB_MON_OSD_LAST)
    {

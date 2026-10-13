@@ -1,4 +1,4 @@
-From 21c357d88278eceb0beb9c69c837ad68517e2df4 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Viliam Durina <viliam.durina@gmail.com>
 Date: Wed, 2 Sep 2026 15:35:19 +0200
 Subject: [PATCH] os/bluestore: Fix `use_direct_io()` override
@@ -12,7 +12,7 @@ Signed-off-by: Viliam Durina <viliam.durina@gmail.com>
  1 file changed, 6 insertions(+)
 
 diff --git a/src/os/bluestore/BlueRocksEnv.cc b/src/os/bluestore/BlueRocksEnv.cc
-index 991a92c58d25..673af2d729ae 100644
+index 27875eb7a00..7301215fc6c 100644
 --- a/src/os/bluestore/BlueRocksEnv.cc
 +++ b/src/os/bluestore/BlueRocksEnv.cc
 @@ -248,6 +248,12 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
