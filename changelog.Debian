@@ -1,3 +1,15 @@
+ceph (21.1.2-pve1) trixie; urgency=medium
+
+  * WIP build of the second Ceph 21 Umbrella release candidate.
+
+  * ceph-mgr: Umbrella moves the optional manager modules out of
+    ceph-mgr-modules-core into separate packages. Keep recommending those,
+    so that upgrades with recommends enabled retain the modules, and only
+    suggest the dashboard, cephadm, diskprediction-local and k8sevents
+    modules, as before.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 13 Oct 2026 20:31:56 +0200
+
 ceph (20.2.4-pve5) trixie; urgency=medium
 
   * backport fix for bluestore OSD's BlueFS space leak on close.
