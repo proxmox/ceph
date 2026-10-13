@@ -3,7 +3,6 @@
 0003-ceph-mgr-only-suggest-mgr-plugins.patch
 0004-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
 0005-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
-0006-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
 0007-ceph-osd-postinst-do-not-always-reload-all-sysctl-se.patch
 0008-ceph-crash-change-order-of-client-names.patch
 0009-disable-elastic_shared_blob-to-prevent-crashing-OSDs.patch
