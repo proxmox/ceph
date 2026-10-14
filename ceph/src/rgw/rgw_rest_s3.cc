@@ -113,8 +113,16 @@ static inline std::string get_s3_expiration_header(
   req_state* s,
   const ceph::real_time& mtime)
 {
+  /* Build the client-supplied request key rather than reusing the
+   * OLH-resolved key from s->object. OLH resolution fills in the current
+   * version's instance id even when the client did not request a specific
+   * version, which would otherwise make every versioned-bucket response look
+   * like a versionId request. s3_expiration_header() keys its current-version
+   * decision off an empty instance, so pass the object name with the requested
+   * versionId (empty for a plain request). */
   return rgw::lc::s3_expiration_header(
-    s, s->object->get_key(), s->tagset, mtime, s->bucket_attrs);
+    s, rgw_obj_key(s->object->get_key().name, s->info.args.get("versionId")),
+    s->tagset, mtime, s->bucket_attrs);
 }
 
 static inline bool get_s3_multipart_abort_header(
@@ -3427,6 +3435,9 @@ int RGWPostObj_ObjStore_S3::get_encrypt_filter(
 int RGWDeleteObj_ObjStore_S3::get_params(optional_yield y)
 {
   const char *if_unmod = s->info.env->get("HTTP_X_AMZ_DELETE_IF_UNMODIFIED_SINCE");
+  const char *if_last_mod_time_match = s->info.env->get("HTTP_X_AMZ_IF_MATCH_LAST_MODIFIED_TIME");
+  const char *if_size_match = s->info.env->get("HTTP_X_AMZ_IF_MATCH_SIZE");
+  if_match = s->info.env->get("HTTP_IF_MATCH");
 
   if (s->system_request) {
     s->info.args.get_bool(RGW_SYS_PARAM_PREFIX "no-precondition-error", &no_precondition_error, false);
@@ -3441,6 +3452,25 @@ int RGWDeleteObj_ObjStore_S3::get_params(optional_yield y)
       return -EINVAL;
     }
     unmod_since = utime_t(epoch, nsec).to_real_time();
+  }
+
+  if (if_last_mod_time_match) {
+    std::string if_last_mod_match_decoded = url_decode(if_last_mod_time_match);
+    int r = parse_time(if_last_mod_match_decoded.c_str(), &last_mod_time_match);
+    if (r < 0) {
+      ldpp_dout(this, 10) << "failed to parse time: " << if_last_mod_match_decoded << dendl;
+      return r;
+    }
+  }
+
+  if(if_size_match) {
+    string err;
+    long long size_tmp = strict_strtoll(if_size_match, 10, &err);
+    if (!err.empty()) {
+      ldpp_dout(s, 10) << "bad size: " << if_size_match << ": " << err << dendl;
+      return -EINVAL;
+    }
+    size_match = uint64_t(size_tmp);
   }
 
   const char *bypass_gov_header = s->info.env->get("HTTP_X_AMZ_BYPASS_GOVERNANCE_RETENTION");
@@ -5656,7 +5686,18 @@ AWSSignerV4::prepare(const DoutPrefixProvider *dpp,
   if (opt_content) {
     content_hash = rgw::auth::s3::calc_v4_payload_hash(opt_content->to_str());
     extra_headers["x-amz-content-sha256"] = content_hash;
-
+  } else {
+    // check if the header was already set (e.g. from a forwarded request)
+    const char* existing_hash = info.env->get("HTTP_X_AMZ_CONTENT_SHA256");
+    if (existing_hash) {
+      // use existing header value
+      extra_headers["x-amz-content-sha256"] = existing_hash;
+    } else {
+    /* Some S3-compatible services require x-amz-content-sha256 header to always
+     * be present and included in the signature, even for unsigned payload.
+     * AWS S3 specification states that this header is required for all requests. */
+    extra_headers["x-amz-content-sha256"] = AWS4_UNSIGNED_PAYLOAD_HASH;
+    }
   }
 
   /* craft canonical headers */

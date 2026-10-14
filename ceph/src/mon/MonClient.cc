@@ -333,6 +333,12 @@ bool MonClient::ms_dispatch(Message *m)
 
   std::lock_guard lock(monc_lock);
 
+  if (stopping) {
+    ldout(cct, 5) << " dropping because stopping: " << *m << dendl;
+    m->put();
+    return true;
+  }
+
   if (!m->get_connection()->is_anon() &&
       m->get_source().type() == CEPH_ENTITY_TYPE_MON) {
     if (_hunting()) {
@@ -509,11 +515,13 @@ int MonClient::init()
 {
   ldout(cct, 10) << __func__ << dendl;
 
+  std::lock_guard l(monc_lock);
+  stopping = false;
+
   entity_name = cct->_conf->name;
 
   auth_registry.refresh_config();
 
-  std::lock_guard l(monc_lock);
   keyring.reset(new KeyRing);
   CachedStackStringStream css;
   int keyload = keyring->from_ceph_context(cct, css.get());
@@ -598,7 +606,6 @@ void MonClient::shutdown()
   }
   monc_lock.lock();
   timer.shutdown();
-  stopping = false;
   monc_lock.unlock();
 }
 
@@ -1466,6 +1473,11 @@ int MonClient::get_auth_request(
   ldout(cct,10) << __func__ << " con " << con << " auth_method " << *auth_method
 		<< dendl;
 
+  if (stopping) {
+    ldout(cct, 5) << __func__ << " dropping because stopping" << dendl;
+    return -ECANCELED;
+  }
+
   // connection to mon?
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     ceph_assert(!auth_meta->authorizer);
@@ -1515,6 +1527,11 @@ int MonClient::handle_auth_reply_more(
 {
   std::lock_guard l(monc_lock);
 
+  if (stopping) {
+    ldout(cct, 5) << __func__ << " dropping because stopping" << dendl;
+    return -ECANCELED;
+  }
+
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     if (con->is_anon()) {
       for (auto& i : mon_commands) {
@@ -1551,8 +1568,14 @@ int MonClient::handle_auth_done(
   CryptoKey *session_key,
   std::string *connection_secret)
 {
+  std::lock_guard l(monc_lock);
+
+  if (stopping) {
+    ldout(cct, 5) << __func__ << " dropping because stopping" << dendl;
+    return -ECANCELED;
+  }
+
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
-    std::lock_guard l(monc_lock);
     if (con->is_anon()) {
       for (auto& i : mon_commands) {
 	if (i.second->target_con == con) {
@@ -1607,9 +1630,15 @@ int MonClient::handle_auth_bad_method(
   const std::vector<uint32_t>& allowed_methods,
   const std::vector<uint32_t>& allowed_modes)
 {
+  std::lock_guard l(monc_lock);
+
+  if (stopping) {
+    ldout(cct, 5) << __func__ << " dropping because stopping" << dendl;
+    return -ECANCELED;
+  }
+
   auth_meta->allowed_methods = allowed_methods;
 
-  std::lock_guard l(monc_lock);
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     if (con->is_anon()) {
       for (auto& i : mon_commands) {
@@ -1665,6 +1694,13 @@ int MonClient::handle_auth_request(
   const ceph::buffer::list& payload,
   ceph::buffer::list *reply)
 {
+  std::lock_guard l(monc_lock);
+
+  if (stopping) {
+    ldout(cct, 5) << __func__ << " dropping because stopping" << dendl;
+    return -ECANCELED;
+  }
+
   if (payload.length() == 0) {
     // for some channels prior to nautilus (osd heartbeat), we
     // tolerate the lack of an authorizer.
