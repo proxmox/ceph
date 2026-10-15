@@ -21,7 +21,6 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  6 files changed, 82 insertions(+), 19 deletions(-)
 
 diff --git a/src/auth/AuthServiceHandler.h b/src/auth/AuthServiceHandler.h
-index 39f17b81e91..28ec5ae7f7e 100644
 --- a/src/auth/AuthServiceHandler.h
 +++ b/src/auth/AuthServiceHandler.h
 @@ -66,6 +66,10 @@ public:
@@ -36,7 +35,6 @@ index 39f17b81e91..28ec5ae7f7e 100644
    const EntityName& get_entity_name() { return entity_name; }
    uint64_t get_global_id() { return global_id; }
 diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
-index ea65c4d688e..c87001ddd51 100644
 --- a/src/auth/cephx/CephxServiceHandler.cc
 +++ b/src/auth/cephx/CephxServiceHandler.cc
 @@ -174,6 +174,7 @@ int CephxServiceHandler::handle_request(
@@ -73,7 +71,6 @@ index ea65c4d688e..c87001ddd51 100644
  {
    struct CephXResponseHeader header;
 diff --git a/src/auth/cephx/CephxServiceHandler.h b/src/auth/cephx/CephxServiceHandler.h
-index 3d9bc2cd183..6ccf32ecb7c 100644
 --- a/src/auth/cephx/CephxServiceHandler.h
 +++ b/src/auth/cephx/CephxServiceHandler.h
 @@ -27,6 +27,9 @@ struct CephXServiceTicketInfo;
@@ -95,7 +92,6 @@ index 3d9bc2cd183..6ccf32ecb7c 100644
  private:
    int do_start_session(bool is_new_global_id,
 diff --git a/src/mon/AuthMonitor.cc b/src/mon/AuthMonitor.cc
-index 00d3fe99344..f627909a06e 100644
 --- a/src/mon/AuthMonitor.cc
 +++ b/src/mon/AuthMonitor.cc
 @@ -957,9 +957,14 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
@@ -115,10 +111,9 @@ index 00d3fe99344..f627909a06e 100644
        ret = 0;
      }
 diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
-index e5a1011dc28..af2255cbda6 100644
 --- a/src/mon/Monitor.cc
 +++ b/src/mon/Monitor.cc
-@@ -6631,11 +6631,11 @@ int Monitor::handle_auth_request(
+@@ -6635,11 +6635,11 @@ int Monitor::handle_auth_request(
        &auth_meta->session_key,
        &auth_meta->connection_secret);
    }
@@ -134,7 +129,6 @@ index e5a1011dc28..af2255cbda6 100644
  
    dout(30) << " r " << r << " reply:\n";
 diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
-index 6310988f72e..8da6dae5991 100644
 --- a/src/test/mon/test_cephx_service_handler.cc
 +++ b/src/test/mon/test_cephx_service_handler.cc
 @@ -56,6 +56,8 @@ protected:

@@ -18,10 +18,9 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
-index a434852f88a..39217b781a2 100644
 --- a/src/common/options/global.yaml.in
 +++ b/src/common/options/global.yaml.in
-@@ -5010,7 +5010,7 @@ options:
+@@ -5055,7 +5055,7 @@ options:
    long_desc: Overwrites on snapped objects cause shared blob count to grow.
      It has a very negative performance effect. When enabled shared blob count
      is significantly reduced.

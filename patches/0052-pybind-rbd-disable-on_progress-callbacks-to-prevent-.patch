@@ -103,10 +103,9 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 6 insertions(+), 12 deletions(-)
 
 diff --git a/src/pybind/rbd/rbd.pyx b/src/pybind/rbd/rbd.pyx
-index f206e78ed1d..921c150803b 100644
 --- a/src/pybind/rbd/rbd.pyx
 +++ b/src/pybind/rbd/rbd.pyx
-@@ -790,8 +790,7 @@ class RBD(object):
+@@ -791,8 +791,7 @@ class RBD(object):
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:
@@ -116,7 +115,7 @@ index f206e78ed1d..921c150803b 100644
          with nogil:
              ret = rbd_remove_with_progress(_ioctx, _name, _prog_cb, _prog_arg)
          if ret != 0:
-@@ -898,8 +897,7 @@ class RBD(object):
+@@ -899,8 +898,7 @@ class RBD(object):
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:
@@ -126,7 +125,7 @@ index f206e78ed1d..921c150803b 100644
          with nogil:
              ret = rbd_trash_remove_with_progress(_ioctx, _image_id, _force,
                                                   _prog_cb, _prog_arg)
-@@ -1137,8 +1135,7 @@ class RBD(object):
+@@ -1139,8 +1137,7 @@ class RBD(object):
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:
@@ -136,7 +135,7 @@ index f206e78ed1d..921c150803b 100644
          with nogil:
              ret = rbd_migration_execute_with_progress(_ioctx, _image_name,
                                                        _prog_cb, _prog_arg)
-@@ -1164,8 +1161,7 @@ class RBD(object):
+@@ -1166,8 +1163,7 @@ class RBD(object):
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:
@@ -146,7 +145,7 @@ index f206e78ed1d..921c150803b 100644
          with nogil:
              ret = rbd_migration_commit_with_progress(_ioctx, _image_name,
                                                       _prog_cb, _prog_arg)
-@@ -1191,8 +1187,7 @@ class RBD(object):
+@@ -1193,8 +1189,7 @@ class RBD(object):
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:
@@ -156,7 +155,7 @@ index f206e78ed1d..921c150803b 100644
          with nogil:
              ret = rbd_migration_abort_with_progress(_ioctx, _image_name,
                                                      _prog_cb, _prog_arg)
-@@ -4189,8 +4184,7 @@ written." % (self.name, ret, length))
+@@ -4191,8 +4186,7 @@ written." % (self.name, ret, length))
              librbd_progress_fn_t _prog_cb = &no_op_progress_callback
              void *_prog_arg = NULL
          if on_progress:

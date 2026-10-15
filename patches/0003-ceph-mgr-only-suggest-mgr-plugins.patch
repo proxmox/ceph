@@ -12,10 +12,9 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index b440b729b97..80b39d32c6a 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -239,11 +239,11 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -241,11 +241,11 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${python3:Depends},
           ${shlibs:Depends},

@@ -30,7 +30,6 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  4 files changed, 134 insertions(+), 1 deletion(-)
 
 diff --git a/qa/workunits/mon/auth_key_rotation.sh b/qa/workunits/mon/auth_key_rotation.sh
-index 1a53bab6d8a..884a1f8b42e 100755
 --- a/qa/workunits/mon/auth_key_rotation.sh
 +++ b/qa/workunits/mon/auth_key_rotation.sh
 @@ -6,6 +6,8 @@ function expect_false()
@@ -107,7 +106,6 @@ index 1a53bab6d8a..884a1f8b42e 100755
 +
  echo ok
 diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
-index c87001ddd51..76388d23895 100644
 --- a/src/auth/cephx/CephxServiceHandler.cc
 +++ b/src/auth/cephx/CephxServiceHandler.cc
 @@ -349,7 +349,10 @@ int CephxServiceHandler::handle_request(
@@ -123,10 +121,9 @@ index c87001ddd51..76388d23895 100644
  	}
  
 diff --git a/src/common/options/mon.yaml.in b/src/common/options/mon.yaml.in
-index 7f956a43fb0..2621d09e0b3 100644
 --- a/src/common/options/mon.yaml.in
 +++ b/src/common/options/mon.yaml.in
-@@ -782,6 +782,19 @@ options:
+@@ -790,6 +790,19 @@ options:
    - mon
    flags:
    - runtime
@@ -147,7 +144,6 @@ index 7f956a43fb0..2621d09e0b3 100644
    type: str
    level: advanced
 diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
-index 8da6dae5991..aa891af9c3e 100644
 --- a/src/test/mon/test_cephx_service_handler.cc
 +++ b/src/test/mon/test_cephx_service_handler.cc
 @@ -58,9 +58,12 @@ protected:

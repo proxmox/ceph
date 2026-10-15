@@ -14,7 +14,6 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  3 files changed, 36 insertions(+), 2 deletions(-)
 
 diff --git a/src/pybind/mgr/dashboard/services/access_control.py b/src/pybind/mgr/dashboard/services/access_control.py
-index 01d0557740b..b427190203d 100644
 --- a/src/pybind/mgr/dashboard/services/access_control.py
 +++ b/src/pybind/mgr/dashboard/services/access_control.py
 @@ -12,7 +12,6 @@ from datetime import datetime, timedelta
@@ -34,7 +33,7 @@ index 01d0557740b..b427190203d 100644
  logger = logging.getLogger('access_control')
  DEFAULT_FILE_DESC = 'password/secret'
  
-@@ -890,7 +891,10 @@ def ac_user_set_password_hash(_, username: str, inbuf: str):
+@@ -895,7 +896,10 @@ def ac_user_set_password_hash(_, username: str, inbuf: str):
      hashed_password = inbuf
      try:
          # make sure the hashed_password is actually a bcrypt hash
@@ -47,7 +46,6 @@ index 01d0557740b..b427190203d 100644
          user.set_password_hash(hashed_password)
  
 diff --git a/src/python-common/ceph/cryptotools/cryptotools.py b/src/python-common/ceph/cryptotools/cryptotools.py
-index 0b2dc828b79..26102135250 100644
 --- a/src/python-common/ceph/cryptotools/cryptotools.py
 +++ b/src/python-common/ceph/cryptotools/cryptotools.py
 @@ -33,6 +33,17 @@ def password_hash(args: Namespace) -> None:
@@ -80,7 +78,6 @@ index 0b2dc828b79..26102135250 100644
      args = parser.parse_args()
      args.func(args)
 diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
-index 6271288e4f8..40e01d19912 100644
 --- a/src/python-common/ceph/cryptotools/remote.py
 +++ b/src/python-common/ceph/cryptotools/remote.py
 @@ -167,3 +167,18 @@ class CryptoCaller:

@@ -18,7 +18,6 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  create mode 100644 src/python-common/ceph/cryptotools/select.py
 
 diff --git a/src/pybind/mgr/dashboard/services/access_control.py b/src/pybind/mgr/dashboard/services/access_control.py
-index b427190203d..490c6e3fcc9 100644
 --- a/src/pybind/mgr/dashboard/services/access_control.py
 +++ b/src/pybind/mgr/dashboard/services/access_control.py
 @@ -23,7 +23,7 @@ from ..exceptions import PasswordPolicyException, PermissionNotValid, \
@@ -30,7 +29,7 @@ index b427190203d..490c6e3fcc9 100644
  
  logger = logging.getLogger('access_control')
  DEFAULT_FILE_DESC = 'password/secret'
-@@ -892,7 +892,7 @@ def ac_user_set_password_hash(_, username: str, inbuf: str):
+@@ -897,7 +897,7 @@ def ac_user_set_password_hash(_, username: str, inbuf: str):
      try:
          # make sure the hashed_password is actually a bcrypt hash
          # catch a ValueError if hashed_password is not valid.
@@ -40,7 +39,6 @@ index b427190203d..490c6e3fcc9 100644
  
          user = mgr.ACCESS_CTRL_DB.get_user(username)
 diff --git a/src/pybind/mgr/mgr_util.py b/src/pybind/mgr/mgr_util.py
-index 14fb26fbadb..f979aa4ceab 100644
 --- a/src/pybind/mgr/mgr_util.py
 +++ b/src/pybind/mgr/mgr_util.py
 @@ -24,7 +24,7 @@ else:
@@ -96,7 +94,6 @@ index 14fb26fbadb..f979aa4ceab 100644
 +    cc = get_crypto_caller()
      return cc.password_hash(password, salt_password)
 diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
-index 76438b3d132..2574b4ecdac 100644
 --- a/src/python-common/ceph/cryptotools/remote.py
 +++ b/src/python-common/ceph/cryptotools/remote.py
 @@ -1,5 +1,6 @@
@@ -131,7 +128,6 @@ index 76438b3d132..2574b4ecdac 100644
      Running the crypto functions in a separate process avoids conflicts
 diff --git a/src/python-common/ceph/cryptotools/select.py b/src/python-common/ceph/cryptotools/select.py
 new file mode 100644
-index 00000000000..989382ce983
 --- /dev/null
 +++ b/src/python-common/ceph/cryptotools/select.py
 @@ -0,0 +1,51 @@
