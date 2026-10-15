@@ -1,3 +1,9 @@
+ceph (19.2.7-pve1) trixie; urgency=medium
+
+  * update Ceph to Squid 19.2.7 stable release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 15 Oct 2026 10:15:30 +0200
+
 ceph (19.2.6-pve4) trixie; urgency=medium
 
   * cephx: record which key authenticated each monitor session and show its
