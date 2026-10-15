@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Thu, 15 Oct 2026 13:31:05 +0200
+Subject: [PATCH] debian: let the ceph meta-package depend on the standard mgr
+ modules
+
+Up to Tentacle, ceph-mgr depended on ceph-mgr-modules-core, which
+shipped all manager modules without heavy dependencies, for example
+prometheus, nfs, iostat and snap_schedule. Since the split into
+per-module packages, ceph-mgr only recommends these modules. Hosts that
+do not install recommends, be it through the APT configuration or
+because the installation uses --no-install-recommends, lose them on
+upgrade and do not get them on new installations. A module that was
+enabled then silently stops working, as the manager only raises a
+health warning for missing always-on modules.
+
+Make the ceph meta-package depend on ceph-mgr-modules-standard, which
+pulls in the modules that ceph-mgr-modules-core shipped before the
+split, plus mds_autoscaler, which the Debian packaging did not ship at
+all before. Adding the dependency to ceph-mgr instead would create a
+dependency loop with the module packages, which all depend on
+ceph-mgr, and removing a single module would then also remove ceph-mgr
+itself.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/control | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/debian/control b/debian/control
+--- a/debian/control
++++ b/debian/control
+@@ -131,6 +131,7 @@ Standards-Version: 4.4.0
+ Package: ceph
+ Architecture: linux-any
+ Depends: ceph-mgr (= ${binary:Version}),
++         ceph-mgr-modules-standard (= ${binary:Version}),
+          ceph-mon (= ${binary:Version}),
+          ceph-osd (= ${binary:Version}),
+ Recommends: ceph-mds (= ${binary:Version}),

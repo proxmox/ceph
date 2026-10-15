@@ -18,3 +18,4 @@
 0018-bluefs-fix-use_direct_io-override.patch
 0019-bluefs-acquire-file-lock-in-truncate.patch
 0020-debian-do-not-restart-ceph-mgr-from-manager-module-p.patch
+0021-debian-let-the-ceph-meta-package-depend-on-the-stand.patch
