@@ -1,0 +1,573 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Thu, 15 Oct 2026 13:12:40 +0200
+Subject: [PATCH] debian: do not restart ceph-mgr from manager module postinst
+ scripts
+
+Since ceph-mgr-modules-core got split into per-module packages, every
+manager module package restarts a running ceph-mgr when it gets
+configured. An upgrade from Tentacle installs about twenty of these
+packages, and every later upgrade configures them again, so a single
+apt run restarts the manager about twenty times in a row.
+
+ceph-mgr@.service allows only three starts within 30 minutes. Once
+that limit is hit, systemd leaves the unit failed with start-limit-hit
+and does not restart it anymore. As try-restart still returns success,
+the upgrade finishes without any error while the manager stays down
+until 'systemctl reset-failed' is run. This also holds for the
+dashboard, cephadm, diskprediction-local and rook packages, which
+restarted the manager already before the split; installed together,
+they exceed the limit on their own.
+
+Restarting from postinst also starts the new manager version in the
+middle of the package upgrade, before the monitors got restarted in the
+recommended order. All other Ceph daemons are deliberately not
+restarted on upgrade, see the dh_installsystemd options in
+debian/rules.
+
+Drop these postinst scripts, as restarting the manager was their only
+purpose. After installing a manager module package on a node with a
+running manager, restart the manager to load the new module.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/ceph-mgr-alerts.postinst               | 10 -----
+ debian/ceph-mgr-cephadm.postinst              | 41 ------------------
+ debian/ceph-mgr-cli-api.postinst              | 10 -----
+ debian/ceph-mgr-dashboard.postinst            | 43 -------------------
+ debian/ceph-mgr-diskprediction-local.postinst | 43 -------------------
+ debian/ceph-mgr-influx.postinst               | 10 -----
+ debian/ceph-mgr-insights.postinst             | 10 -----
+ debian/ceph-mgr-iostat.postinst               | 10 -----
+ debian/ceph-mgr-localpool.postinst            | 10 -----
+ debian/ceph-mgr-mds-autoscaler.postinst       | 10 -----
+ debian/ceph-mgr-mirroring.postinst            | 10 -----
+ debian/ceph-mgr-nfs.postinst                  | 10 -----
+ debian/ceph-mgr-nvmeof.postinst               | 10 -----
+ debian/ceph-mgr-osd-perf-query.postinst       | 10 -----
+ debian/ceph-mgr-osd-support.postinst          | 10 -----
+ debian/ceph-mgr-prometheus.postinst           | 10 -----
+ debian/ceph-mgr-rgw.postinst                  | 10 -----
+ debian/ceph-mgr-rook.postinst                 | 43 -------------------
+ debian/ceph-mgr-selftest.postinst             | 10 -----
+ debian/ceph-mgr-smb.postinst                  | 10 -----
+ debian/ceph-mgr-snap-schedule.postinst        | 10 -----
+ debian/ceph-mgr-stats.postinst                | 10 -----
+ debian/ceph-mgr-telegraf.postinst             | 10 -----
+ debian/ceph-mgr-test-orchestrator.postinst    | 10 -----
+ 24 files changed, 370 deletions(-)
+ delete mode 100644 debian/ceph-mgr-alerts.postinst
+ delete mode 100644 debian/ceph-mgr-cephadm.postinst
+ delete mode 100644 debian/ceph-mgr-cli-api.postinst
+ delete mode 100644 debian/ceph-mgr-dashboard.postinst
+ delete mode 100644 debian/ceph-mgr-diskprediction-local.postinst
+ delete mode 100644 debian/ceph-mgr-influx.postinst
+ delete mode 100644 debian/ceph-mgr-insights.postinst
+ delete mode 100644 debian/ceph-mgr-iostat.postinst
+ delete mode 100644 debian/ceph-mgr-localpool.postinst
+ delete mode 100644 debian/ceph-mgr-mds-autoscaler.postinst
+ delete mode 100644 debian/ceph-mgr-mirroring.postinst
+ delete mode 100644 debian/ceph-mgr-nfs.postinst
+ delete mode 100644 debian/ceph-mgr-nvmeof.postinst
+ delete mode 100644 debian/ceph-mgr-osd-perf-query.postinst
+ delete mode 100644 debian/ceph-mgr-osd-support.postinst
+ delete mode 100644 debian/ceph-mgr-prometheus.postinst
+ delete mode 100644 debian/ceph-mgr-rgw.postinst
+ delete mode 100644 debian/ceph-mgr-rook.postinst
+ delete mode 100644 debian/ceph-mgr-selftest.postinst
+ delete mode 100644 debian/ceph-mgr-smb.postinst
+ delete mode 100644 debian/ceph-mgr-snap-schedule.postinst
+ delete mode 100644 debian/ceph-mgr-stats.postinst
+ delete mode 100644 debian/ceph-mgr-telegraf.postinst
+ delete mode 100644 debian/ceph-mgr-test-orchestrator.postinst
+
+diff --git a/debian/ceph-mgr-alerts.postinst b/debian/ceph-mgr-alerts.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-alerts.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-cephadm.postinst b/debian/ceph-mgr-cephadm.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-cephadm.postinst
++++ /dev/null
+@@ -1,41 +0,0 @@
+-#!/bin/sh
+-# vim: set noet ts=8:
+-# postinst script for ceph-mgr-cephadm
+-#
+-# see: dh_installdeb(1)
+-
+-set -e
+-
+-# summary of how this script can be called:
+-#
+-# 	postinst configure <most-recently-configured-version>
+-# 	old-postinst abort-upgrade <new-version>
+-# 	conflictor's-postinst abort-remove in-favour <package> <new-version>
+-# 	postinst abort-remove
+-# 	deconfigured's-postinst abort-deconfigure in-favour <failed-install-package> <version> [<removing conflicting-package> <version>]
+-#
+-
+-# for details, see http://www.debian.org/doc/debian-policy/ or
+-# the debian-policy package
+-
+-case "$1" in
+-    configure)
+-	# attempt to load the plugin if the mgr is running
+-	deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-    abort-upgrade|abort-remove|abort-deconfigure)
+-	:
+-    ;;
+-
+-    *)
+-        echo "postinst called with unknown argument \`$1'" >&2
+-        exit 1
+-    ;;
+-esac
+-
+-# dh_installdeb will replace this with shell code automatically
+-# generated by other debhelper scripts.
+-
+-#DEBHELPER#
+-
+-exit 0
+diff --git a/debian/ceph-mgr-cli-api.postinst b/debian/ceph-mgr-cli-api.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-cli-api.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-dashboard.postinst b/debian/ceph-mgr-dashboard.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-dashboard.postinst
++++ /dev/null
+@@ -1,43 +0,0 @@
+-#!/bin/sh
+-# vim: set noet ts=8:
+-# postinst script for ceph-mgr-dashboard
+-#
+-# see: dh_installdeb(1)
+-
+-set -e
+-
+-# summary of how this script can be called:
+-#
+-# 	postinst configure <most-recently-configured-version>
+-# 	old-postinst abort-upgrade <new-version>
+-# 	conflictor's-postinst abort-remove in-favour <package> <new-version>
+-# 	postinst abort-remove
+-# 	deconfigured's-postinst abort-deconfigure in-favour <failed-install-package> <version> [<removing conflicting-package> <version>]
+-#
+-
+-# for details, see http://www.debian.org/doc/debian-policy/ or
+-# the debian-policy package
+-
+-case "$1" in
+-    configure)
+-	# attempt to load the plugin if the mgr is running
+-	deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-    abort-upgrade|abort-remove|abort-deconfigure)
+-	:
+-    ;;
+-
+-    *)
+-        echo "postinst called with unknown argument \`$1'" >&2
+-        exit 1
+-    ;;
+-esac
+-
+-# dh_installdeb will replace this with shell code automatically
+-# generated by other debhelper scripts.
+-
+-#DEBHELPER#
+-
+-exit 0
+-
+-
+diff --git a/debian/ceph-mgr-diskprediction-local.postinst b/debian/ceph-mgr-diskprediction-local.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-diskprediction-local.postinst
++++ /dev/null
+@@ -1,43 +0,0 @@
+-#!/bin/sh
+-# vim: set noet ts=8:
+-# postinst script for ceph-mgr-diskprediction-local
+-#
+-# see: dh_installdeb(1)
+-
+-set -e
+-
+-# summary of how this script can be called:
+-#
+-# 	postinst configure <most-recently-configured-version>
+-# 	old-postinst abort-upgrade <new-version>
+-# 	conflictor's-postinst abort-remove in-favour <package> <new-version>
+-# 	postinst abort-remove
+-# 	deconfigured's-postinst abort-deconfigure in-favour <failed-install-package> <version> [<removing conflicting-package> <version>]
+-#
+-
+-# for details, see http://www.debian.org/doc/debian-policy/ or
+-# the debian-policy package
+-
+-case "$1" in
+-    configure)
+-	# attempt to load the plugin if the mgr is running
+-	deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-    abort-upgrade|abort-remove|abort-deconfigure)
+-	:
+-    ;;
+-
+-    *)
+-        echo "postinst called with unknown argument \`$1'" >&2
+-        exit 1
+-    ;;
+-esac
+-
+-# dh_installdeb will replace this with shell code automatically
+-# generated by other debhelper scripts.
+-
+-#DEBHELPER#
+-
+-exit 0
+-
+-
+diff --git a/debian/ceph-mgr-influx.postinst b/debian/ceph-mgr-influx.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-influx.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-insights.postinst b/debian/ceph-mgr-insights.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-insights.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-iostat.postinst b/debian/ceph-mgr-iostat.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-iostat.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-localpool.postinst b/debian/ceph-mgr-localpool.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-localpool.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-mds-autoscaler.postinst b/debian/ceph-mgr-mds-autoscaler.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-mds-autoscaler.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-mirroring.postinst b/debian/ceph-mgr-mirroring.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-mirroring.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-nfs.postinst b/debian/ceph-mgr-nfs.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-nfs.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-nvmeof.postinst b/debian/ceph-mgr-nvmeof.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-nvmeof.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-osd-perf-query.postinst b/debian/ceph-mgr-osd-perf-query.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-osd-perf-query.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-osd-support.postinst b/debian/ceph-mgr-osd-support.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-osd-support.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-prometheus.postinst b/debian/ceph-mgr-prometheus.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-prometheus.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-rgw.postinst b/debian/ceph-mgr-rgw.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-rgw.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-rook.postinst b/debian/ceph-mgr-rook.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-rook.postinst
++++ /dev/null
+@@ -1,43 +0,0 @@
+-#!/bin/sh
+-# vim: set noet ts=8:
+-# postinst script for ceph-mgr-diskprediction-local
+-#
+-# see: dh_installdeb(1)
+-
+-set -e
+-
+-# summary of how this script can be called:
+-#
+-# 	postinst configure <most-recently-configured-version>
+-# 	old-postinst abort-upgrade <new-version>
+-# 	conflictor's-postinst abort-remove in-favour <package> <new-version>
+-# 	postinst abort-remove
+-# 	deconfigured's-postinst abort-deconfigure in-favour <failed-install-package> <version> [<removing conflicting-package> <version>]
+-#
+-
+-# for details, see http://www.debian.org/doc/debian-policy/ or
+-# the debian-policy package
+-
+-case "$1" in
+-    configure)
+-	# attempt to load the plugin if the mgr is running
+-	deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-    abort-upgrade|abort-remove|abort-deconfigure)
+-	:
+-    ;;
+-
+-    *)
+-        echo "postinst called with unknown argument \`$1'" >&2
+-        exit 1
+-    ;;
+-esac
+-
+-# dh_installdeb will replace this with shell code automatically
+-# generated by other debhelper scripts.
+-
+-#DEBHELPER#
+-
+-exit 0
+-
+-
+diff --git a/debian/ceph-mgr-selftest.postinst b/debian/ceph-mgr-selftest.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-selftest.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-smb.postinst b/debian/ceph-mgr-smb.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-smb.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-snap-schedule.postinst b/debian/ceph-mgr-snap-schedule.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-snap-schedule.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-stats.postinst b/debian/ceph-mgr-stats.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-stats.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-telegraf.postinst b/debian/ceph-mgr-telegraf.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-telegraf.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
+diff --git a/debian/ceph-mgr-test-orchestrator.postinst b/debian/ceph-mgr-test-orchestrator.postinst
+deleted file mode 100644
+--- a/debian/ceph-mgr-test-orchestrator.postinst
++++ /dev/null
+@@ -1,10 +0,0 @@
+-#!/bin/sh
+-set -e
+-
+-case "$1" in
+-    configure)
+-        deb-systemd-invoke try-restart ceph-mgr.target
+-    ;;
+-esac
+-
+-#DEBHELPER#
