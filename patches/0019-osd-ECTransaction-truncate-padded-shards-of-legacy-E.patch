@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kefu Chai <k.chai@proxmox.com>
+Date: Tue, 20 Oct 2026 09:31:50 +0800
+Subject: [PATCH] osd/ECTransaction: truncate padded shards of legacy EC
+ objects
+
+Without EC optimizations, every shard of an EC object is padded to the
+stripe boundary. After allow_ec_optimizations is set on the pool,
+truncate() only shrinks the shards whose optimized size, computed from
+the old object size, is larger than the new one. The other shards keep
+the legacy padding, so scrub finds them too long and flags the object
+inconsistent.
+
+With 4+2 and 4K chunks, all six shards of a 20K object are 8K.
+Truncate it to 16K, and shards 1-3 stay at 8K instead of 4K. RBD hits
+this when a discard or write-zeroes reaches the end of an object,
+since librbd sends that as a truncate. With more than m shards
+flagged, "ceph pg repair" marks them all missing and the object ends
+up unfound, while its data was fine.
+
+So truncate the remaining shards to their new size as well. Objects
+written with EC optimizations already have that size. Extending the
+rollback clone to cover the padding instead doesn't work: the primary
+doesn't know how long it is, and BlueStore rejects a clone_range past
+the end of an object.
+
+Fixes: https://tracker.ceph.com/issues/81915
+Signed-off-by: Kefu Chai <k.chai@proxmox.com>
+
+(cherry picked from commit 344c82f845f76017a0854cf3b6f9d3609b561131)
+
+Conflicts:
+	src/test/osd/TestBackendBasics.cc: dropped, tentacle does not have
+	PGBackendTestFixture which the new tests are built on.
+---
+ src/osd/ECTransaction.cc | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/osd/ECTransaction.cc b/src/osd/ECTransaction.cc
+index cd03849ed4d4..41bad83bf334 100644
+--- a/src/osd/ECTransaction.cc
++++ b/src/osd/ECTransaction.cc
+@@ -714,6 +714,19 @@ void ECTransaction::Generate::truncate() {
+           start_align_next);
+       }
+     }
++
++    // Shards of objects written before EC optimizations are padded to the
++    // stripe. Trim that padding too. It is zeros past the end, so it needs no
++    // rollback.
++    for (auto &&[shard, t] : transactions) {
++      if (truncate_eset.contains(shard)) {
++        continue;
++      }
++      t.truncate(
++        coll_t(spg_t(pgid, shard)),
++        ghobject_t(oid, ghobject_t::NO_GEN, shard),
++        sinfo.object_size_to_shard_size(op.truncate->first, shard));
++    }
+     rollback_extents.emplace_back(make_pair(clone_start, clone_end - clone_start));
+     rollback_shards.emplace_back(clone_shards);
+   }

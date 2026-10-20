@@ -19,3 +19,4 @@
 0015-bluefs-truncate-unused-allocation-on-close.patch
 0016-bluefs-fix-use_direct_io-override.patch
 0017-bluefs-acquire-file-lock-in-truncate.patch
+0019-osd-ECTransaction-truncate-padded-shards-of-legacy-E.patch
