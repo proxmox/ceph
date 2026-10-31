@@ -1,3 +1,9 @@
+ceph (21.2.0-pve1) trixie; urgency=medium
+
+  * update ceph to the first stable release from the Umbrella 21.2 series.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sat, 31 Oct 2026 20:36:51 +0100
+
 ceph (21.1.2-pve1) trixie; urgency=medium
 
   * WIP build of the second Ceph 21 Umbrella release candidate.
