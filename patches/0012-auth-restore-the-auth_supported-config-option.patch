@@ -27,7 +27,6 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  4 files changed, 27 insertions(+), 16 deletions(-)
 
 diff --git a/src/auth/AuthRegistry.cc b/src/auth/AuthRegistry.cc
-index 5200ff46989..2ed1471b6d2 100644
 --- a/src/auth/AuthRegistry.cc
 +++ b/src/auth/AuthRegistry.cc
 @@ -38,6 +38,7 @@ AuthRegistry::~AuthRegistry()
@@ -69,10 +68,9 @@ index 5200ff46989..2ed1471b6d2 100644
  		   &mon_cluster_modes);
    _parse_mode_list(cct->_conf.get_val<string>("ms_mon_service_mode"),
 diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
-index 34a9c48e694..f74a58e278a 100644
 --- a/src/common/options/global.yaml.in
 +++ b/src/common/options/global.yaml.in
-@@ -2165,6 +2165,7 @@ options:
+@@ -2167,6 +2167,7 @@ options:
    default: cephx
    flags:
      - runtime
@@ -80,7 +78,7 @@ index 34a9c48e694..f74a58e278a 100644
  - name: auth_exit_on_failure
    type: int
    level: dev
-@@ -2183,6 +2184,7 @@ options:
+@@ -2185,6 +2186,7 @@ options:
    default: cephx
    flags:
      - runtime
@@ -88,7 +86,7 @@ index 34a9c48e694..f74a58e278a 100644
  # what clients require of daemons
  - name: auth_client_required
    type: str
-@@ -2194,6 +2196,13 @@ options:
+@@ -2196,6 +2198,13 @@ options:
    default: cephx, none
    flags:
      - runtime
@@ -103,7 +101,6 @@ index 34a9c48e694..f74a58e278a 100644
    type: int
    level: advanced
 diff --git a/src/mon/Monitor.cc b/src/mon/Monitor.cc
-index 98d71e7ad00..e41f08aba0a 100644
 --- a/src/mon/Monitor.cc
 +++ b/src/mon/Monitor.cc
 @@ -223,8 +223,12 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
@@ -122,7 +119,6 @@ index 98d71e7ad00..e41f08aba0a 100644
    mgr_client(cct_, mgr_m, monmap),
    gss_ktfile_client(cct->_conf.get_val<std::string>("gss_ktab_client_file")),
 diff --git a/src/test/mon/test_mon_workloadgen.cc b/src/test/mon/test_mon_workloadgen.cc
-index 48e8976237a..046a4ac2dd8 100644
 --- a/src/test/mon/test_mon_workloadgen.cc
 +++ b/src/test/mon/test_mon_workloadgen.cc
 @@ -357,6 +357,8 @@ class OSDStub : public TestStub
