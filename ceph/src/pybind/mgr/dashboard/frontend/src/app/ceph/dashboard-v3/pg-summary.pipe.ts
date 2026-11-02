@@ -3,7 +3,8 @@ import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
 import { PgStateCount } from '~/app/shared/models/health.interface';
 
 @Pipe({
-  name: 'pgSummary'
+  name: 'pgSummary',
+  standalone: false
 })
 export class PgSummaryPipe implements PipeTransform {
   constructor(private pgCategoryService: PgCategoryService) {}
@@ -11,7 +12,7 @@ export class PgSummaryPipe implements PipeTransform {
   transform(value: any): any {
     if (!value) return null;
     const categoryPgAmount: Record<string, number> = {};
-    value.statuses.forEach((status: PgStateCount) => {
+    value?.statuses?.forEach((status: PgStateCount) => {
       const categoryType = this.pgCategoryService.getTypeByStates(status?.state_name);
       if (!categoryPgAmount?.[categoryType]) {
         categoryPgAmount[categoryType] = 0;

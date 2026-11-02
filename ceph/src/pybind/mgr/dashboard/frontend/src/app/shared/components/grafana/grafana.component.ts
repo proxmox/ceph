@@ -7,7 +7,8 @@ import { Icons } from '~/app/shared/enum/icons.enum';
 @Component({
   selector: 'cd-grafana',
   templateUrl: './grafana.component.html',
-  styleUrls: ['./grafana.component.scss']
+  styleUrls: ['./grafana.component.scss'],
+  standalone: false
 })
 export class GrafanaComponent implements OnInit, OnChanges {
   grafanaSrc: SafeUrl;
@@ -42,7 +43,10 @@ export class GrafanaComponent implements OnInit, OnChanges {
   @Input()
   scrollable: string = 'yes';
 
-  constructor(private sanitizer: DomSanitizer, private settingsService: SettingsService) {
+  constructor(
+    private sanitizer: DomSanitizer,
+    private settingsService: SettingsService
+  ) {
     this.grafanaTimes = [
       {
         name: $localize`Last 5 minutes`,

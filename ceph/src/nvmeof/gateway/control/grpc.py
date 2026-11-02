@@ -49,7 +49,7 @@ from .kmip_client import NVMeoFKMIPClient
 
 # Assuming max of 32 gateways and protocol min 1 max 65519
 CNTLID_RANGE_SIZE = 2040
-DEFAULT_MODEL_NUMBER = "Ceph bdev Controller"
+DEFAULT_MODEL_NAME = "Ceph bdev Controller"
 
 MONITOR_POLLING_RATE_SEC = 2     # monitor polls gw each 2 seconds
 
@@ -81,7 +81,8 @@ class SubsystemsCache:
 
 class BdevStatus:
     def __init__(self, status, error_message, bdev_name="",
-                 rbd_pool=None, rbd_image_name=None, rados_namespace_name=None, trash_image=False):
+                 rbd_pool=None, rbd_image_name=None, rados_namespace_name=None, trash_image=False,
+                 degraded=False):
         self.status = status
         self.error_message = error_message
         self.bdev_name = bdev_name
@@ -89,6 +90,7 @@ class BdevStatus:
         self.rbd_image_name = rbd_image_name
         self.rados_namespace_name = rados_namespace_name
         self.trash_image = trash_image
+        self.degraded = degraded
 
 
 class MonitorGroupService(monitor_pb2_grpc.MonitorGroupServicer):
@@ -317,7 +319,7 @@ class SubsystemHostAuth:
 class NamespaceInfo:
     def __init__(self, subsys, nsid, bdev, uuid, anagrpid, auto_visible, pool, data_pool, image,
                  rados_namespace_name, trash_image, read_only, location, auto_resize,
-                 encryption_entries, encryption_algorithm):
+                 encryption_entries, encryption_algorithm, degraded):
         self.subsys = subsys
         self.nsid = nsid
         self.bdev = bdev
@@ -336,6 +338,7 @@ class NamespaceInfo:
         self.image_was_shrunk = False
         self.encryption_entries = encryption_entries
         self.encryption_algorithm = encryption_algorithm
+        self.degraded = degraded
 
     def __str__(self):
         return f"subsys: {self.subsys}, nsid: {self.nsid}, " \
@@ -349,6 +352,7 @@ class NamespaceInfo:
                f"auto_resize: {self.auto_resize}, " \
                f"encryption_entries: {self.encryption_entries}, " \
                f"encryption_algorithm: {self.encryption_algorithm}, " \
+               f"degraded: {self.degraded}, " \
                f"hosts: {self.host_list}"
 
     def empty(self) -> bool:
@@ -392,6 +396,12 @@ class NamespaceInfo:
     def was_image_shrunk(self):
         return self.image_was_shrunk
 
+    def is_degraded(self) -> bool:
+        return self.degraded
+
+    def is_pinned(self) -> bool:
+        return self.anagrpid < 0
+
     @staticmethod
     def are_uuids_equal(uuid1: str, uuid2: str) -> bool:
         assert uuid1 and uuid2, "UUID can't be empty"
@@ -405,7 +415,7 @@ class NamespaceInfo:
 
 class NamespacesLocalList:
     EMPTY_NAMESPACE = NamespaceInfo(None, None, None, None, 0, False, None, None,
-                                    None, None, False, False, None, False, None, None)
+                                    None, None, False, False, None, False, None, None, False)
 
     def __init__(self):
         self.namespace_list = defaultdict(dict)
@@ -439,7 +449,8 @@ class NamespacesLocalList:
             location,
             auto_resize,
             encryption_entries,
-            encryption_algorithm):
+            encryption_algorithm,
+            degraded):
         if not bdev:
             bdev = GatewayService.find_unique_bdev_name(uuid)
         with self.namespace_list_lock:
@@ -449,7 +460,8 @@ class NamespacesLocalList:
                                                            trash_image, read_only,
                                                            location, auto_resize,
                                                            encryption_entries,
-                                                           encryption_algorithm)
+                                                           encryption_algorithm,
+                                                           degraded)
 
     def find_namespace(self, nqn, nsid, uuid=None, bdev=None) -> NamespaceInfo:
         with self.namespace_list_lock:
@@ -509,7 +521,7 @@ class NamespacesLocalList:
         with self.namespace_list_lock:
             if nqn in self.namespace_list:
                 for ns_info in self.namespace_list[nqn].values():
-                    if ns_info.anagrpid == anagrpid:
+                    if abs(ns_info.anagrpid) == abs(anagrpid):
                         yield ns_info
 
     def get_all_namespaces_by_ana_group_id(self, anagrpid):
@@ -521,7 +533,7 @@ class NamespacesLocalList:
                     ns = self.namespace_list[nqn][nsid]
                     if ns.empty():
                         continue
-                    if ns.anagrpid == anagrpid:
+                    if abs(ns.anagrpid) == abs(anagrpid):
                         ns_list.append((nsid, nqn))           # list of tupples
         return ns_list
 
@@ -534,7 +546,18 @@ class NamespacesLocalList:
             ns = self.namespace_list[nqn][nsid]
             if ns.empty():
                 return 0
-            return ns.anagrpid
+            return abs(ns.anagrpid)
+
+    def is_nsid_in_persistent_ana(self, nqn, nsid):
+        with self.namespace_list_lock:
+            if nqn not in self.namespace_list:
+                return False
+            if nsid not in self.namespace_list[nqn]:
+                return False
+            ns = self.namespace_list[nqn][nsid]
+            if ns.empty():
+                return False
+            return ns.anagrpid < 0
 
     def get_subsys_namespaces_by_ana_group_id(self, nqn, anagrpid):
         ns_list = []
@@ -546,7 +569,7 @@ class NamespacesLocalList:
                 ns = self.namespace_list[nqn][nsid]
                 if ns.empty():
                     continue
-                if ns.anagrpid == anagrpid:
+                if abs(ns.anagrpid) == abs(anagrpid):
                     ns_list.append(ns)
 
         return ns_list
@@ -594,6 +617,32 @@ class NamespacesLocalList:
                     if ns.is_host_in_namespace(host):
                         ns_list.append((nsid, nqn))
         return ns_list
+
+    def has_encrypted_namespaces(self, nqn=None) -> bool:
+        with self.namespace_list_lock:
+            if nqn and nqn not in self.namespace_list:
+                return False
+
+            if nqn:
+                subsystems = [nqn]
+            else:
+                subsystems = self.namespace_list.keys()
+
+            for subsys in subsystems:
+                for nsid in self.namespace_list[subsys]:
+                    ns = self.namespace_list[subsys][nsid]
+                    if ns.empty():
+                        continue
+                    # Degraded namespaces have empty encryption fields, but this is internal for
+                    # this gateway only. On other gateways the same namespace would be encrypted.
+                    if ns.is_degraded():
+                        return True
+                    for ent in ns.encryption_entries:
+                        if ent.format == pb2.EncryptionFormat.none:
+                            continue
+                        if ent.key_id:
+                            return True
+        return False
 
 
 class ImageIdentification:
@@ -701,14 +750,17 @@ class ImageIdentification:
 
 
 class KMIPServerEndpoint:
+    KMIP_DEFAULT_PORT = 5696
+
     def __init__(self, address, port):
         self.address = address
         self.port = port
 
+    def __str__(self):
+        return f"{self.address}:{self.port}"
+
 
 class KMIPServerEndpointList():
-    KMIP_DEFAULT_PORT = 5696
-
     def __init__(self):
         self.kmip_server_endpoints_lock = threading.Lock()
         # the server endpoint list consists of elements of a server name
@@ -874,6 +926,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
     MAX_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM = 2048
     MAX_HOSTS_PER_SUBSYS_DEFAULT = 128
     MAX_HOSTS_DEFAULT = 2048
+    MAINTENANCE_ANA_GROUP = 64
+    MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM = MAINTENANCE_ANA_GROUP
     # notification name should be the same as in spdk/lib/nvmf/ctrlr.c
     SPDK_HOST_KEEPALIVE_TIMEOUT_NOTIFICATION = "host_keepalive_timeout"
     # notification name should be the same as in spdk/lib/bdev/bdev.c
@@ -933,6 +987,11 @@ class GatewayService(pb2_grpc.GatewayServicer):
             "gateway",
             "max_namespaces",
             GatewayService.MAX_NAMESPACES_DEFAULT)
+        if self.max_namespaces < GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM:
+            self.max_namespaces = GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM
+            self.logger.error(f"Max namespaces can't be less than "
+                              f"{GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM}, "
+                              f"will use this value instead")
         self.max_namespaces_per_subsystem = self.config.getint_with_default(
             "gateway",
             "max_namespaces_per_subsystem",
@@ -943,6 +1002,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
                               f"{biggest_max_ns_per_subsys}, will use "
                               f"this value instead")
             self.max_namespaces_per_subsystem = biggest_max_ns_per_subsys
+        smallest_max_ns_per_subsys = GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM
+        if self.max_namespaces_per_subsystem < smallest_max_ns_per_subsys:
+            self.logger.error(f"Max namespaces per subsystem can't be less than "
+                              f"{smallest_max_ns_per_subsys}, will use "
+                              f"this value instead")
+            self.max_namespaces_per_subsystem = smallest_max_ns_per_subsys
         self.max_hosts_per_subsystem = self.config.getint_with_default(
             "gateway",
             "max_hosts_per_subsystem",
@@ -962,10 +1027,16 @@ class GatewayService(pb2_grpc.GatewayServicer):
         self.ana_grp_subs_load = defaultdict(dict)
         self.max_ana_grps = self.config.getint_with_default("gateway", "max_gws_in_grp", 16)
         if self.max_ana_grps > self.max_namespaces:
-            self.logger.warning(f"Maximal number of load balancing groups can't be greather "
+            self.logger.warning(f"Maximal number of load balancing groups can't be greater "
                                 f"than the maximal number of namespaces, will truncate "
                                 f"to {self.max_namespaces}")
             self.max_ana_grps = self.max_namespaces
+
+        if self.max_ana_grps >= GatewayService.MAINTENANCE_ANA_GROUP:
+            self.logger.warning(f"Maximal number of load balancing groups can't be greater "
+                                f"than or equal to {GatewayService.MAINTENANCE_ANA_GROUP}, will "
+                                f"truncate to {GatewayService.MAINTENANCE_ANA_GROUP - 1}")
+            self.max_ana_grps = GatewayService.MAINTENANCE_ANA_GROUP - 1
 
         if self.max_namespaces_per_subsystem > self.max_namespaces:
             self.logger.warning(f"Maximal number of namespace per subsystem can't be greater "
@@ -984,6 +1055,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
         for i in range(self.max_ana_grps + 1):
             self.ana_grp_ns_load[i] = 0
             self.ana_grp_state[i] = pb2.ana_state.INACCESSIBLE
+        self.ana_grp_ns_load[GatewayService.MAINTENANCE_ANA_GROUP] = 0
         self.cluster_nonce = {}
         self.bdev_cluster = {}
         self.bdev_params = {}
@@ -997,11 +1069,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
         self.subsystems_cache = SubsystemsCache()
         self.host_info = SubsystemHostAuth()
         self.up_and_running = True
-        self.rebalance = Rebalance(self)
         self.spdk_version = None
         self.spdk_qos_timeslice = self.config.getint_with_default("spdk",
                                                                   "qos_timeslice_in_usecs", None)
         self.force_tls = self.config.getboolean_with_default("gateway", "force_tls", False)
+        self.degrade_namespace_on_kmip_error = self.config.getboolean_with_default(
+            "gateway", "degrade_namespace_on_kmip_error", True)
         self.io_stats_enabled = self.config.getboolean_with_default("gateway",
                                                                     "io_stats_enabled", True)
         if self.io_stats_enabled:
@@ -1026,6 +1099,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                               daemon=True,
                                                               args=(spdk_notifications_interval,))
             self.spdk_notifications_thread.start()
+        # Keep towards the end of init as we use fields like gateway_state in the rebalance thread
+        self.rebalance = Rebalance(self)
 
     def read_spdk_notifications(self, read_interval):
         if read_interval <= 0:
@@ -1471,15 +1546,58 @@ class GatewayService(pb2_grpc.GatewayServicer):
                 self.logger.exception(f"Error setting image identification {img_id_value} for "
                                       f"{image_path}")
 
-    def create_bdev(self, anagrp: int, name, uuid, rbd_pool_name, rbd_data_pool_name,
-                    rbd_image_name,
-                    block_size, create_image, trash_image, rbd_image_size, disable_auto_resize,
-                    read_only, rados_namespace_name,
-                    encryption_entries, encryption_algorithm,
-                    context, peer_msg=""):
+    def create_degraded_bdev(self, name, uuid, block_size):
+        """Create a degraded null bdev with no IO allowed"""
+
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling create_degraded_bdev()"
+        self.logger.info(f"Received request to create a degraded bdev {name}")
+
+        try:
+            # Even though we don't really care about the number of blocks or the block size
+            # as we don't perform any IO on these bdevs, we need to set the values to 64
+            # and 512 for SPDK. An SPDK internal code calls bdev_io_valid_blocks() which
+            # will fail if the number of blocks times the block size is smaller than
+            # SPDK_GPT_BUFFER_SIZE (32K). See vbdev_gpt_read_gpt() in module/bdev/gpt/vbdev_gpt.c
+            bdev_name = self.spdk_rpc_client.bdev_null_create(
+                name=name,
+                num_blocks=64,
+                block_size=512,
+                uuid=uuid,
+                fail_io=True)
+            self.logger.debug(f"bdev_null_create: {bdev_name}")
+        except Exception as ex:
+            errmsg = f"bdev_null_create {name} failed"
+            self.logger.exception(errmsg)
+            errmsg = f"{errmsg} with:\n{ex}"
+            resp = self.parse_json_exeption(ex)
+            status = errno.ENODEV
+            if resp:
+                status = resp["code"]
+                errmsg = resp['message']
+            return BdevStatus(status=status, error_message=errmsg)
+
+        # Just in case SPDK failed with no exception
+        if not bdev_name:
+            errmsg = f"Can't create bdev {name}"
+            self.logger.error(errmsg)
+            return BdevStatus(status=errno.ENODEV, error_message=errmsg)
+
+        assert name == bdev_name, f"Created bdev name {bdev_name} differs " \
+                                  f"from requested name {name}"
+
+        return BdevStatus(status=0, error_message="", bdev_name=bdev_name, degraded=True)
+
+    def create_rbd_bdev(self, anagrp: int, name, uuid, rbd_pool_name, rbd_data_pool_name,
+                        rbd_image_name,
+                        block_size, create_image, trash_image, rbd_image_size, disable_auto_resize,
+                        read_only, rados_namespace_name,
+                        encryption_entries, encryption_algorithm,
+                        context, peer_msg=""):
         """Creates a bdev from an RBD image."""
 
-        if create_image:
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling create_rbd_bdev()"
+
+        if context and create_image:
             cr_img_msg = "will create image if doesn't exist"
         else:
             cr_img_msg = "will not create image if doesn't exist"
@@ -1519,12 +1637,16 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
         enc_formats_str = enc_formats_str.removesuffix(", ")
 
-        if create_image and len(encryption_entries) > 1:
+        if context and create_image and len(encryption_entries) > 1:
             return BdevStatus(status=errno.EINVAL,
                               error_message="At most one encryption format can be specified when "
                                             "creating a new image")
 
         if encryption_algorithm != pb2.EncryptionAlgorithm.no_algorithm:
+            if context and not create_image:
+                return BdevStatus(status=errno.EINVAL,
+                                  error_message="Encryption algorithm is only allowed when "
+                                                "creating a new image")
             enc_algo_str = GatewayEnumUtils.get_key_from_value(pb2.EncryptionAlgorithm,
                                                                encryption_algorithm)
             if enc_algo_str is None:
@@ -1548,7 +1670,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
         created_rbd_pool = None
         created_rbd_image_name = None
-        if create_image:
+        created_rados_namespace_name = None
+        if context and create_image:
             if not rbd_pool_name:
                 return BdevStatus(status=errno.ENODEV,
                                   error_message="Empty RBD pool name")
@@ -1567,31 +1690,11 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                   error_message=f"RBD pool {rbd_pool_name} doesn't exist")
 
             pool_type = self.ceph_utils.get_pool_type(rbd_pool_name)
-            if pool_type == CephUtils.CephPoolType.ERASURE:
-                if self.ceph_utils.supports_omap_is_set(rbd_pool_name):
-                    overwrites = self.ceph_utils.allow_ec_overwrites_is_set(rbd_pool_name)
-                    if not overwrites:
-                        self.logger.error(f"Erasure coded RBD pool {rbd_pool_name} doesn't have "
-                                          f"\"allow_ec_overwrites\" set")
-                        return BdevStatus(status=errno.EINVAL,
-                                          error_message=f"Erasure coded RBD pool {rbd_pool_name} "
-                                                        f"doesn't have \"allow_ec_overwrites\" "
-                                                        f"set\nIn order to set it, please run "
-                                                        f"'ceph osd pool set {rbd_pool_name}"
-                                                        f" allow_ec_overwrites true'")
-                else:
-                    self.logger.error(f"RBD pool {rbd_pool_name} is an erasure coded pool which "
-                                      f"does not support OMAP")
-                    return BdevStatus(status=errno.EINVAL,
-                                      error_message=f"RBD pool "
-                                                    f"{rbd_pool_name} is an erasure coded pool "
-                                                    f"which does not support OMAP")
-            elif pool_type != CephUtils.CephPoolType.REPLICATED:
+            if pool_type != CephUtils.CephPoolType.REPLICATED:
                 self.logger.error(f"RBD pool {rbd_pool_name} has type {pool_type.name}")
                 return BdevStatus(status=errno.EINVAL,
                                   error_message=f"RBD pool "
-                                                f"{rbd_pool_name} has an invalid type "
-                                                f"{pool_type.name}")
+                                                f"{rbd_pool_name} is not a replicated pool")
 
             if rbd_data_pool_name:
                 rc = self.ceph_utils.pool_exists(rbd_data_pool_name)
@@ -1609,8 +1712,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                           error_message=f"RBD data pool {rbd_data_pool_name} "
                                                         f"doesn't have \"allow_ec_overwrites\" "
                                                         f"set\nIn order to set it please run "
-                                                        f"'ceph osd pool set {rbd_data_pool_name}"
-                                                        f" allow_ec_overwrites true'")
+                                                        f"'cpeh osd pool set {rbd_data_pool_name}"
+                                                        f" ec_pool_overwrites true'")
                 elif pool_type != CephUtils.CephPoolType.REPLICATED:
                     self.logger.error(f"RBD data pool {rbd_data_pool_name} has "
                                       f"type {pool_type.name}")
@@ -1625,11 +1728,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
                 if len(encryption_entries) > 0:
                     enc_format = encryption_entries[0].format
                     passphrase = encryption_entries[0].key_id
-                rc = self.ceph_utils.create_image(rbd_pool_name, rbd_data_pool_name,
-                                                  rados_namespace_name,
-                                                  rbd_image_name, rbd_image_size,
-                                                  enc_format, encryption_algorithm,
-                                                  passphrase)
+                rc = self.ceph_utils.create_image(
+                    rbd_pool_name, rbd_data_pool_name,
+                    rados_namespace_name,
+                    rbd_image_name, rbd_image_size,
+                    enc_format, encryption_algorithm,
+                    passphrase=passphrase)
                 if rc:
                     data_pool_msg = ""
                     if rbd_data_pool_name:
@@ -1681,11 +1785,22 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                 f"was not specified")
             except Exception:
                 self.logger.exception(f"Error getting {image_path} size")
-                self.logger.error(f"Error verifying RBD image {image_path} "
-                                  f"existence")
+                errmsg = f"Error verifying RBD image {image_path} existence"
+                self.logger.error(errmsg)
                 return BdevStatus(status=errno.EIO,
-                                  error_message=f"Error verifying RBD image {image_path} "
-                                                f"existence")
+                                  error_message=errmsg)
+
+            if len(encryption_entries) > 0:
+                enc_msg = self.ceph_utils.verify_image_encryption_settings(
+                    rbd_pool_name,
+                    rados_namespace_name,
+                    rbd_image_name,
+                    image_path,
+                    encryption_entries)
+                if enc_msg:
+                    self.logger.error(enc_msg)
+                    return BdevStatus(status=errno.EPERM,
+                                      error_message=enc_msg)
 
         if disable_auto_resize:
             try:
@@ -1760,11 +1875,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
                           rbd_image_name=rbd_image_name,
                           rados_namespace_name=rados_namespace_name, trash_image=trash_image)
 
-    def resize_bdev(self, bdev_name, new_size, peer_msg=""):
-        """Resizes a bdev."""
+    def resize_rbd_bdev(self, bdev_name, new_size, peer_msg=""):
+        """Resizes an RBD bdev."""
 
-        self.logger.info(f"Received request to resize bdev {bdev_name} to {new_size} MiB{peer_msg}")
-        assert self.rpc_lock.locked(), "RPC is unlocked when calling resize_bdev()"
+        self.logger.info(f"Received request to resize RBD bdev {bdev_name} to "
+                         f"{new_size} MiB{peer_msg}")
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling resize_rbd_bdev()"
         rbd_pool_name = None
         rbd_image_name = None
         rados_namespace_name = None
@@ -1807,7 +1923,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
                 name=bdev_name,
                 new_size=new_size,
             )
-            self.logger.debug(f"resize_bdev {bdev_name}: {ret}")
+            self.logger.debug(f"resize_rbd_bdev {bdev_name}: {ret}")
         except Exception as ex:
             errmsg = f"Failure resizing bdev {bdev_name}"
             self.logger.exception(errmsg)
@@ -1826,35 +1942,63 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
         return pb2.req_status(status=0, error_message="")
 
-    def delete_bdev(self, bdev_name, recycling_mode=False, peer_msg=""):
-        """Deletes a bdev."""
+    def delete_degraded_bdev(self, bdev_name, peer_msg=""):
+        """Deletes a degraded bdev."""
 
-        assert self.rpc_lock.locked(), "RPC is unlocked when calling delete_bdev()"
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling delete_degraded_bdev()"
 
-        self.logger.info(f"Received request to delete bdev {bdev_name}{peer_msg}")
+        self.logger.info(f"Received request to delete degraded bdev {bdev_name}{peer_msg}")
         try:
-            ret = self.spdk_rpc_client.bdev_rbd_delete(name=bdev_name)
-            if not recycling_mode:
-                del self.bdev_params[bdev_name]
-            with self.shared_state_lock:
-                cluster = self.bdev_cluster[bdev_name]
-            self.logger.debug(f"to delete_bdev {bdev_name} cluster {cluster} ")
-            self.cluster_allocator.put_cluster(cluster)
-            self.logger.debug(f"delete_bdev {bdev_name}: {ret}")
+            ret = self.spdk_rpc_client.bdev_null_delete(name=bdev_name)
+            self.logger.debug(f"bdev_null_delete {bdev_name}: {ret}")
         except Exception as ex:
-            errmsg = f"Failure deleting bdev {bdev_name}"
+            errmsg = f"Failure deleting degraded bdev {bdev_name}"
             self.logger.exception(errmsg)
             errmsg = f"{errmsg}:\n{ex}"
             resp = self.parse_json_exeption(ex)
             status = errno.EINVAL
             if resp:
                 status = resp["code"]
-                errmsg = f"Failure deleting bdev {bdev_name}: {resp['message']}"
+                errmsg = f"Failure deleting degraded bdev {bdev_name}: {resp['message']}"
             return pb2.req_status(status=status, error_message=errmsg)
 
         # Just in case SPDK failed with no exception
         if not ret:
-            errmsg = f"Failure deleting bdev {bdev_name}"
+            errmsg = f"Failure deleting degraded bdev {bdev_name}"
+            self.logger.error(errmsg)
+            return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+
+        return pb2.req_status(status=0, error_message="")
+
+    def delete_rbd_bdev(self, bdev_name, recycling_mode=False, peer_msg=""):
+        """Deletes an RBD bdev."""
+
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling delete_rbd_bdev()"
+
+        self.logger.info(f"Received request to delete RBD bdev {bdev_name}{peer_msg}")
+        try:
+            ret = self.spdk_rpc_client.bdev_rbd_delete(name=bdev_name)
+            if not recycling_mode:
+                del self.bdev_params[bdev_name]
+            with self.shared_state_lock:
+                cluster = self.bdev_cluster[bdev_name]
+            self.logger.debug(f"to delete_rbd_bdev {bdev_name} cluster {cluster} ")
+            self.cluster_allocator.put_cluster(cluster)
+            self.logger.debug(f"bdev_rbd_delete {bdev_name}: {ret}")
+        except Exception as ex:
+            errmsg = f"Failure deleting RBD bdev {bdev_name}"
+            self.logger.exception(errmsg)
+            errmsg = f"{errmsg}:\n{ex}"
+            resp = self.parse_json_exeption(ex)
+            status = errno.EINVAL
+            if resp:
+                status = resp["code"]
+                errmsg = f"Failure deleting RBD bdev {bdev_name}: {resp['message']}"
+            return pb2.req_status(status=status, error_message=errmsg)
+
+        # Just in case SPDK failed with no exception
+        if not ret:
+            errmsg = f"Failure deleting RBD bdev {bdev_name}"
             self.logger.error(errmsg)
             return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
 
@@ -1891,13 +2035,15 @@ class GatewayService(pb2_grpc.GatewayServicer):
         assert self.rpc_lock.locked(), "RPC is unlocked when calling create_subsystem_safe()"
         create_subsystem_error_prefix = f"Failure creating subsystem {request.subsystem_nqn}"
         peer_msg = self.get_peer_message(context)
+        max_ns_warning = ""
 
         self.logger.info(
             f"Received request to create subsystem {request.subsystem_nqn}, enable_ha: "
             f"{request.enable_ha}, max_namespaces: {request.max_namespaces}, no group "
             f"append: {request.no_group_append}, network mask: {request.network_mask}, "
             f"port: {request.port}, "
-            f"secure listeners: {request.secure_listeners}, context: {context}{peer_msg}")
+            f"secure listeners: {request.secure_listeners}, model name: {request.model_name}, "
+            f"context: {context}{peer_msg}")
 
         if not request.enable_ha:
             errmsg = f"{create_subsystem_error_prefix}: HA must be enabled for subsystems"
@@ -1921,6 +2067,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
                 return pb2.subsys_status(status=errno.EINVAL,
                                          error_message=errmsg,
                                          nqn=request.subsystem_nqn)
+            if request.max_namespaces < GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM:
+                max_ns_warning = f"Max namespaces can't be less than " \
+                                 f"{GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM}" \
+                                 f", will increase it"
+                self.logger.warning(max_ns_warning)
+                request.max_namespaces = GatewayService.MIN_VALUE_FOR_MAX_NAMESPACES_PER_SUBSYSTEM
             if request.max_namespaces > self.max_namespaces:
                 self.logger.warning(f"The requested max number of namespaces for subsystem "
                                     f"{request.subsystem_nqn} ({request.max_namespaces}) is "
@@ -2052,10 +2204,20 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     return pb2.subsys_status(status=errno.EEXIST,
                                              error_message=errmsg,
                                              nqn=request.subsystem_nqn)
+                model_name = DEFAULT_MODEL_NAME
+                if request.HasField("model_name") and request.model_name:
+                    model_check = GatewayUtils.is_valid_model_name(request.model_name)
+                    if model_check:
+                        errmsg = f"{create_subsystem_error_prefix}: {model_check}"
+                        self.logger.error(errmsg)
+                        return pb2.subsys_status(status=errno.EINVAL,
+                                                 error_message=errmsg,
+                                                 nqn=request.subsystem_nqn)
+                    model_name = request.model_name
                 ret = self.spdk_rpc_client.nvmf_create_subsystem(
                     nqn=request.subsystem_nqn,
                     serial_number=request.serial_number,
-                    model_number=DEFAULT_MODEL_NUMBER,
+                    model_number=model_name,
                     max_namespaces=request.max_namespaces,
                     min_cntlid=min_cntlid,
                     max_cntlid=max_cntlid,
@@ -2134,8 +2296,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                 f"An error occurred when adding network mask. Try " \
                                 f"adding the listeners manually."
                 self.logger.exception(error_message)
-        return pb2.subsys_status(status=0, error_message=error_message,
-                                 nqn=request.subsystem_nqn)
+        if max_ns_warning:
+            if error_message:
+                error_message += f"\n{max_ns_warning}"
+            else:
+                error_message = max_ns_warning
+        return pb2.subsys_status(status=0, error_message=error_message, nqn=request.subsystem_nqn)
 
     def create_subsystem(self, request, context=None):
         err_prefix = f"Failure creating subsystem {request.subsystem_nqn}: "
@@ -2520,13 +2686,17 @@ class GatewayService(pb2_grpc.GatewayServicer):
         return self.execute_grpc_function(self.gw_refresh_network_safe, request,
                                           context, err_prefix)
 
+    def _normalize_kmip_server_endpoint_port(self, server: str,
+                                             endpoint: pb2.kmip_server_endpoint) -> None:
+        if not endpoint.HasField("port") or endpoint.port is None:
+            endpoint.port = KMIPServerEndpoint.KMIP_DEFAULT_PORT
+            self.logger.info(f"KMIP server {server} endpoint's port wasn't specified, will use "
+                             f"default port {KMIPServerEndpoint.KMIP_DEFAULT_PORT}")
+
     def _add_one_kmip_server_endpoint(self, subsys, server, endpoint, context):
         """Add a KMIP server endpoint to the subsystem"""
 
-        if not endpoint.HasField("port") or endpoint.port is None:
-            endpoint.port = KMIPServerEndpointList.KMIP_DEFAULT_PORT
-            self.logger.info(f"KMIP server {server} endpoint's port wasn't specified, will use "
-                             f"default port {KMIPServerEndpointList.KMIP_DEFAULT_PORT}")
+        self._normalize_kmip_server_endpoint_port(server, endpoint)
 
         error_prefix = f"Failure adding an endpoint, with address " \
                        f"{endpoint.address}:{endpoint.port}, to " \
@@ -2686,10 +2856,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
     def _del_one_kmip_server_endpoint(self, subsys, server, endpoint, context):
         """Delete a KMIP server endpoint from the subsystem"""
 
-        if not endpoint.HasField("port") or endpoint.port is None:
-            endpoint.port = KMIPServerEndpointList.KMIP_DEFAULT_PORT
-            self.logger.info(f"KMIP server {server} endpoint's port wasn't specified, will use "
-                             f"default port {KMIPServerEndpointList.KMIP_DEFAULT_PORT}")
+        self._normalize_kmip_server_endpoint_port(server, endpoint)
 
         error_prefix = f"Failure deleting endpoint, with address " \
                        f"{endpoint.address}:{endpoint.port}, from " \
@@ -2790,6 +2957,26 @@ class GatewayService(pb2_grpc.GatewayServicer):
         had_eps = self.kmip_server_endpoints.subsystem_has_server_endpoints(request.subsystem_nqn)
         final_ret_status = 0
         final_err_msg = ""
+        warning_msg = ""
+        if context:
+            if self.subsystem_nsid_bdev_and_uuid.has_encrypted_namespaces(request.subsystem_nqn):
+                if request.force:
+                    warning_msg = f"Deleting endpoints of server " \
+                                  f"\"{request.server_name}\" on " \
+                                  f"{request.subsystem_nqn} " \
+                                  f"while there are still encrypted (or degraded) " \
+                                  f"namespaces in the subsystem. Will continue as " \
+                                  f"the \"force\" parameter was used."
+                    self.logger.warning(warning_msg)
+                else:
+                    errmsg = f"Failure deleting endpoints from KMIP server " \
+                             f"\"{request.server_name}\" on " \
+                             f"subsystem {request.subsystem_nqn}: There are encrypted " \
+                             f"(or degraded) namespaces in the subsystem. Either delete these " \
+                             f"namespaces or use the \"force\" parameter."
+                    self.logger.error(errmsg)
+                    return pb2.req_status(status=errno.EBUSY, error_message=errmsg)
+
         for endpoint in request.endpoints:
             ret = self._del_one_kmip_server_endpoint(request.subsystem_nqn,
                                                      request.server_name,
@@ -2806,9 +2993,17 @@ class GatewayService(pb2_grpc.GatewayServicer):
             has_eps = self.kmip_server_endpoints.subsystem_has_server_endpoints(
                 request.subsystem_nqn)
             if not has_eps:
-                self.logger.info(f"Last server endpoint for subsystem "
-                                 f"{request.subsystem_nqn} was deleted")
+                msg = f"Last endpoint of server \"{request.server_name}\" on subsystem " \
+                      f"{request.subsystem_nqn} was deleted."
+                self.logger.warning(msg)
                 self.kmip_clients.remove_client(request.subsystem_nqn)
+                if warning_msg:
+                    warning_msg = msg + "\n" + warning_msg
+                else:
+                    warning_msg = msg
+
+        if final_ret_status == 0 and not final_err_msg:
+            final_err_msg = warning_msg
 
         return pb2.req_status(status=final_ret_status, error_message=final_err_msg)
 
@@ -3064,7 +3259,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
     def create_namespace(self, subsystem_nqn, bdev_name, nsid, anagrpid, uuid,
                          auto_visible, rbd_pool, rbd_data_pool, rbd_image_name,
                          rados_namespace_name, trash_image, read_only, location,
-                         auto_resize, encryption_entries, encryption_algorithm, context):
+                         auto_resize, encryption_entries, encryption_algorithm,
+                         degraded, context):
         """Adds a namespace to a subsystem."""
 
         assert self.rpc_lock.locked(), "RPC is unlocked when calling create_namespace()"
@@ -3091,6 +3287,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
         add_namespace_error_prefix = f"Failure adding namespace{nsid_msg} to {subsystem_nqn}"
 
         peer_msg = self.get_peer_message(context)
+        degraded_msg = "degraded, " if degraded else ""
         rbd_msg = ""
         if rbd_pool and rbd_image_name:
             rbd_msg = f"RBD image {rbd_pool}/{rbd_image_name}, " if not rados_namespace_name \
@@ -3098,7 +3295,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
         self.logger.info(f"Received request to add {bdev_name} to {subsystem_nqn} with load "
                          f"balancing group id {anagrpid}{nsid_msg}, auto_visible: {auto_visible}, "
                          f"auto_resize: {auto_resize}, "
-                         f"{rbd_msg}context: {context}{peer_msg}")
+                         f"{rbd_msg}{degraded_msg}context: {context}{peer_msg}")
 
         if subsystem_nqn not in self.subsys_serial:
             errmsg = f"{add_namespace_error_prefix}: No such subsystem"
@@ -3109,8 +3306,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
         if subsystem_nqn in self.subsys_max_ns:
             subsys_max_ns = self.subsys_max_ns[subsystem_nqn]
 
-        if anagrpid > subsys_max_ns:
-            errmsg = f"{add_namespace_error_prefix}: Group ID {anagrpid} is bigger than " \
+        if abs(anagrpid) > subsys_max_ns:
+            errmsg = f"{add_namespace_error_prefix}: Group ID {abs(anagrpid)} is bigger than " \
                      f"configured maximum {subsys_max_ns}"
             self.logger.error(errmsg)
             return pb2.nsid_status(status=errno.EINVAL, error_message=errmsg)
@@ -3151,16 +3348,18 @@ class GatewayService(pb2_grpc.GatewayServicer):
             return pb2.req_status(status=errno.E2BIG, error_message=errmsg)
 
         try:
+            namespace_param = {
+                "bdev_name": bdev_name,
+                "nsid": nsid,
+                "anagrpid": abs(anagrpid),
+                "uuid": uuid,
+                "no_auto_visible": not auto_visible,
+            }
+            if not degraded:
+                namespace_param["ptpl_file"] = "PTPL"
             nsid = self.spdk_rpc_client.nvmf_subsystem_add_ns(
                 nqn=subsystem_nqn,
-                namespace={
-                    "bdev_name": bdev_name,
-                    "nsid": nsid,
-                    "anagrpid": anagrpid,
-                    "uuid": uuid,
-                    "no_auto_visible": not auto_visible,
-                    "ptpl_file": "PTPL"
-                },
+                namespace=namespace_param,
             )
             self.subsystem_nsid_bdev_and_uuid.add_namespace(subsystem_nqn, nsid,
                                                             bdev_name, uuid,
@@ -3171,7 +3370,9 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                             trash_image, read_only,
                                                             location, auto_resize,
                                                             encryption_entries,
-                                                            encryption_algorithm)
+                                                            encryption_algorithm,
+                                                            degraded)
+            anagrpid = abs(anagrpid)
             self.logger.debug(f"subsystem_add_ns: {nsid}")
             self.ana_grp_ns_load[anagrpid] += 1
             if anagrpid in self.ana_grp_subs_load:
@@ -3251,6 +3452,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
                             ns = self.subsystem_nsid_bdev_and_uuid.get_namespace_infos_for_anagrpid(
                                 nqn, grp_id)
                             for ns_info in ns:
+                                if ns_info.is_degraded():
+                                    continue
                                 # get the cluster name for this namespace
                                 with self.shared_state_lock:
                                     cluster = self.bdev_cluster[ns_info.bdev]
@@ -3346,6 +3549,12 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
         if not request.uuid:
             request.uuid = str(uuid.uuid4())
+        elif not GatewayUtils.is_valid_uuid(request.uuid):
+            errmsg = (f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: "
+                      f"Invalid UUID '{request.uuid}' "
+                      f"(expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)")
+            self.logger.error(errmsg)
+            return pb2.nsid_status(status=errno.EINVAL, error_message=errmsg)
 
         if request.trash_image and not request.create_image:
             self.logger.warning("Can't trash the RBD image on delete if it "
@@ -3372,12 +3581,22 @@ class GatewayService(pb2_grpc.GatewayServicer):
             self.logger.error(errmsg)
             return pb2.nsid_status(status=errno.EINVAL, error_message=errmsg)
 
+        if context:
+            if request.HasField("anagrpid"):
+                if request.anagrpid == GatewayService.MAINTENANCE_ANA_GROUP:
+                    errmsg = f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: " \
+                             f"Load balancing group {GatewayService.MAINTENANCE_ANA_GROUP} " \
+                             f"is reserved"
+                    self.logger.error(errmsg)
+                    return pb2.nsid_status(status=errno.EINVAL, error_message=errmsg)
+
         has_a_none_format = False
         has_non_none_format = False
         decrypted_enc_entries = deepcopy(request.encryption_entries)
         current_server_endpoints = []
         server_name = None
         kmip_client = None
+        create_degraded = False
         for ent in decrypted_enc_entries:
             if ent.format == pb2.EncryptionFormat.none:
                 has_a_none_format = True
@@ -3437,19 +3656,27 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     self.logger.exception(f"Can't fetch passphrase for id {ent.key_id}, "
                                           f"endpoints: {current_server_endpoints}")
                 if not key_content:
-                    errmsg = f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: " \
-                             f"Can't fetch passphrase for id {ent.key_id}"
-                    self.logger.error(errmsg)
-                    return pb2.nsid_status(status=errno.ENOKEY, error_message=errmsg)
-
-                try:
-                    ent.key_id = key_content.decode()
-                except Exception:
-                    self.logger.exception("Error decoding key to string")
-                    errmsg = f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: " \
-                             f"Can't decode passphrase to string"
-                    self.logger.error(errmsg)
-                    return pb2.nsid_status(status=errno.ENOKEY, error_message=errmsg)
+                    if not context and self.degrade_namespace_on_kmip_error:
+                        self.logger.warning(f"Can't fetch passphrase for id {ent.key_id}, "
+                                            f"will create a degraded namespace")
+                        create_degraded = True
+                        break
+                    else:
+                        errmsg = f"Failure adding namespace {nsid_msg}to " \
+                                 f"{request.subsystem_nqn}: " \
+                                 f"Can't fetch passphrase for id {ent.key_id}"
+                        self.logger.error(errmsg)
+                        return pb2.nsid_status(status=errno.ENOKEY, error_message=errmsg)
+                else:
+                    try:
+                        ent.key_id = key_content.decode()
+                    except Exception:
+                        self.logger.exception("Error decoding key to string")
+                        errmsg = f"Failure adding namespace {nsid_msg}to " \
+                                 f"{request.subsystem_nqn}: " \
+                                 f"Can't decode passphrase to string"
+                        self.logger.error(errmsg)
+                        return pb2.nsid_status(status=errno.ENOKEY, error_message=errmsg)
 
         if has_a_none_format and has_non_none_format:
             errmsg = f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: " \
@@ -3517,7 +3744,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
         bdev_name = GatewayService.find_unique_bdev_name(request.uuid)
         omap_lock = self.omap_lock.get_omap_lock_to_use(context)
         with omap_lock:
-            if context:
+            if context and not create_degraded:
                 errmsg, ns_nqn = self.check_if_image_used(request.rbd_pool_name,
                                                           request.rbd_image_name,
                                                           request.rados_namespace_name,
@@ -3533,18 +3760,19 @@ class GatewayService(pb2_grpc.GatewayServicer):
                         self.logger.error(errmsg)
                         return pb2.nsid_status(status=errno.EEXIST, error_message=errmsg)
 
-            create_image = request.create_image
-            if not context:
-                create_image = False
-
-            ret_bdev = self.create_bdev(anagrp, bdev_name, request.uuid, request.rbd_pool_name,
-                                        request.rbd_data_pool_name,
-                                        request.rbd_image_name, request.block_size, create_image,
-                                        request.trash_image, request.size,
-                                        request.disable_auto_resize, request.read_only,
-                                        request.rados_namespace_name,
-                                        decrypted_enc_entries, request.encryption_algorithm,
-                                        context, peer_msg)
+            if create_degraded:
+                bdev_name += "_degraded"
+                ret_bdev = self.create_degraded_bdev(bdev_name, request.uuid, request.block_size)
+            else:
+                ret_bdev = self.create_rbd_bdev(abs(anagrp), bdev_name, request.uuid,
+                                                request.rbd_pool_name,
+                                                request.rbd_data_pool_name, request.rbd_image_name,
+                                                request.block_size, request.create_image,
+                                                request.trash_image, request.size,
+                                                request.disable_auto_resize, request.read_only,
+                                                request.rados_namespace_name,
+                                                decrypted_enc_entries, request.encryption_algorithm,
+                                                context, peer_msg)
             if ret_bdev.status != 0:
                 errmsg = f"Failure adding namespace {nsid_msg}to {request.subsystem_nqn}: " \
                          f"{ret_bdev.error_message}"
@@ -3554,8 +3782,13 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     ns_bdev = self.get_bdev_info(bdev_name)
                     if ns_bdev is not None:
                         try:
-                            ret_del = self.delete_bdev(bdev_name, peer_msg=peer_msg)
-                            self.logger.debug(f"delete_bdev({bdev_name}): {ret_del.status}")
+                            if create_degraded:
+                                ret_del = self.delete_degraded_bdev(bdev_name, peer_msg=peer_msg)
+                                self.logger.debug(f"delete_degraded_bdev({bdev_name}): "
+                                                  f"{ret_del.status}")
+                            else:
+                                ret_del = self.delete_rbd_bdev(bdev_name, peer_msg=peer_msg)
+                                self.logger.debug(f"delete_rbd_bdev({bdev_name}): {ret_del.status}")
                         except AssertionError:
                             self.logger.exception(
                                 f"Got an assert while trying to delete bdev {bdev_name}")
@@ -3567,16 +3800,33 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
             # If we got here we asserted that ret_bdev.bdev_name == bdev_name
 
+            # degraded bdevs are null ones and not RBD ones, so reset RBD related info
+            if create_degraded:
+                pool_to_use = ""
+                data_pool_to_use = ""
+                image_name_to_use = ""
+                rados_namespace_to_use = ""
+                enc_entries_to_use = []
+                enc_algorithm_to_use = pb2.EncryptionAlgorithm.no_algorithm
+            else:
+                pool_to_use = ret_bdev.rbd_pool
+                data_pool_to_use = request.rbd_data_pool_name
+                image_name_to_use = ret_bdev.rbd_image_name
+                rados_namespace_to_use = ret_bdev.rados_namespace_name
+                enc_entries_to_use = request.encryption_entries
+                enc_algorithm_to_use = request.encryption_algorithm
+
             ret_ns = self.create_namespace(request.subsystem_nqn, bdev_name,
                                            request.nsid, anagrp, request.uuid,
                                            not request.no_auto_visible,
-                                           ret_bdev.rbd_pool, request.rbd_data_pool_name,
-                                           ret_bdev.rbd_image_name,
-                                           ret_bdev.rados_namespace_name,
+                                           pool_to_use, data_pool_to_use,
+                                           image_name_to_use,
+                                           rados_namespace_to_use,
                                            ret_bdev.trash_image, request.read_only,
                                            request.location, not request.disable_auto_resize,
-                                           request.encryption_entries,
-                                           request.encryption_algorithm,
+                                           enc_entries_to_use,
+                                           enc_algorithm_to_use,
+                                           create_degraded,
                                            context)
             if ret_ns.status == 0 and request.nsid and ret_ns.nsid != request.nsid:
                 errmsg = f"Returned ID {ret_ns.nsid} differs from requested one {request.nsid}"
@@ -3586,7 +3836,10 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
             if ret_ns.status != 0:
                 try:
-                    ret_del = self.delete_bdev(bdev_name, peer_msg=peer_msg)
+                    if create_degraded:
+                        ret_del = self.delete_degraded_bdev(bdev_name, peer_msg=peer_msg)
+                    else:
+                        ret_del = self.delete_rbd_bdev(bdev_name, peer_msg=peer_msg)
                     if ret_del.status != 0:
                         self.logger.warning(f"Failure {ret_del.status} deleting bdev "
                                             f"{bdev_name}: {ret_del.error_message}")
@@ -3616,7 +3869,10 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     self.logger.exception(errmsg)
                     errmsg = f"{errmsg}:\n{ex}"
                     try:
-                        ret_del = self.delete_bdev(bdev_name, peer_msg=peer_msg)
+                        if create_degraded:
+                            ret_del = self.delete_degraded_bdev(bdev_name, peer_msg=peer_msg)
+                        else:
+                            ret_del = self.delete_rbd_bdev(bdev_name, peer_msg=peer_msg)
                     except Exception:
                         pass
                     if ret_bdev.trash_image:
@@ -3624,23 +3880,29 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                               ret_bdev.rados_namespace_name)
                     return pb2.nsid_status(status=errno.EINVAL, error_message=errmsg)
 
-            img_id = ImageIdentification(self.gateway_group,
-                                         request.subsystem_nqn,
-                                         request.uuid,
-                                         self.fsid)
-            self.set_image_identification(request.rbd_pool_name,
-                                          request.rbd_image_name,
-                                          request.rados_namespace_name,
-                                          img_id)
+            if pool_to_use or image_name_to_use or rados_namespace_to_use:
+                img_id = ImageIdentification(self.gateway_group,
+                                             request.subsystem_nqn,
+                                             request.uuid,
+                                             self.fsid)
+                self.set_image_identification(pool_to_use,
+                                              image_name_to_use,
+                                              rados_namespace_to_use,
+                                              img_id)
 
-        return pb2.nsid_status(status=0, error_message="", nsid=ret_ns.nsid)
+        errmsg = ""
+        if create_degraded:
+            errmsg = "Couldn't fetch passphrase for decrypting, a degraded namespace was created"
+
+        return pb2.nsid_status(status=0, error_message=errmsg, nsid=ret_ns.nsid)
 
     def namespace_add(self, request, context=None):
         """Adds a namespace to a subsystem."""
         err_prefix = f"Failure adding namespace to {request.subsystem_nqn}: "
         return self.execute_grpc_function(self.namespace_add_safe, request, context, err_prefix)
 
-    def namespace_change_load_balancing_group_safe(self, request, context):
+    def namespace_change_load_balancing_group_safe(self, request, context,
+                                                   persistent=False, maintenance=False):
         """Changes a namespace load balancing group."""
 
         assert self.rpc_lock.locked(), \
@@ -3652,7 +3914,10 @@ class GatewayService(pb2_grpc.GatewayServicer):
         auto_lb_msg = "auto" if request.auto_lb_logic else "manual"
         self.logger.info(f"Received {auto_lb_msg} request to change load balancing group for "
                          f"namespace with ID {request.nsid} in {request.subsystem_nqn} to "
-                         f"{request.anagrpid}, context: {context}{peer_msg}")
+                         f"{request.anagrpid}, persistent: {persistent}, "
+                         f"maintenance: {maintenance}, context: {context}{peer_msg}")
+
+        original_anagrpid = request.anagrpid
 
         if not request.subsystem_nqn:
             errmsg = "Failure changing load balancing group for namespace, missing subsystem NQN"
@@ -3672,19 +3937,30 @@ class GatewayService(pb2_grpc.GatewayServicer):
             errmsg = f"{change_lb_group_failure_prefix}: Namespace not found"
             self.logger.error(errmsg)
             return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
-        anagrpid = find_ret.anagrpid
+        anagrpid = abs(find_ret.anagrpid)
 
         # below checks are legal only if command is initiated by local cli or is sent from
         # the local rebalance logic.
         if context:
-            grps_list = self.ceph_utils.get_number_created_gateways(
-                self.gateway_pool, self.gateway_group, False)
-            if request.anagrpid not in grps_list:
-                self.logger.debug(f"Load balancing groups: {grps_list}")
-                errmsg = f"{change_lb_group_failure_prefix}: Load balancing group " \
-                         f"{request.anagrpid} doesn't exist"
+            if not maintenance:
+                if request.anagrpid == GatewayService.MAINTENANCE_ANA_GROUP:
+                    errmsg = f"{change_lb_group_failure_prefix}: Load balancing group " \
+                             f"{GatewayService.MAINTENANCE_ANA_GROUP} is reserved"
+                    self.logger.error(errmsg)
+                    return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+                grps_list = self.ceph_utils.get_number_created_gateways(
+                    self.gateway_pool, self.gateway_group, False)
+                if request.anagrpid not in grps_list:
+                    self.logger.debug(f"Load balancing groups: {grps_list}")
+                    errmsg = f"{change_lb_group_failure_prefix}: Load balancing group " \
+                             f"{request.anagrpid} doesn't exist"
+                    self.logger.error(errmsg)
+                    return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
+            elif request.anagrpid != GatewayService.MAINTENANCE_ANA_GROUP:
+                errmsg = f"{change_lb_group_failure_prefix}: Wrong Load balancing group " \
+                         f"{request.anagrpid} in Maintenance mode"
                 self.logger.error(errmsg)
-                return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
+                return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
 
         omap_lock = self.omap_lock.get_omap_lock_to_use(context)
         with omap_lock:
@@ -3706,7 +3982,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     return pb2.req_status(status=errno.ENOENT, error_message=errmsg)
                 assert ns_entry, "Namespace entry is empty"
                 if not request.auto_lb_logic:
-                    anagrp = ns_entry.anagrpid
+                    anagrp = abs(ns_entry.anagrpid)
                     gw_id = self.ceph_utils.get_gw_id_owner_ana_group(
                         self.gateway_pool, self.gateway_group, anagrp)
                     self.logger.debug(f"Load balancing group of ns#{request.nsid} - {anagrp} is "
@@ -3741,7 +4017,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                             "balancing group id"
                 anagrpid = ns_entry.anagrpid
                 self.logger.debug(f"Read a load balancing group of {anagrpid} from the OMAP file")
-
+            request.anagrpid = abs(request.anagrpid)  # if context = none
             try:
                 ret = self.spdk_rpc_client.nvmf_subsystem_set_ns_ana_group(
                     nqn=request.subsystem_nqn,
@@ -3787,6 +4063,19 @@ class GatewayService(pb2_grpc.GatewayServicer):
             # here update find_ret.set_ana_group_id(request.anagrpid)
             if not find_ret.empty():
                 find_ret.set_ana_group_id(request.anagrpid)
+
+            if persistent:
+                if original_anagrpid < 0:
+                    self.logger.error(f"Shouldn't get a persistent load balancing group change "
+                                      f"with a negative group id {original_anagrpid}")
+                    request.anagrpid = original_anagrpid
+                else:
+                    request.anagrpid = -original_anagrpid
+                self.logger.info(f"Persistent load balancing group {request.anagrpid} for "
+                                 f"namespace {request.nsid} on subsystem {request.subsystem_nqn}")
+            else:
+                request.anagrpid = original_anagrpid
+            find_ret.anagrpid = request.anagrpid
 
             if context:
                 assert ns_entry, "Namespace entry is None for non-update call"
@@ -4498,31 +4787,20 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     find_ret = self.subsystem_nsid_bdev_and_uuid.find_namespace(subsys_nqn,
                                                                                 nsid)
                     lb_group_configured = 0
-                    cluster_name = None
                     was_image_shrunk = False
+                    cluster_name = None
                     if find_ret.empty():
                         self.logger.warning(f"Can't find info of namesapce {nsid} in "
                                             f"{subsys_nqn}. Some fields value "
                                             f"will be inaccurate")
                     else:
                         was_image_shrunk = find_ret.was_image_shrunk()
-                        lb_group_configured = find_ret.anagrpid
-                        try:
-                            cluster_name = self.bdev_cluster[find_ret.bdev]
-                        except KeyError:
-                            cluster_name = None
+                        lb_group_configured = abs(find_ret.anagrpid)
+                        cluster_name = self.bdev_cluster.get(find_ret.bdev, None)
 
-                    enc_alg = find_ret.encryption_algorithm
-                    if enc_alg is None:
-                        enc_alg = pb2.EncryptionAlgorithm.no_algorithm
                     enc_entries = find_ret.encryption_entries
                     if not enc_entries:
                         enc_entries = []
-                    if enc_alg == pb2.EncryptionAlgorithm.no_algorithm:
-                        if any(entry.format != pb2.EncryptionFormat.none
-                               for entry in enc_entries):
-                            enc_alg = pb2.EncryptionAlgorithm.aes256
-
                     one_ns = pb2.namespace_cli(nsid=nsid,
                                                bdev_name=bdev_name,
                                                uuid=n["uuid"],
@@ -4538,52 +4816,56 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                rbd_data_pool_name=find_ret.data_pool,
                                                location=find_ret.location,
                                                encryption_entries=enc_entries,
-                                               encryption_algorithm=enc_alg)
+                                               degraded=find_ret.is_degraded(),
+                                               pinned=find_ret.is_pinned())
                     with self.rpc_lock:
                         ns_bdev = self.get_bdev_info(bdev_name)
                     if ns_bdev is None:
                         self.logger.warning(f"Can't find namespace's bdev {bdev_name}, "
                                             f"will not list bdev's information")
                     else:
-                        image_size = None
-                        try:
-                            drv_specific_info = ns_bdev["driver_specific"]
-                            rbd_info = drv_specific_info["rbd"]
-                            one_ns.rbd_image_name = rbd_info["rbd_name"]
-                            one_ns.rbd_pool_name = rbd_info["pool_name"]
-                            one_ns.rados_namespace_name = rbd_info["namespace_name"]
-                            one_ns.block_size = ns_bdev["block_size"]
-                            image_size = ns_bdev["block_size"] * ns_bdev["num_blocks"]
-                            assigned_limits = ns_bdev["assigned_rate_limits"]
-                            one_ns.rw_ios_per_second = assigned_limits["rw_ios_per_sec"]
-                            one_ns.rw_mbytes_per_second = assigned_limits["rw_mbytes_per_sec"]
-                            one_ns.r_mbytes_per_second = assigned_limits["r_mbytes_per_sec"]
-                            one_ns.w_mbytes_per_second = assigned_limits["w_mbytes_per_sec"]
-                        except KeyError as err:
-                            self.logger.warning(f"Key {err} is not found, will not list "
-                                                f"bdev's information")
-                            pass
-                        except Exception:
-                            self.logger.exception(f"{ns_bdev=} parse error")
-                            pass
-                        if was_image_shrunk and one_ns.rbd_pool_name and one_ns.rbd_image_name:
-                            shrunk_image_size = None
+                        one_ns.block_size = ns_bdev.get("block_size", 0)
+                        if not find_ret.is_degraded():
+                            one_ns.rbd_image_size = one_ns.block_size * ns_bdev.get("num_blocks", 0)
+
+                        assigned_limits = ns_bdev.get("assigned_rate_limits", None)
+                        if assigned_limits is not None:
+                            one_ns.rw_ios_per_second = assigned_limits.get("rw_ios_per_sec", 0)
+                            one_ns.rw_mbytes_per_second = assigned_limits.get(
+                                "rw_mbytes_per_sec", 0
+                            )
+                            one_ns.r_mbytes_per_second = assigned_limits.get("r_mbytes_per_sec", 0)
+                            one_ns.w_mbytes_per_second = assigned_limits.get("w_mbytes_per_sec", 0)
+
+                        if not find_ret.is_degraded():
                             try:
-                                shrunk_image_size = self.ceph_utils.get_image_size(
-                                    one_ns.rbd_pool_name, one_ns.rbd_image_name,
-                                    one_ns.rados_namespace_name)
+                                drv_specific_info = ns_bdev["driver_specific"]
+                                rbd_info = drv_specific_info["rbd"]
+                                one_ns.rbd_image_name = rbd_info["rbd_name"]
+                                one_ns.rbd_pool_name = rbd_info["pool_name"]
+                                one_ns.rados_namespace_name = rbd_info["namespace_name"]
+                            except KeyError as err:
+                                self.logger.warning(f"Key {err} is not found, will not list "
+                                                    f"bdev's information")
                             except Exception:
-                                self.logger.exception(f"error getting size of "
-                                                      f"{one_ns.rbd_pool_name}/"
-                                                      f"{one_ns.rbd_image_name}")
-                                pass
-                            if shrunk_image_size is not None:
-                                image_size = shrunk_image_size
-                        if image_size is not None:
-                            one_ns.rbd_image_size = image_size
-                        one_ns.disable_auto_resize = self._is_auto_resize_disabled_for_image(
-                            one_ns.rbd_pool_name, one_ns.rbd_image_name,
-                            one_ns.rados_namespace_name)
+                                self.logger.exception(f"{ns_bdev=} parse error")
+
+                            if was_image_shrunk and one_ns.rbd_pool_name and one_ns.rbd_image_name:
+                                shrunk_image_size = None
+                                try:
+                                    shrunk_image_size = self.ceph_utils.get_image_size(
+                                        one_ns.rbd_pool_name, one_ns.rbd_image_name,
+                                        one_ns.rados_namespace_name)
+                                except Exception:
+                                    self.logger.exception(f"error getting size of "
+                                                          f"{one_ns.rbd_pool_name}/"
+                                                          f"{one_ns.rbd_image_name}")
+                                    pass
+                                if shrunk_image_size is not None:
+                                    one_ns.rbd_image_size = shrunk_image_size
+                            one_ns.disable_auto_resize = self._is_auto_resize_disabled_for_image(
+                                one_ns.rbd_pool_name, one_ns.rbd_image_name,
+                                one_ns.rados_namespace_name)
                     namespaces.append(one_ns)
                 if request.subsystem != GatewayUtils.ALL_SUBSYSTEMS:
                     break
@@ -5048,7 +5330,13 @@ class GatewayService(pb2_grpc.GatewayServicer):
             self.logger.error(errmsg)
             return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
 
-        ret = self.resize_bdev(bdev_name, request.new_size, peer_msg)
+        if find_ret.is_degraded():
+            errmsg = f"Namespace {request.nsid} on {request.subsystem_nqn} is degraded," \
+                     f" no resize was done"
+            self.logger.warning(errmsg)
+            return pb2.req_status(status=0, error_message=errmsg)
+
+        ret = self.resize_rbd_bdev(bdev_name, request.new_size, peer_msg)
 
         if ret.status != 0:
             errmsg = f"Failure resizing namespace {request.nsid} on " \
@@ -5079,6 +5367,101 @@ class GatewayService(pb2_grpc.GatewayServicer):
         """Resize a namespace."""
         err_prefix = f"Failure resizing namespace {request.nsid} on {request.subsystem_nqn}: "
         return self.execute_grpc_function(self.namespace_resize_safe, request, context, err_prefix)
+
+    def namespace_unpin_safe(self, request, context=None):
+        """Unpin namespace load balancing group"""
+
+        assert self.rpc_lock.locked(), "RPC is unlocked when calling namespace_unpin_safe()"
+        failure_prefix = f"Failure unpinning load balancing group for namespace {request.nsid} " \
+                         f"on {request.subsystem_nqn}"
+        peer_msg = self.get_peer_message(context)
+        self.logger.info(f"Received request to unpin the load balancing group for namespace "
+                         f"{request.nsid} on {request.subsystem_nqn}, context: "
+                         f"{context}{peer_msg}")
+
+        if not request.nsid:
+            errmsg = "Failure unpinning load balancing group for namespace, missing ID"
+            self.logger.error(errmsg)
+            return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+
+        if not request.subsystem_nqn:
+            errmsg = f"Failure unpinning load balancing group for namespace {request.nsid}, " \
+                     f"missing subsystem NQN"
+            self.logger.error(errmsg)
+            return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+
+        # If this is not set the subsystem was not created yet
+        if request.subsystem_nqn not in self.subsys_serial:
+            errmsg = f"{failure_prefix}: Can't find subsystem"
+            self.logger.error(errmsg)
+            return pb2.req_status(status=errno.ENOENT, error_message=errmsg)
+
+        if context is None:
+            # Do nothing on an update
+            return pb2.req_status(status=0, error_message="")
+
+        local_ns = self.subsystem_nsid_bdev_and_uuid.find_namespace(request.subsystem_nqn,
+                                                                    request.nsid)
+        if local_ns.empty():
+            errmsg = f"{failure_prefix}: Can't find namespace {request.nsid} in " \
+                     f"{request.subsystem_nqn}"
+            self.logger.error(errmsg)
+            return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
+
+        omap_lock = self.omap_lock.get_omap_lock_to_use(context)
+        with omap_lock:
+            ns_entry = None
+            ns_key = GatewayState.build_namespace_key(request.subsystem_nqn, request.nsid)
+            # notice that the local state might not be up to date in case we're in the
+            # middle of update() but as the context is not None, we are not in an update(),
+            # the omap lock made sure that we got here with an updated local state
+            state = self.gateway_state.local.get_state()
+            try:
+                state_ns = state[ns_key]
+                ns_entry = json_format.Parse(state_ns, pb2.namespace_add_req(),
+                                             ignore_unknown_fields=True)
+            except Exception:
+                errmsg = f"{failure_prefix}: Can't find entry for " \
+                         f"namespace {request.nsid} in {request.subsystem_nqn}"
+                self.logger.error(errmsg)
+                return pb2.req_status(status=errno.ENOENT, error_message=errmsg)
+
+            if ns_entry is None:
+                errmsg = f"{failure_prefix}: Can't find entry for " \
+                         f"namespace {request.nsid} in {request.subsystem_nqn}"
+                self.logger.error(errmsg)
+                return pb2.req_status(status=errno.ENOENT, error_message=errmsg)
+
+            if ns_entry.anagrpid >= 0:
+                errmsg = f"{failure_prefix}: Namespace load balancing group is not " \
+                         f"pinned"
+                self.logger.error(errmsg)
+                return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+
+            # Update gateway state
+            try:
+                ns_entry.anagrpid = -ns_entry.anagrpid
+                json_req = json_format.MessageToJson(
+                    ns_entry, preserving_proto_field_name=True,
+                    including_default_value_fields=True)
+                self.gateway_state.add_namespace(request.subsystem_nqn,
+                                                 request.nsid, json_req)
+                if not local_ns.empty():
+                    local_ns.anagrpid = ns_entry.anagrpid
+            except Exception as ex:
+                errmsg = f"Error persisting load balancing group unpin for namespace " \
+                         f"{request.nsid} in {request.subsystem_nqn}"
+                self.logger.exception(errmsg)
+                errmsg = f"{errmsg}:\n{ex}"
+                return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
+
+        return pb2.req_status(status=0, error_message="")
+
+    def namespace_unpin(self, request, context=None):
+        """Unpin namespace load balancing group"""
+        err_prefix = f"Failure unpinning load balancing group for namespace {request.nsid} " \
+                     f"on {request.subsystem_nqn}: "
+        return self.execute_grpc_function(self.namespace_unpin_safe, request, context, err_prefix)
 
     def delete_rbd_image(self, pool, image, rados_namespace_name):
         if (not pool) and (not image):
@@ -5130,7 +5513,10 @@ class GatewayService(pb2_grpc.GatewayServicer):
             self.logger.error(errmsg)
             return pb2.req_status(status=errno.ENODEV, error_message=errmsg)
 
-        if find_ret.trash_image and not request.i_am_sure:
+        is_degraded = find_ret.is_degraded()
+        trash_image = find_ret.trash_image
+        bdev_name = find_ret.bdev
+        if trash_image and not request.i_am_sure:
             errmsg = f"Failure deleting namespace {request.nsid} from " \
                      f"{request.subsystem_nqn}: Confirmation for trashing " \
                      f"RBD image is needed.\nIn order to delete the namespace " \
@@ -5142,12 +5528,11 @@ class GatewayService(pb2_grpc.GatewayServicer):
             self.logger.error(errmsg)
             return pb2.req_status(status=errno.EINVAL, error_message=errmsg)
 
-        bdev_name = find_ret.bdev
         if not bdev_name:
-            self.logger.warning("Can't find namespace's bdev name, will try to "
+            self.logger.warning("Can't find namespace's associated block device, will try to "
                                 "delete namespace anyway")
 
-        if find_ret.trash_image:
+        if trash_image and not is_degraded:
             rbd_pool = find_ret.pool
             rbd_image_name = find_ret.image
             rados_namespace_name = find_ret.rados_namespace_name
@@ -5170,24 +5555,28 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
             self.remove_namespace_from_state(request.subsystem_nqn, request.nsid, context)
 
-        self.delete_image_identification(find_ret.pool, find_ret.image,
-                                         find_ret.rados_namespace_name,
-                                         ImageIdentification(self.gateway_group,
-                                                             request.subsystem_nqn,
-                                                             find_ret.uuid,
-                                                             self.fsid))
+        if not is_degraded:
+            self.delete_image_identification(find_ret.pool, find_ret.image,
+                                             find_ret.rados_namespace_name,
+                                             ImageIdentification(self.gateway_group,
+                                                                 request.subsystem_nqn,
+                                                                 find_ret.uuid,
+                                                                 self.fsid))
         self.subsystem_nsid_bdev_and_uuid.remove_namespace(request.subsystem_nqn, request.nsid)
         if bdev_name:
-            ret_del = self.delete_bdev(bdev_name, peer_msg=peer_msg)
+            if is_degraded:
+                ret_del = self.delete_degraded_bdev(bdev_name, peer_msg=peer_msg)
+            else:
+                ret_del = self.delete_rbd_bdev(bdev_name, peer_msg=peer_msg)
             if ret_del.status != 0:
                 errmsg = f"Failure deleting namespace {request.nsid} from " \
                          f"{request.subsystem_nqn}: {ret_del.error_message}"
                 self.logger.error(errmsg)
-                if find_ret.trash_image:
+                if trash_image:
                     self.delete_rbd_image(rbd_pool, rbd_image_name, rados_namespace_name)
                 return pb2.nsid_status(status=ret_del.status, error_message=errmsg)
 
-        if find_ret.trash_image:
+        if trash_image and not is_degraded:
             self.delete_rbd_image(rbd_pool, rbd_image_name, rados_namespace_name)
 
         return pb2.req_status(status=0, error_message="")
@@ -5209,7 +5598,13 @@ class GatewayService(pb2_grpc.GatewayServicer):
                          f"{request.nsid} on {request.subsystem_nqn}, force: {request.force}, "
                          f"context: {context}{peer_msg}")
 
-        assert context or request.force, "Force must be set on update"
+        if context is None and not request.force:
+            request.force = True
+            self.logger.warning(f"\"force\" parameter wasn't set on an update when adding host "
+                                f"{request.host_nqn} to namespace {request.nsid} on "
+                                f"{request.subsystem_nqn}, this is probably "
+                                f"due to an old OMAP being used, will set to True")
+
         if not request.nsid:
             errmsg = f"Failure adding host {request.host_nqn} to namespace on " \
                      f"{request.subsystem_nqn}: Missing ID"
@@ -7637,9 +8032,10 @@ class GatewayService(pb2_grpc.GatewayServicer):
                 if request.subsystem in nvmemon_listeners:
                     subsystem_listeners = nvmemon_listeners[request.subsystem]
                     secure = subsystem.get('secure_listeners', False)
+                    gw_hostnames = self.ceph_utils.get_gw_hostnames()
                     for _listener in subsystem_listeners:
                         listener = {
-                            "host_name": _listener["gw_id"],
+                            "host_name": _listener["address"],
                             "adrfam": (_listener["address_family"] or '').lower(),
                             "trsvcid": int(_listener["svcid"] or 0),
                             "nqn": request.subsystem,
@@ -7649,7 +8045,11 @@ class GatewayService(pb2_grpc.GatewayServicer):
                         listener_key = (listener["traddr"], listener["trsvcid"])
                         if listener_key in omap_listeners:
                             continue
-                        hostname = GatewayUtils.get_hostname(listener["traddr"], self.logger)
+                        gw_id = _listener["gw_id"].removeprefix("client.nvmeof.")
+                        hostname = gw_hostnames.get(gw_id)
+                        if not hostname:
+                            self.logger.debug(f"No hostname in service dump for {gw_id=}")
+                            hostname = GatewayUtils.get_hostname(listener["traddr"], self.logger)
                         if hostname:
                             listener["host_name"] = hostname
                         listener_json = json.dumps(listener)
@@ -7834,9 +8234,13 @@ class GatewayService(pb2_grpc.GatewayServicer):
                         self.host_info.was_subsystem_created_without_key(s["nqn"])
                     for n in s["namespaces"]:
                         bdev = n["bdev_name"]
+                        nonce = None
                         with self.shared_state_lock:
-                            nonce = self.cluster_nonce[self.bdev_cluster[bdev]]
-                        n["nonce"] = nonce
+                            if bdev in self.bdev_cluster:
+                                if self.bdev_cluster[bdev] in self.cluster_nonce:
+                                    nonce = self.cluster_nonce[self.bdev_cluster[bdev]]
+                        if nonce is not None:
+                            n["nonce"] = nonce
                         find_ret = self.subsystem_nsid_bdev_and_uuid.find_namespace(
                             s["nqn"], n["nsid"])
                         n["auto_visible"] = find_ret.auto_visible

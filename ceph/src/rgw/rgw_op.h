@@ -38,6 +38,8 @@
 #include "rgw_cksum.h"
 #include "rgw_common.h"
 #include "rgw_dmclock.h"
+
+struct rgw_crypt_src_identity;
 #include "rgw_sal.h"
 #include "rgw_user.h"
 #include "rgw_bucket.h"
@@ -217,6 +219,7 @@ protected:
   req_state *s;
   RGWHandler *dialect_handler;
   rgw::sal::Driver* driver;
+  std::optional<RGWCORSRule> optional_global_cors;
   RGWCORSConfiguration bucket_cors;
   bool cors_exist;
   RGWQuota quota;
@@ -281,6 +284,7 @@ public:
     this->dialect_handler = dialect_handler;
   }
   int read_bucket_cors();
+  int read_global_cors();
   bool generate_cors_headers(std::string& origin, std::string& method, std::string& headers, std::string& exp_headers, unsigned *max_age);
 
   virtual int verify_params() { return 0; }
@@ -396,8 +400,9 @@ public:
     // DataProcessor requires ownership of the entire bufferlist.
     // RGWGetObj_Filter, however, may reuse the original bufferlist after this call.
     // To avoid unintended side effects, we create a copy of the relevant portion.
+    // Note: bl_ofs is the offset into this bufferlist, not an object offset.
     bufferlist copy_bl;
-    bl.begin().copy(bl_len, copy_bl);
+    bl.begin(bl_ofs).copy(bl_len, copy_bl);
 
     int ret = processor->process(std::move(copy_bl), ofs);
     if (ret < 0) return ret;
@@ -451,7 +456,7 @@ protected:
   bool first_data;
   uint64_t cur_ofs;
   bufferlist waiting;
-  uint64_t action = 0;
+  rgw::IAM::action_t action{};
 
   bool get_retention;
   bool get_legal_hold;
@@ -460,6 +465,10 @@ protected:
   std::optional<int> multipart_part_num;
   // PartsCount response when partNumber is specified
   std::optional<int> multipart_parts_count;
+
+  // For AEAD encryption ciphers: preserve original encrypted size before plaintext conversion.
+  // Used by decrypt filter for range clamping. For non-AEAD modes, equals s->obj_size.
+  off_t encrypted_obj_size{0};
 
   int init_common();
 public:
@@ -1911,6 +1920,7 @@ public:
 
   int verify_permission(optional_yield y) override {return 0;}
   int validate_cors_request(RGWCORSConfiguration *cc);
+  int validate_global_cors_request(RGWCORSRule *cc);
   void execute(optional_yield y) override;
   void get_response_params(std::string& allowed_hdrs, std::string& exp_hdrs, unsigned *max_age);
   void send_response() override = 0;
@@ -2062,6 +2072,8 @@ public:
   void complete() override;
 
   virtual int get_params(optional_yield y) = 0;
+  virtual int verify_encryption(std::map<std::string, bufferlist>& attrs,
+                                rgw::cksum::Type cksum_type) { return 0; }
   void send_response() override = 0;
   const char* name() const override { return "complete_multipart"; }
   std::string canonical_name() const override { return fmt::format("REST.{}.UPLOAD", s->info.method); }
@@ -2860,4 +2872,7 @@ int get_decrypt_filter(
   std::map<std::string, bufferlist>& attrs,
   bufferlist* manifest_bl,
   std::map<std::string, std::string>* crypt_http_responses,
-  bool copy_source);
+  bool copy_source,
+  uint32_t part_num = 0,
+  off_t encrypted_total_size = 0,
+  const rgw_crypt_src_identity* src_identity = nullptr);

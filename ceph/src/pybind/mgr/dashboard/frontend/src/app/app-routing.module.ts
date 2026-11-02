@@ -44,6 +44,7 @@ import { ChangePasswordGuardService } from './shared/services/change-password-gu
 import { FeatureTogglesGuardService } from './shared/services/feature-toggles-guard.service';
 import { ModuleStatusGuardService } from './shared/services/module-status-guard.service';
 import { NoSsoGuardService } from './shared/services/no-sso-guard.service';
+import { PermissionGuardService } from './shared/services/permission-guard.service';
 import { UpgradeComponent } from './ceph/cluster/upgrade/upgrade.component';
 import { CephfsVolumeFormComponent } from './ceph/cephfs/cephfs-form/cephfs-form.component';
 import { UpgradeProgressComponent } from './ceph/cluster/upgrade/upgrade-progress/upgrade-progress.component';
@@ -59,6 +60,7 @@ import { SmbClusterListComponent } from './ceph/smb/smb-cluster-list/smb-cluster
 import { SmbJoinAuthListComponent } from './ceph/smb/smb-join-auth-list/smb-join-auth-list.component';
 import { SmbUsersgroupsListComponent } from './ceph/smb/smb-usersgroups-list/smb-usersgroups-list.component';
 import { SmbOverviewComponent } from './ceph/smb/smb-overview/smb-overview.component';
+import { NotificationsPageComponent } from './core/navigation/notification-panel/notifications-page/notifications-page.component';
 
 @Injectable()
 export class PerformanceCounterBreadcrumbsResolver extends BreadcrumbsResolver {
@@ -104,17 +106,28 @@ const routes: Routes = [
     children: [
       { path: 'overview', component: DashboardComponent },
       { path: 'error', component: ErrorComponent },
-
       // Cluster
+      {
+        path: 'notifications',
+        data: {
+          breadcrumbs: 'Overview/Notifications'
+        },
+        component: NotificationsPageComponent
+      },
       {
         path: 'add-storage',
         component: CreateClusterComponent,
-        canActivate: [ModuleStatusGuardService],
+        canActivate: [ModuleStatusGuardService, PermissionGuardService],
         data: {
           moduleStatusGuardConfig: {
             uiApiPath: 'orchestrator',
             redirectTo: 'overview',
             backend: 'cephadm'
+          },
+          permissionGuardConfig: {
+            scope: 'configOpt',
+            action: 'update',
+            redirectTo: '/overview'
           }
         }
       },

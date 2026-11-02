@@ -42,8 +42,8 @@ import { TimerService } from '~/app/shared/services/timer.service';
 @Component({
   selector: 'cd-service-form',
   templateUrl: './service-form.component.html',
-  standalone: false,
-  styleUrls: ['./service-form.component.scss']
+  styleUrls: ['./service-form.component.scss'],
+  standalone: false
 })
 export class ServiceFormComponent extends CdForm implements OnInit {
   public sub = new Subscription();
@@ -53,7 +53,8 @@ export class ServiceFormComponent extends CdForm implements OnInit {
   readonly SNMP_ENGINE_ID_PATTERN = /^[0-9A-Fa-f]{10,64}/g;
   readonly INGRESS_SUPPORTED_SERVICE_TYPES = ['rgw', 'nfs'];
   readonly SMB_CONFIG_URI_PATTERN = /^(http:|https:|rados:|rados:mon-config-key:)/;
-  readonly OAUTH2_ISSUER_URL_PATTERN = /^(https?:\/\/)?([a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+)(:[0-9]{1,5})?(\/.*)?$/;
+  readonly OAUTH2_ISSUER_URL_PATTERN =
+    /^(https?:\/\/)?([a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+)(:[0-9]{1,5})?(\/.*)?$/;
   readonly SSL_CIPHERS_PATTERN = /^[a-zA-Z0-9\-:]+$/;
   readonly DEFAULT_SSL_PROTOCOL_ITEM = [{ content: 'TLSv1.3', selected: true }];
   @ViewChild(NgbTypeahead, { static: false })
@@ -602,7 +603,10 @@ export class ServiceFormComponent extends CdForm implements OnInit {
       ],
       https_address: [null, [CdValidators.oauthAddressTest()]],
       redirect_url: [null],
-      allowlist_domains: [null]
+      scope: [null],
+      email_domains: [null],
+      allowlist_domains: [null],
+      ssl_insecure_skip_verify: [false]
     });
   }
 
@@ -850,7 +854,10 @@ export class ServiceFormComponent extends CdForm implements OnInit {
                 'client_secret',
                 'oidc_issuer_url',
                 'redirect_url',
-                'allowlist_domains'
+                'scope',
+                'email_domains',
+                'allowlist_domains',
+                'ssl_insecure_skip_verify'
               ];
               oauth2SpecKeys.forEach((key) => {
                 this.serviceForm.get(key).setValue(response[0].spec[key]);
@@ -1333,7 +1340,7 @@ export class ServiceFormComponent extends CdForm implements OnInit {
           serviceSpec['ssl_key'] = values['ssl_key']?.trim();
           serviceSpec['enable_auth'] = values['enable_auth'];
           serviceSpec['port'] = values['port'];
-          if (serviceSpec['port'] === (443 || 80)) {
+          if ([443, 80].includes(values['port'])) {
             // omit port default values due to issues with redirect_url on the backend
             delete serviceSpec['port'];
           }
@@ -1356,6 +1363,12 @@ export class ServiceFormComponent extends CdForm implements OnInit {
           serviceSpec['oidc_issuer_url'] = values['oidc_issuer_url']?.trim();
           serviceSpec['https_address'] = values['https_address']?.trim();
           serviceSpec['redirect_url'] = values['redirect_url']?.trim();
+          serviceSpec['scope'] = values['scope']?.join(' ');
+          if (values['email_domains']) {
+            serviceSpec['email_domains'] = values['email_domains']?.map((emailDomain: string) => {
+              return emailDomain.trim();
+            });
+          }
           if (values['allowlist_domains']) {
             serviceSpec['allowlist_domains'] = values['allowlist_domains']?.map(
               (allowlistDomain: string) => {
@@ -1363,6 +1376,7 @@ export class ServiceFormComponent extends CdForm implements OnInit {
               }
             );
           }
+          serviceSpec['ssl_insecure_skip_verify'] = values['ssl_insecure_skip_verify'];
           if (values['ssl']) {
             serviceSpec['ssl_cert'] = values['ssl_cert']?.trim();
             serviceSpec['ssl_key'] = values['ssl_key']?.trim();

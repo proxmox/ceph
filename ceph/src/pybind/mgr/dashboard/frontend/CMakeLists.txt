@@ -69,12 +69,14 @@ else(WITH_SYSTEM_NPM)
     OUTPUT "${mgr-dashboard-nodeenv-dir}/bin/npm"
     COMMAND ${CMAKE_SOURCE_DIR}/src/tools/setup-virtualenv.sh --python=${MGR_PYTHON_EXECUTABLE} ${mgr-dashboard-nodeenv-dir}
     COMMAND ${mgr-dashboard-nodeenv-dir}/bin/pip install nodeenv
-    COMMAND ${mgr-dashboard-nodeenv-dir}/bin/nodeenv --verbose ${node_mirror_opt} -p --node=20.13.1
+    COMMAND ${mgr-dashboard-nodeenv-dir}/bin/nodeenv --verbose ${node_mirror_opt} -p --node=24.19.0
     # ensure that the files that nodeenv unpacks from tarballs are owned by
     # the current user. This can be an issue due to the node tarball using
     # uid 1000 and running the unpack in a id-mapped namespace (container)
-    # that lets tar set the uid to a "bad" uid outside the namespace
-    COMMAND bash -c 'chown -R `id -u`:`id -g` ${mgr-dashboard-nodeenv-dir}/src'
+    # that lets tar set the uid to a "bad" uid outside the namespace.
+    # nodeenv >= 1.11.0 no longer leaves the src directory behind after a
+    # prebuilt node install, so tolerate it being absent
+    COMMAND bash -c 'test ! -e ${mgr-dashboard-nodeenv-dir}/src || chown -R `id -u`:`id -g` ${mgr-dashboard-nodeenv-dir}/src'
     COMMAND mkdir -p ${npm-cache-dir}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "dashboard nodeenv is being installed")
@@ -93,7 +95,7 @@ endif(WITH_SYSTEM_NPM)
 
 add_npm_command(
   OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/node_modules"
-  COMMAND CYPRESS_CACHE_FOLDER=${CMAKE_SOURCE_DIR}/build/src/pybind/mgr/dashboard/cypress NG_CLI_ANALYTICS=false npm ci -f ${mgr-dashboard-userconfig}
+  COMMAND CYPRESS_CACHE_FOLDER=${CMAKE_SOURCE_DIR}/build/src/pybind/mgr/dashboard/cypress NG_CLI_ANALYTICS=false IBM_TELEMETRY_DISABLED=true npm ci -f ${mgr-dashboard-userconfig}
   DEPENDS package.json
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "dashboard frontend dependencies are being installed"

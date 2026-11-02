@@ -4162,6 +4162,7 @@ nvmf_tcp_opts_init(struct spdk_nvmf_transport_opts *opts)
 	opts->dif_insert_or_strip =	SPDK_NVMF_TCP_DEFAULT_DIF_INSERT_OR_STRIP;
 	opts->abort_timeout_sec =	SPDK_NVMF_TCP_DEFAULT_ABORT_TIMEOUT_SEC;
 	opts->transport_specific =      NULL;
+	opts->oncs.nvmcpys = 1;
 }
 
 const struct spdk_nvmf_transport_ops spdk_nvmf_transport_tcp = {

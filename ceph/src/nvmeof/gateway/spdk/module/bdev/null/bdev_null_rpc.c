@@ -32,6 +32,7 @@ static const struct spdk_json_object_decoder rpc_bdev_null_create_decoders[] = {
 	{"optimal_write_size", offsetof(struct null_bdev_opts, optimal_write_size), spdk_json_decode_uint32, true},
 	{"preferred_unmap_alignment", offsetof(struct null_bdev_opts, preferred_unmap_alignment), spdk_json_decode_uint32, true},
 	{"preferred_unmap_granularity", offsetof(struct null_bdev_opts, preferred_unmap_granularity), spdk_json_decode_uint32, true},
+	{"fail_io", offsetof(struct null_bdev_opts, fail_io), spdk_json_decode_bool, true},
 };
 
 static void

@@ -61,7 +61,8 @@ enum ConfigType {
 @Component({
   selector: 'cd-rgw-multisite-wizard',
   templateUrl: './rgw-multisite-wizard.component.html',
-  styleUrls: ['./rgw-multisite-wizard.component.scss']
+  styleUrls: ['./rgw-multisite-wizard.component.scss'],
+  standalone: false
 })
 export class RgwMultisiteWizardComponent extends BaseModal implements OnInit {
   multisiteSetupForm: CdFormGroup;
@@ -132,9 +133,10 @@ export class RgwMultisiteWizardComponent extends BaseModal implements OnInit {
         .flat()
         .filter((cluster) => cluster['url'] !== currentUrl);
       this.isMultiClusterConfigured = this.clusterDetailsArray.length > 0;
-      this.stepTitles = (this.isMultiClusterConfigured
-        ? STEP_TITLES_MULTI_CLUSTER_CONFIGURED
-        : STEP_TITLES_SINGLE_CLUSTER
+      this.stepTitles = (
+        this.isMultiClusterConfigured
+          ? STEP_TITLES_MULTI_CLUSTER_CONFIGURED
+          : STEP_TITLES_SINGLE_CLUSTER
       ).map((label, index) => ({
         label,
         onClick: () => (this.currentStep.stepIndex = index)

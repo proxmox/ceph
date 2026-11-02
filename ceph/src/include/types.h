@@ -17,6 +17,7 @@
 // this is needed for ceph_fs to compile in userland
 #include "int_types.h"
 #include "byteorder.h"
+#include "platform_errno.h"
 
 #include "uuid.h"
 
@@ -109,6 +110,8 @@ template<class A, class B, class Hash, class KeyEqual>
 inline std::ostream& operator<<(std::ostream& out, const std::unordered_map<A,B,Hash, KeyEqual>& m);
 template<class A, class B, class Comp, class Alloc>
 inline std::ostream& operator<<(std::ostream& out, const std::multimap<A,B,Comp,Alloc>& m);
+template <class Key, class T, class Hash, class KeyEqual, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const std::unordered_multimap<Key, T, Hash, KeyEqual, Alloc>& m);
 }
 
 namespace boost {
@@ -288,6 +291,22 @@ inline std::ostream& operator<<(std::ostream& out, const std::multimap<A,B,Comp,
   return out;
 }
 
+template<class Key, class T, class Hash, class KeyEqual, class Alloc>
+inline std::ostream&
+operator<<(
+  std::ostream& out,
+  const std::unordered_multimap<Key, T, Hash, KeyEqual, Alloc>& m)
+{
+  out << "{{";
+  for (auto it = m.begin();
+       it != m.end();
+       ++it) {
+    if (it != m.begin()) out << ",";
+    out << it->first << "=" << it->second;
+  }
+  out << "}}";
+  return out;
+}
 } // namespace std
 
 namespace boost {
@@ -602,17 +621,6 @@ struct shard_id_t {
 };
 WRITE_CLASS_ENCODER(shard_id_t)
 std::ostream &operator<<(std::ostream &lhs, const shard_id_t &rhs);
-
-#if defined(__sun) || defined(_AIX) || defined(__APPLE__) || \
-    defined(__FreeBSD__) || defined(_WIN32)
-extern "C" {
-__s32  ceph_to_hostos_errno(__s32 e);
-__s32  hostos_to_ceph_errno(__s32 e);
-}
-#else
-#define  ceph_to_hostos_errno(e) (e)
-#define  hostos_to_ceph_errno(e) (e)
-#endif
 
 struct errorcode32_t {
   using code_t = __s32;

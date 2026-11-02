@@ -4371,6 +4371,60 @@ options:
   flags:
   - startup
   with_legacy: true
+- name: bluefs_spillover_cleaner
+  type: bool
+  level: advanced
+  desc: Enable Background BlueFS Spillover cleaner thread
+  long_desc: Enables a background cleaner thread in BlueFS that periodically scans files
+    that spilled over to the slow device and attempts to migrate them back to the
+    BlueFS DB device
+  default: false
+  see_also:
+  - bluefs_spillover_idle_time
+  - bluefs_spillover_cleaner_work_ratio
+  flags:
+  - runtime
+  with_legacy: true
+- name: bluefs_spillover_idle_time
+  type: uint
+  level: advanced
+  desc: Idle time in seconds before the BlueFS spillover cleaner wakes
+    up for the next scan cycle.
+  long_desc: When no spillover files remain to migrate, the cleaner enters an idle
+    sleep state for this duration. Once the idle period expires, it wakes up, scans
+    for spillover files, and resumes migration if needed.
+  default: 1200
+  min: 0
+  see_also:
+  - bluefs_spillover_cleaner
+  flags:
+  - runtime
+  with_legacy: true
+- name: bluefs_spillover_cleaner_work_ratio
+  type: float
+  level: advanced
+  desc: Fraction of time the BlueFS spillover cleaner spends performing work.
+  long_desc: Controls the rate of spillover migration work. After each migration
+    step, the cleaner targets to sleep proportionally to the time spent doing work
+    This reduces interference with foreground IO. For example, if a migration step
+    took 10 ms and the ratio is 0.1, the cleaner sleeps for ~90 ms before the next
+    step. This results in approximately 10% work time and 90% sleep time.
+  default: 0.1
+  flags:
+  - runtime
+  min: 0.01
+  max: 1.0
+  with_legacy: true
+- name: bluefs_debug_force_slow
+  type: bool
+  level: dev
+  desc: For testing. Force BlueFS to allocate files on slow device.
+  long_desc: When enabled, the RocksDBBlueFSVolumeSelector will ignore normal
+    placement policy and redirect allocations to slow device.
+  default: false
+  flags:
+  - runtime
+  with_legacy: true
 - name: bluestore_bluefs
   type: bool
   level: dev
@@ -5032,6 +5086,17 @@ options:
   default: 0.04
   see_also:
   - bluestore_cache_size
+- name: bluestore_cache_meta_evict_limit
+  type: int
+  level: advanced
+  desc: Elements in onode cache shards are evicted when new element is inserted into the cache.
+    In rare cases of cluster inactivity cache can be reduced, but not evicted. Adjusting size at once
+    will cause stall first time cache shard is accessed. The setting limits how many onodes can get evicted in one go.
+    Any value is less than 2 it is treated as request to adjust immediately.
+  default: 10
+  see_also:
+  - bluestore_cache_meta_ratio
+  with_legacy: true
 - name: bluestore_cache_autotune
   type: bool
   level: dev
@@ -5042,6 +5107,18 @@ options:
   see_also:
   - bluestore_cache_size
   - bluestore_cache_meta_ratio
+- name: bluestore_cache_meta_evict_in_autotune
+  type: bool
+  level: advanced
+  desc: Controls eviction of onodes from cache shards as part of autotune.
+    When enabled (true), right after autotune memory allocation run onode cache tries to adapt.
+    Depending on `bluestore_cache_meta_evict_limit` either some or all excess onodes are evicted.
+    When disabled (false), cluster inactivity makes cache to keep its onode elements.
+  default: true
+  see_also:
+  - bluestore_cache_meta_evict_limit
+  - bluestore_cache_autotune
+  with_legacy: true
 - name: bluestore_cache_autotune_interval
   type: float
   level: dev
@@ -5694,14 +5771,16 @@ options:
 - name: bluestore_debug_enforce_settings
   type: str
   level: dev
-  desc: Enforces specific hw profile settings
-  long_desc: '''hdd'' enforces settings intended for BlueStore above a rotational
-    drive. ''ssd'' enforces settings intended for BlueStore above a solid drive. ''default''
-    - using settings for the actual hardware.'
+  desc: Enforces specific hardware profile settings
+  long_desc: '''hybrid'' enforces osd settings applicable to hybrid
+    (AKA main=hdd, db/wal=ssd) disk setup.
+    ''ssd'' enforces osd settings applicable to all-flash disk setup.
+    ''default'' specifies automatic settings selection based on real
+    detected hardware.'
   default: default
   enum_values:
   - default
-  - hdd
+  - hybrid
   - ssd
   with_legacy: true
 - name: bluestore_allocator_lookup_policy
@@ -6770,6 +6849,14 @@ options:
   default: true
   tags:
   - client
+- name: cephsqlite_inject_stat_error_probability
+  type: float
+  level: dev
+  desc: Probability that the libcephsqlite VFS fails a stat() with a fake I/O
+    error, for testing
+  default: 0
+  tags:
+  - client
 - name: bdev_type
   type: str
   level: advanced
@@ -6789,6 +6876,27 @@ options:
   level: advanced
   desc: A configurable number for stalled read warning to be appeared if number of stalled read occurence pass `bdev_stalled_read_warn_threshold` in `bdev_stalled_read_warn_lifetime` seconds
   default: 1
+  with_legacy: true
+- name: bdev_discard_max_bytes
+  type: size
+  level: advanced
+  desc: Discard queue size in bytes that triggers health warning
+  long_desc: This parameter sets a threshold for the discard queue size (in bytes), triggering a health
+    warning when the queue exceeds the specified limit. This is particularly useful for devices with
+    slow discard operations, as a large backlog in the queue can block disk space that is marked as free
+    but not yet available for allocation, impacting system performance and storage efficiency.
+    `bdev_async_discard_max_pending` is measured in items, not bytes, so its value does not directly
+    correspond to the discard queue size in bytes.
+  default: 10_G
+  with_legacy: true
+  see_also:
+  - bdev_async_discard_max_pending
+- name: bdev_debug_discard_sleep
+  type: uint
+  level: dev
+  desc: A debugging tool to simulate slow discard operations by introducing a delay of
+    `bdev_debug_discard_sleep` milliseconds
+  default: 0
   with_legacy: true
 - name: bluestore_cleaner_sleep_interval
   type: float

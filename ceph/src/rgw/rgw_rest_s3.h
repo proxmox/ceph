@@ -504,6 +504,8 @@ public:
   ~RGWCompleteMultipart_ObjStore_S3() override {}
 
   int get_params(optional_yield y) override;
+  int verify_encryption(std::map<std::string, bufferlist>& attrs,
+                        rgw::cksum::Type cksum_type) override;
   void send_response() override;
 };
 
@@ -697,6 +699,7 @@ protected:
     return s->info.args.exists("usage");
   }
   RGWOp *op_get() override;
+  RGWOp *op_options() override;
   RGWOp *op_head() override;
 public:
    RGWHandler_REST_Service_S3(const rgw::auth::StrategyRegistry& auth_registry) :

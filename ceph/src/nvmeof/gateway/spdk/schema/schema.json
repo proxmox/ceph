@@ -1376,6 +1376,11 @@
           "name": "preferred_unmap_alignment",
           "type": "number",
           "description": "Preferred unmap alignment in blocks"
+        },
+        {
+          "name": "fail_io",
+          "type": "boolean",
+          "description": "Fail all IO on this bdev"
         }
       ]
     },
@@ -6045,6 +6050,35 @@
           "name": "skip_rw",
           "type": "boolean",
           "description": "Skip processing read and write requests and complete them successfully immediately. This is useful for benchmarking."
+        }
+      ]
+    },
+    {
+     "name": "nvmf_cnc_set_config",
+     "params": [
+        {
+          "name": "host_behav_support_cnc",
+          "type": "boolean",
+          "required": false,
+          "description": "Support nvmf CNC feature"
+        },
+        {
+          "name": "rate_limit_bytes",
+          "type": "number",
+          "required": true,
+          "description": "number of commited rate limiter bytes"
+        },
+        {
+          "name": "max_inflight",
+          "type": "number",
+          "required": true,
+          "description": "number of maximum inflight chunks"
+        },
+        {
+          "name": "chunk_nlb",
+          "type": "number",
+          "required": true,
+          "description": "number of blocks in chunk"
         }
       ]
     },

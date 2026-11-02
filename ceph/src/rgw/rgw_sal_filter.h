@@ -964,6 +964,8 @@ public:
 
   virtual std::unique_ptr<rgw::sal::Object> get_meta_obj() override;
 
+  virtual bool supports_crypt_part_salts() const override { return next->supports_crypt_part_salts(); }
+
   virtual int init(const DoutPrefixProvider* dpp, optional_yield y, ACLOwner& owner, rgw_placement_rule& dest_placement, rgw::sal::Attrs& attrs) override;
   virtual int list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			 int num_parts, int marker,
@@ -1155,6 +1157,8 @@ public:
   virtual ~FilterLuaManager() = default;
 
   virtual int get_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, std::string& script) override;
+  virtual std::tuple<rgw::lua::LuaCodeType, int> get_script_or_bytecode(const DoutPrefixProvider* dpp, optional_yield y,
+                                                                        const std::string& key) override;
   virtual int put_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, const std::string& script) override;
   virtual int del_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key) override;
   virtual int add_package(const DoutPrefixProvider* dpp, optional_yield y, const std::string& package_name) override;
@@ -1164,6 +1168,7 @@ public:
   const std::string& luarocks_path() const override;
   void set_luarocks_path(const std::string& path) override;
 
+  void set_lua_background(rgw::lua::Background* background) override;
 };
 
 } } // namespace rgw::sal

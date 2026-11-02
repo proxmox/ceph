@@ -12,7 +12,8 @@ import { SummaryService } from '~/app/shared/services/summary.service';
 @Component({
   selector: 'cd-about',
   templateUrl: './about.component.html',
-  styleUrls: ['./about.component.scss']
+  styleUrls: ['./about.component.scss'],
+  standalone: false
 })
 export class AboutComponent extends BaseModal implements OnInit, OnDestroy {
   modalVariables: any;
@@ -54,7 +55,7 @@ export class AboutComponent extends BaseModal implements OnInit, OnDestroy {
   setVariables() {
     const NOT_AVAILABLE = $localize`Not available`;
     const project = {} as any;
-    project.user = localStorage.getItem(LocalStorage.DASHBOARD_USRENAME);
+    project.user = localStorage.getItem(LocalStorage.DASHBOARD_USERNAME);
     project.role = USER;
     if (this.userPermission.read) {
       this.userService.get(project.user).subscribe((data: any) => {

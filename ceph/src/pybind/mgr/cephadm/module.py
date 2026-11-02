@@ -205,6 +205,15 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
             desc='how frequently to perform a host check',
         ),
         Option(
+            'upgrade_cpu_isa_check',
+            type='bool',
+            default=True,
+            desc='Before upgrading, verify that host CPUs support the x86-64 '
+            'microarchitecture level required by the target release; set to '
+            'false to skip the check (e.g. when using custom-built images '
+            'targeting an older CPU generation)',
+        ),
+        Option(
             'stray_daemon_check_interval',
             type='secs',
             default=30 * 60,
@@ -531,6 +540,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
             self.daemon_cache_timeout = 0
             self.facts_cache_timeout = 0
             self.host_check_interval = 0
+            self.upgrade_cpu_isa_check = True
             self.stray_daemon_check_interval = 0
             self.max_count_per_host = 0
             self.mode = ''
@@ -1080,10 +1090,19 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
     def update_failed_daemon_health_check(self) -> None:
         failed_daemons = []
         for dd in self.cache.get_error_daemons():
-            if dd.daemon_type != 'agent':  # agents tracked by CEPHADM_AGENT_DOWN
-                failed_daemons.append('daemon %s on %s is in %s state' % (
-                    dd.name(), dd.hostname, dd.status_desc
-                ))
+            if dd.daemon_type == 'agent':  # agents tracked by CEPHADM_AGENT_DOWN
+                continue
+            assert dd.daemon_type is not None
+            svc_type = daemon_type_to_service(dd.daemon_type)
+            if (svc_type in ServiceSpec.REQUIRES_SERVICE_ID
+                    and dd.service_name() in self.spec_store.spec_deleted):
+                # Service is being removed; daemon failure will be
+                # resolved by orphan cleanup. Don't raise a health
+                # alert that clears itself once removal completes.
+                continue
+            failed_daemons.append('daemon %s on %s is in %s state' % (
+                dd.name(), dd.hostname, dd.status_desc
+            ))
         self.remove_health_warning('CEPHADM_FAILED_DAEMON')
         if failed_daemons:
             self.set_health_warning('CEPHADM_FAILED_DAEMON', f'{len(failed_daemons)} failed cephadm daemon(s)', len(
@@ -2153,6 +2172,49 @@ Then run the following:
         self.log.info(msg)
         return msg
 
+    def _set_nvmeof_gateways_admin_state(self, hostname: str, enabled: bool) -> Tuple[List[str], Optional[str]]:
+        """Enable or disable NVMe-oF gateways on a host via nvme-gw admin state commands.
+
+        Returns a tuple of (gateway ids updated, error message if any command failed).
+        """
+        prefix = 'nvme-gw enable' if enabled else 'nvme-gw disable'
+        nvmeof_daemons = self.cache.get_daemons_by_type('nvmeof', host=hostname)
+        if not nvmeof_daemons:
+            return [], None
+
+        updated: List[str] = []
+        errors: List[str] = []
+        for dd in nvmeof_daemons:
+            spec = cast(NvmeofServiceSpec, self.spec_store.all_specs.get(dd.service_name(), None))
+            if not spec:
+                self.log.warning(
+                    f'No nvmeof spec for {dd.name()}: skipping {prefix} during maintenance on {hostname}')
+                continue
+            if not spec.pool or spec.group is None:
+                self.log.warning(
+                    f'nvmeof spec for {dd.service_name()} missing pool/group: '
+                    f'skipping {prefix} during maintenance on {hostname}')
+                continue
+
+            gw_id = f'{utils.name_to_config_section("nvmeof")}.{dd.daemon_id}'
+            cmd = {
+                'prefix': prefix,
+                'id': gw_id,
+                'pool': spec.pool,
+                'group': spec.group,
+            }
+            self.log.info(
+                f'maintenance on {hostname}: {prefix} gateway {gw_id} ({spec.pool}/{spec.group})')
+            rc, _out, err = self.mon_command(cmd)
+            if rc:
+                errors.append(f'{gw_id}: rc={rc} {err}')
+            else:
+                updated.append(gw_id)
+
+        if errors:
+            return updated, '; '.join(errors)
+        return updated, None
+
     def update_maintenance_healthcheck(self) -> None:
         """Raise/update or clear the maintenance health check as needed"""
 
@@ -2170,9 +2232,10 @@ Then run the following:
         """ Attempt to place a cluster host in maintenance
 
         Placing a host into maintenance disables the cluster's ceph target in systemd
-        and stops all ceph daemons. If the host is an osd host we apply the noout flag
-        for the host subtree in crush to prevent data movement during a host maintenance
-        window.
+        and stops all ceph daemons. NVMe-oF gateways on the host are administratively
+        disabled before daemons are stopped. If the host is an osd host we apply the
+        noout flag for the host subtree in crush to prevent data movement during a
+        host maintenance window.
 
         :param hostname: (str) name of the host (must match an inventory hostname)
 
@@ -2202,6 +2265,19 @@ Then run the following:
             if rc and not yes_i_really_mean_it:
                 raise OrchestratorError(
                     msg + '\nNote: Warnings can be bypassed with the --force flag', errno=rc)
+
+            if 'nvmeof' in host_daemons:
+                _updated, nvmeof_err = self._set_nvmeof_gateways_admin_state(
+                    hostname, enabled=False)
+                if nvmeof_err:
+                    if yes_i_really_mean_it:
+                        self.log.warning(
+                            f"maintenance mode request for {hostname} failed to disable "
+                            f"some NVMe-oF gateways: {nvmeof_err}")
+                    else:
+                        raise OrchestratorError(
+                            f"Unable to disable NVMe-oF gateways on {hostname}: {nvmeof_err}",
+                            errno=errno.EIO)
 
             # call the host-maintenance function
             with self.async_timeout_handler(hostname, 'cephadm host-maintenance enter'):
@@ -2244,8 +2320,8 @@ Then run the following:
         """Exit maintenance mode and return a host to an operational state
 
         Returning from maintenance will enable the clusters systemd target and
-        start it, and remove any noout that has been added for the host if the
-        host has osd daemons
+        start it, re-enable any NVMe-oF gateways on the host, and remove any
+        noout that has been added for the host if the host has osd daemons
 
         :param hostname: (str) host name
         :param force: (bool) force removal of the host from maintenance mode
@@ -2319,6 +2395,18 @@ Then run the following:
                 else:
                     self.log.info(
                         f"exit maintenance request has UNSET for the noout group on host {hostname}")
+
+            if 'nvmeof' in self.cache.get_daemon_types(hostname):
+                _updated, nvmeof_err = self._set_nvmeof_gateways_admin_state(
+                    hostname, enabled=True)
+                if nvmeof_err:
+                    self.log.warning(
+                        f"exit maintenance request for {hostname} failed to enable "
+                        f"some NVMe-oF gateways: {nvmeof_err}")
+                    if not force:
+                        raise OrchestratorError(
+                            f"Unable to enable NVMe-oF gateways on {hostname}: {nvmeof_err}",
+                            errno=errno.EIO)
 
         # update the host record status
         tgt_host['status'] = ""
@@ -4028,6 +4116,11 @@ Then run the following:
         version_error = self.upgrade._check_target_version(ceph_image_version)
         if version_error:
             return f'Incompatible upgrade: {version_error}'
+        isa_errors = self.upgrade.check_host_cpu_isa_level(ceph_image_version)
+        if isa_errors:
+            return ('Incompatible upgrade: found host(s) with a CPU that '
+                    f'cannot run ceph version {ceph_image_version}:\n'
+                    + '\n'.join(self.upgrade._host_cpu_isa_error_detail(isa_errors)))
 
         self.log.debug(f'image info {image} -> {image_info}')
         r: dict = {
@@ -4241,7 +4334,8 @@ Then run the following:
     @handle_orch_error
     def set_osd_spec(self, service_name: str, osd_ids: List[str]) -> str:
         """
-        Update unit.meta file for osd with service name
+        Update unit.meta, BlueStore bdev label and filesystem osdspec_affinity
+        for the given OSDs so that `ceph osd metadata` reflects the new spec.
         """
         if service_name not in self.spec_store:
             raise OrchestratorError(f"Cannot find service '{service_name}' in the inventory. "

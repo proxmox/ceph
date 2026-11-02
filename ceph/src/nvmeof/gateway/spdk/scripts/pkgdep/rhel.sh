@@ -131,6 +131,7 @@ else
 	"$virtdir"/bin/pip install --upgrade pip setuptools
 fi
 source "$virtdir/bin/activate"
+python -m pip install -U "pip<26"
 python -m pip install pip-tools
 pip-compile --extra dev --strip-extras -o "$rootdir/scripts/pkgdep/requirements.txt" "${rootdir}/python/pyproject.toml"
 python -m pip install -r "$rootdir/scripts/pkgdep/requirements.txt"

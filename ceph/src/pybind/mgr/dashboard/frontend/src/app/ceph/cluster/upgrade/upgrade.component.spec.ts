@@ -12,7 +12,7 @@ import { SharedModule } from '~/app/shared/shared.module';
 import { LogsComponent } from '../logs/logs.component';
 import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
-import { ToastrModule } from 'ngx-toastr';
+
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import { RouterTestingModule } from '@angular/router/testing';
 
@@ -53,13 +53,7 @@ describe('UpgradeComponent', () => {
   };
 
   configureTestBed({
-    imports: [
-      HttpClientTestingModule,
-      SharedModule,
-      NgbNavModule,
-      ToastrModule.forRoot(),
-      RouterTestingModule
-    ],
+    imports: [HttpClientTestingModule, SharedModule, NgbNavModule, RouterTestingModule],
     declarations: [UpgradeComponent, LogsComponent],
     schemas: [NO_ERRORS_SCHEMA],
     providers: [UpgradeService, { provide: SummaryService, useClass: SummaryServiceMock }]
@@ -123,9 +117,8 @@ describe('UpgradeComponent', () => {
     upgradeInfoSpy.and.returnValue(of(upgradeInfoPayload));
     component.ngOnInit();
     fixture.detectChanges();
-    const noUpgradesSpan = fixture.debugElement.nativeElement.querySelector(
-      '#no-upgrades-available'
-    );
+    const noUpgradesSpan =
+      fixture.debugElement.nativeElement.querySelector('#no-upgrades-available');
     expect(noUpgradesSpan.textContent).toBe(' Cluster is up-to-date ');
   });
 

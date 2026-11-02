@@ -133,11 +133,11 @@ build_dashboard_frontend() {
 
   $CURR_DIR/src/tools/setup-virtualenv.sh $TEMP_DIR
   $TEMP_DIR/bin/pip install nodeenv
-  $TEMP_DIR/bin/nodeenv --verbose -p --node=20.13.1
+  $TEMP_DIR/bin/nodeenv --verbose -p --node=24.19.0
   cd src/pybind/mgr/dashboard/frontend
 
   . $TEMP_DIR/bin/activate
-  NG_CLI_ANALYTICS=false timeout 1h npm ci
+  NG_CLI_ANALYTICS=false IBM_TELEMETRY_DISABLED=true timeout 1h npm ci
   echo "Building ceph-dashboard frontend with build:localize script";
   # we need to use "--" because so that "--configuration production"
   # survives accross all scripts redirections inside package.json

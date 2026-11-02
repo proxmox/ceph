@@ -100,6 +100,13 @@ as follows:
 :command:`bucket stats`
   List bucket statistics plus other internal information about a bucket.
 
+:command:`bucket suspend`
+  Suspend an individual bucket. S3 requests against the bucket fail with
+  ``403 BucketSuspended``.
+
+:command:`bucket unsuspend`
+  Unsuspend a previously suspended bucket.
+
 :command:`bucket rm`
   Remove a bucket.
 
@@ -411,7 +418,8 @@ as follows:
   Trim bucket index log (use start-marker, end-marker) manually instead
   of relying on the gateway's integrated log sync.
   Before trimming, compare the listings and make sure the last sync was
-  complete, otherwise it can reinitiate a sync.
+  complete, otherwise it can reinitiate a sync. Without an end-marker the
+  trim has no upper bound, so it requires --yes-i-really-mean-it.
 
 :command:`datalog list`
   List data log which is needed for multi-site deployments.
@@ -619,7 +627,7 @@ Options
 
 .. option:: --shard-id=<shard-id>
 
-   Optional for mdlog list, bi list, data sync status. Required for ``mdlog trim``.
+   Optional for mdlog list, bi list, data sync status, gc list, gc process. Required for ``mdlog trim``.
 
 .. option:: --max-entries=<entries>
 

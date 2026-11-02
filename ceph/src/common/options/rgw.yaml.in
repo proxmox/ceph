@@ -922,6 +922,42 @@ options:
   - '1'
   - none
   with_legacy: true
+- name: rgw_keystone_scope_enabled
+  type: bool
+  level: advanced
+  desc: Enable logging of Keystone scope information in ops log
+  long_desc: When enabled, operations authenticated via Keystone will include scope
+    information (project, domain, roles) in the ops log. This is disabled by default
+    as it adds additional data to each log entry and most deployments do not require
+    this level of Keystone audit detail. User identity logging is controlled separately
+    by rgw_keystone_scope_include_user for privacy considerations. Requires
+    rgw_enable_ops_log to be enabled.
+  default: false
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_keystone_scope_include_user
+  type: bool
+  level: advanced
+  desc: Include human-readable identity names in Keystone scope logs
+  long_desc: When false (default), only opaque IDs are logged for all identity fields
+    (project_id, domain_id, user_id, app_cred_id), which is GDPR-compliant and
+    privacy-friendly. When true, human-readable names (project_name, domain names,
+    user_name, app_cred_name) are included. Opaque IDs are always logged regardless
+    of this setting, allowing operators to correlate with Keystone without exposing
+    names in logs.
+  default: false
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_keystone_scope_include_roles
+  type: bool
+  level: advanced
+  desc: Include role names in Keystone scope logs
+  default: true
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_cross_domain_policy
   type: str
   level: advanced
@@ -3174,6 +3210,25 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_crypt_sse_algorithm
+  type: str
+  level: advanced
+  desc: Default encryption algorithm for server-side encryption
+  long_desc: Specifies the default AES encryption algorithm to use for new objects
+    encrypted with SSE-C, SSE-KMS, SSE-S3, or RGW-AUTO modes. Valid values are
+    aes-256-cbc (legacy, compatible with older RGW versions) and aes-256-gcm
+    (recommended, provides authenticated encryption). Existing encrypted objects
+    are always decrypted using the algorithm specified in their metadata,
+    regardless of this setting.
+  default: aes-256-cbc
+  services:
+  - rgw
+  see_also:
+  - rgw_crypt_require_ssl
+  enum_values:
+  - aes-256-cbc
+  - aes-256-gcm
+  with_legacy: true
 - name: rgw_crypt_sse_s3_backend
   type: str
   level: advanced
@@ -4466,6 +4521,42 @@ options:
     REST client used in multisite was generating such improper signatures.
     If you are running multisite, you must set this option until all clusters
     are upgraded, then turn it back off.
+  default: false
+  services:
+  - rgw
+  flags:
+  - runtime
+  with_legacy: true
+
+- name: rgw_gcors_allow_origins
+  type: str
+  level: advanced
+  desc: When not empty, this value is returned as a response header Access-Control-Allow-Origins.
+  services:
+  - rgw
+- name: rgw_gcors_allow_headers
+  type: str
+  level: advanced
+  desc: When not empty, this value is returned as a response header Access-Control-Allow-Headers to preflight requests.
+  services:
+  - rgw
+- name: rgw_gcors_allow_methods
+  type: str
+  level: advanced
+  desc: When not empty, this value is returned as a response header Access-Control-Allow-Methods.
+  services:
+  - rgw
+- name: rgw_gcors_expose_headers
+  type: str
+  level: advanced
+  desc: When not empty, this value is returned as a response header Access-Control-Expose-Headers.
+  services:
+  - rgw
+
+- name: rgw_copious_policy_logging
+  type: bool
+  level: advanced
+  desc: Log the details of each policy evaluation in extreme verbosity
   default: false
   services:
   - rgw

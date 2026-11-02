@@ -9,7 +9,7 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 SO_VER := 22
 SO_MINOR := 0
 
-C_SRCS = ctrlr.c ctrlr_discovery.c ctrlr_bdev.c \
+C_SRCS = ctrlr.c ctrlr_discovery.c ctrlr_bdev.c ctrlr_cnc.c \
 	 subsystem.c subsystem_rbd_resrv.c nvmf.c nvmf_rpc.c transport.c tcp.c \
 	 nvmf_tcp_stats.c stubs.c mdns_server.c
 

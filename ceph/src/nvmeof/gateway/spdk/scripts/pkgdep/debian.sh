@@ -21,6 +21,7 @@ else
 fi
 pkgdep_toolpath pip "$virtdir/bin"
 source "$virtdir/bin/activate"
+python -m pip install -U "pip<26"
 python -m pip install pip-tools
 pip-compile --extra dev --strip-extras -o "$rootdir/scripts/pkgdep/requirements.txt" "${rootdir}/python/pyproject.toml"
 pip3 install -r "$rootdir/scripts/pkgdep/requirements.txt"

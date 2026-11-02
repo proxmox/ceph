@@ -1526,6 +1526,10 @@ public:
 
     void set_max(uint64_t max_) {
       max = max_;
+      if (cct->_conf->bluestore_cache_meta_evict_in_autotune) {
+        std::lock_guard l(lock);
+        _trim_some();
+      }
     }
 
     uint64_t _get_num() {
@@ -1540,10 +1544,17 @@ public:
       }
       _trim_to(max);
     }
-
+    void _trim_some() {
+      int32_t max_steps = cct->_conf->bluestore_cache_meta_evict_limit;
+      int64_t new_level = max.load();
+      if (max_steps >= 2) {
+        new_level = std::max((int64_t)num.load() - max_steps, new_level);
+      }
+      _trim_to(new_level);
+    }
     void trim() {
       std::lock_guard l(lock);
-      _trim();    
+      _trim();
     }
     void flush() {
       std::lock_guard l(lock);
@@ -3616,6 +3627,16 @@ public:
   void debug_set_prefer_deferred_size(uint64_t s) {
     prefer_deferred_size = s;
   }
+  OnodeRef debug_get_onode(const coll_t& cid, const ghobject_t& hoid) {
+    std::shared_lock l(coll_lock);
+    auto cp = coll_map.find(cid);
+    if (cp == coll_map.end())
+      return OnodeRef();
+    auto& c = cp->second;
+    std::shared_lock ll(c->lock);
+    OnodeRef o = c->get_onode(hoid, false);
+    return o;
+  }
   inline void log_latency(const char* name,
     int idx,
     const ceph::timespan& lat,
@@ -3913,6 +3934,10 @@ private:
   int _do_remove(TransContext *txc,
 		 CollectionRef& c,
 		 OnodeRef& o);
+  int _maybe_unshare_on_remove(TransContext *txc,
+                               CollectionRef& c,
+                               OnodeRef& head_o,
+                               std::set<SharedBlob*>&& maybe_unshared_blobs);
   int _setattr(TransContext *txc,
 	       CollectionRef& c,
 	       OnodeRef& o,
@@ -4001,6 +4026,7 @@ private:
   std::array<std::tuple<uint64_t, uint64_t, uint64_t>, 5> alloc_stats_history =
   { std::make_tuple(0ul, 0ul, 0ul) };
 
+  bool _is_main_rotational();
   inline bool _use_rotational_settings();
 
 public:

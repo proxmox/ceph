@@ -201,7 +201,7 @@ public:
 				       bool drop_on_fork,
 				       Args&&... args) {
     static_assert(sizeof(T) <= largest_singleton,
-		  "Please increase largest singleton.");
+		  "Please increase largest_singleton.");
     std::lock_guard lg(associated_objs_lock);
     std::type_index type = typeid(T);
 
@@ -272,6 +272,7 @@ public:
     _fork_watchers.push_back(w);
   }
 
+  void drop_temp_messenger_obj();
   void notify_pre_fork();
   void notify_post_fork();
 

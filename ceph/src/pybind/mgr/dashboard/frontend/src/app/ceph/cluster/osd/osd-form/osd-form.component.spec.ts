@@ -4,7 +4,6 @@ import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ToastrModule } from 'ngx-toastr';
 import { BehaviorSubject, of } from 'rxjs';
 
 import { InventoryDevice } from '~/app/ceph/cluster/inventory/inventory-devices/inventory-device.model';
@@ -143,7 +142,6 @@ describe('OsdFormComponent', () => {
       SharedModule,
       RouterTestingModule,
       ReactiveFormsModule,
-      ToastrModule.forRoot(),
       DashboardModule
     ],
     declarations: [OsdFormComponent, OsdDevicesSelectionGroupsComponent, InventoryDevicesComponent]
@@ -218,8 +216,9 @@ describe('OsdFormComponent', () => {
 
     it('should be a Recommended option only when it is recommended by backend', () => {
       const label = fixtureHelper.getElementByCss('#label_cost_capacity').nativeElement;
-      const throughputLabel = fixtureHelper.getElementByCss('#label_throughput_optimized')
-        .nativeElement;
+      const throughputLabel = fixtureHelper.getElementByCss(
+        '#label_throughput_optimized'
+      ).nativeElement;
 
       expect(label.innerHTML).toContain('Recommended');
       expect(throughputLabel.innerHTML).not.toContain('Recommended');

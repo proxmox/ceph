@@ -24,7 +24,7 @@
 #include "spdk/log.h"
 #include "spdk_internal/usdt.h"
 #include "spdk/notify.h"
-
+#include "ctrlr_cnc.h"
 #define NVMF_CC_RESET_SHN_TIMEOUT_IN_MS	10000
 
 #define NVMF_CTRLR_RESET_SHN_TIMEOUT_IN_MS	(NVMF_CC_RESET_SHN_TIMEOUT_IN_MS + 5000)
@@ -2091,10 +2091,10 @@ nvmf_ctrlr_set_features_host_behavior_support(struct spdk_nvmf_request *req)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = req->qpair->ctrlr;
 	struct spdk_nvme_cpl *response = &req->rsp->nvme_cpl;
-	struct spdk_nvme_host_behavior *host_behavior;
-	struct spdk_nvme_host_behavior dummy_host_behavior = {0};
 
-	SPDK_DEBUGLOG(nvmf, "Set Features - Host Behavior Support\n");
+	struct spdk_nvme_host_behavior *host_behavior;
+
+	SPDK_NOTICELOG("Set Features - Host Behavior Support\n");
 	if (req->iovcnt != 1) {
 		SPDK_ERRLOG("Host Behavior Support invalid iovcnt: %d\n", req->iovcnt);
 		response->status.sct = SPDK_NVME_SCT_GENERIC;
@@ -2107,14 +2107,27 @@ nvmf_ctrlr_set_features_host_behavior_support(struct spdk_nvmf_request *req)
 		response->status.sc = SPDK_NVME_SC_INVALID_FIELD;
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
-
 	host_behavior = (struct spdk_nvme_host_behavior *)req->iov[0].iov_base;
-	if (memcmp(host_behavior->reserved, dummy_host_behavior.reserved,
-		   sizeof(host_behavior->reserved)) != 0) {
-		SPDK_ERRLOG("Host Behavior Support invalid reserved field\n");
-		response->status.sct = SPDK_NVME_SCT_GENERIC;
-		response->status.sc = SPDK_NVME_SC_INVALID_FIELD;
-		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+
+	uint16_t cdfe = le16toh(host_behavior->cdfe);
+	/* Bit 0 (0x1) = Format 00h (Intra-NS), Bit 2 (0x4) = Format 02h (Cross-NS TP4130) */
+	bool intra_ns_enabled = (cdfe & 0x0001) != 0;
+	bool cross_ns_enabled = (cdfe & 0x0004) != 0;
+
+	/* Target engine is happy if the host enables either flavor of hardware copy offload */
+	bool cnc_enabled = intra_ns_enabled || cross_ns_enabled;
+	if (cnc_enabled) {
+		SPDK_INFOLOG(nvmf_cnc,
+			"XCOPY: VMware CNC enable detected cdfe = 0x%x\n", cdfe);
+		if (!get_host_behav_support_cnc()) {
+			SPDK_ERRLOG("Host supports CNC but in target CNC is disabled administratively\n");
+			response->status.sct = SPDK_NVME_SCT_GENERIC;
+			response->status.sc = SPDK_NVME_SC_INVALID_FIELD;
+			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+		}
+	} else {
+		SPDK_INFOLOG(nvmf_cnc,
+			"XCOPY: CNC not enabled by host cdfe = 0x%x\n", cdfe);
 	}
 	if (host_behavior->acre == 0) {
 		ctrlr->acre_enabled = false;

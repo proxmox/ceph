@@ -35,7 +35,8 @@ import { ComboBoxItem } from '~/app/shared/models/combo-box.model';
 @Component({
   selector: 'cd-rgw-user-form',
   templateUrl: './rgw-user-form.component.html',
-  styleUrls: ['./rgw-user-form.component.scss']
+  styleUrls: ['./rgw-user-form.component.scss'],
+  standalone: false
 })
 export class RgwUserFormComponent extends CdForm implements OnInit {
   userForm: CdFormGroup;
@@ -131,7 +132,15 @@ export class RgwUserFormComponent extends CdForm implements OnInit {
       ],
       account_id: [null, [this.tenantedAccountValidator.bind(this)]],
       account_root_user: [false],
-      account_policies: [[]],
+      account_policies: [
+        [],
+        [
+          CdValidators.requiredIf({
+            account_id: { op: '!empty' },
+            account_root_user: false
+          })
+        ]
+      ],
       max_buckets_mode: [1],
       max_buckets: [
         1000,

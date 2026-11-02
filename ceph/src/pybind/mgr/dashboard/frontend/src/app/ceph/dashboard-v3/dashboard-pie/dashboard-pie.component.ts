@@ -9,7 +9,8 @@ import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
 @Component({
   selector: 'cd-dashboard-pie',
   templateUrl: './dashboard-pie.component.html',
-  styleUrls: ['./dashboard-pie.component.scss']
+  styleUrls: ['./dashboard-pie.component.scss'],
+  standalone: false
 })
 export class DashboardPieComponent implements OnChanges, OnInit {
   @Input()
@@ -56,7 +57,10 @@ export class DashboardPieComponent implements OnChanges, OnInit {
     }
   ];
 
-  constructor(private cssHelper: CssHelper, private dimlessBinary: DimlessBinaryPipe) {
+  constructor(
+    private cssHelper: CssHelper,
+    private dimlessBinary: DimlessBinaryPipe
+  ) {
     this.chartConfig = {
       chartType: 'doughnut',
       labels: [],

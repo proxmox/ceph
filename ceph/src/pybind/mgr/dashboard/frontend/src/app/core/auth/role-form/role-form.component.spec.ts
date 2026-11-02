@@ -5,7 +5,6 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
 import { RoleService } from '~/app/shared/api/role.service';
@@ -26,7 +25,7 @@ describe('RoleFormComponent', () => {
   let router: Router;
   const setUrl = (url: string) => Object.defineProperty(router, 'url', { value: url });
 
-  @Component({ selector: 'cd-fake', template: '' })
+  @Component({ selector: 'cd-fake', template: '', standalone: false })
   class FakeComponent {}
 
   const routes: Routes = [{ path: 'roles', component: FakeComponent }];
@@ -36,7 +35,6 @@ describe('RoleFormComponent', () => {
       RouterTestingModule.withRoutes(routes),
       HttpClientTestingModule,
       ReactiveFormsModule,
-      ToastrModule.forRoot(),
       SharedModule
     ],
     declarations: [RoleFormComponent, FakeComponent]

@@ -196,7 +196,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	20.2.4
+Version:	20.2.5
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -212,7 +212,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-20.2.4.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-20.2.5.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x riscv64
@@ -236,7 +236,7 @@ BuildRequires:	selinux-policy-devel
 %endif
 BuildRequires:	gperf
 BuildRequires:  cmake > 3.5
-BuildRequires:	fuse-devel
+BuildRequires:	pkgconfig(fuse3)
 BuildRequires:	git
 BuildRequires:	grpc-devel
 # Before 13.3, an lto bug resulted in a segfault in SafeTimer and perhaps
@@ -793,7 +793,7 @@ Summary:	Ceph fuse-based client
 %if 0%{?suse_version}
 Group:		System/Filesystems
 %endif
-Requires:       fuse
+Requires:       fuse3
 Requires:	python%{python3_pkgversion}
 %description fuse
 FUSE based client for Ceph distributed network file system
@@ -1382,7 +1382,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-20.2.4
+%autosetup -p1 -n ceph-20.2.5
 
 %build
 
@@ -2244,8 +2244,10 @@ fi
 %{_bindir}/radosgw-es
 %{_bindir}/radosgw-object-expirer
 %{_bindir}/rgw-policy-check
+%{_bindir}/rgw-policy-test
 %{_mandir}/man8/radosgw.8*
 %{_mandir}/man8/rgw-policy-check.8*
+%{_mandir}/man8/rgw-policy-test.8*
 %dir %{_localstatedir}/lib/ceph/radosgw
 %{_unitdir}/ceph-radosgw@.service
 %{_unitdir}/ceph-radosgw.target

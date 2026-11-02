@@ -188,6 +188,11 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_CRYPT_CONTEXT  RGW_ATTR_CRYPT_PREFIX "context"
 #define RGW_ATTR_CRYPT_DATAKEY  RGW_ATTR_CRYPT_PREFIX "datakey"
 #define RGW_ATTR_CRYPT_PARTS    RGW_ATTR_CRYPT_PREFIX "part-lengths"
+#define RGW_ATTR_CRYPT_PART_NUMS RGW_ATTR_CRYPT_PREFIX "part-numbers"
+#define RGW_ATTR_CRYPT_PART_SALT  RGW_ATTR_CRYPT_PREFIX "part-salt"
+#define RGW_ATTR_CRYPT_SALT     RGW_ATTR_CRYPT_PREFIX "salt"
+#define RGW_ATTR_CRYPT_ORIGINAL_SIZE RGW_ATTR_CRYPT_PREFIX "original-size"
+#define RGW_ATTR_CRYPT_PREFETCH_ALIGN RGW_ATTR_CRYPT_PREFIX "prefetch-align"
 
 /* SSE-S3 Encryption Attributes */
 #define RGW_ATTR_BUCKET_ENCRYPTION_PREFIX RGW_ATTR_PREFIX "sse-s3."
@@ -322,6 +327,7 @@ inline constexpr const char* RGW_REST_STS_XMLNS =
 #define ERR_NO_SUCH_BUCKET_ENCRYPTION_CONFIGURATION 2048
 #define ERR_NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION 2049
 #define ERR_USER_SUSPENDED       2100
+#define ERR_BUCKET_SUSPENDED     2101
 #define ERR_INTERNAL_ERROR       2200
 #define ERR_NOT_IMPLEMENTED      2201
 #define ERR_SERVICE_UNAVAILABLE  2202
@@ -1119,6 +1125,7 @@ struct RGWBucketInfo {
   bool mfa_enabled() const { return (versioning_status() & BUCKET_MFA_ENABLED) != 0; }
   bool datasync_flag_enabled() const { return (flags & BUCKET_DATASYNC_DISABLED) == 0; }
   bool obj_lock_enabled() const { return (flags & BUCKET_OBJ_LOCK_ENABLED) != 0; }
+  bool bucket_suspended() const { return (flags & BUCKET_SUSPENDED) != 0; }
   bool bucket_deleted() const { return (flags & BUCKET_DELETED) != 0; }
 
   bool has_swift_versioning() const {

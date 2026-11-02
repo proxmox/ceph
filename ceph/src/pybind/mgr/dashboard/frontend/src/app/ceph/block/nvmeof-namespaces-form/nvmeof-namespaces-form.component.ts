@@ -30,7 +30,8 @@ import { HttpResponse } from '@angular/common/http';
 @Component({
   selector: 'cd-nvmeof-namespaces-form',
   templateUrl: './nvmeof-namespaces-form.component.html',
-  styleUrls: ['./nvmeof-namespaces-form.component.scss']
+  styleUrls: ['./nvmeof-namespaces-form.component.scss'],
+  standalone: false
 })
 export class NvmeofNamespacesFormComponent implements OnInit {
   action: string;
@@ -177,7 +178,7 @@ export class NvmeofNamespacesFormComponent implements OnInit {
     this.nvmeofService.listNamespaces(this.group).subscribe((response: any) => {
       const namespaces: NvmeofSubsystemNamespace[] = Array.isArray(response)
         ? response
-        : response?.namespaces ?? [];
+        : (response?.namespaces ?? []);
       this.usedRbdImages = namespaces.reduce((map, ns) => {
         if (!map.has(ns.rbd_pool_name)) {
           map.set(ns.rbd_pool_name, new Set<string>());

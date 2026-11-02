@@ -23,6 +23,7 @@ struct null_bdev_io {
 
 struct null_bdev {
 	struct spdk_bdev	bdev;
+	bool			fail_io;
 	TAILQ_ENTRY(null_bdev)	tailq;
 };
 
@@ -90,10 +91,16 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 	struct null_bdev_io *null_io = (struct null_bdev_io *)bdev_io->driver_ctx;
 	struct null_io_channel *ch = spdk_io_channel_get_ctx(_ch);
 	struct spdk_bdev *bdev = bdev_io->bdev;
+	struct null_bdev *null_disk = (struct null_bdev *)(bdev->ctxt);
 	struct spdk_dif_ctx dif_ctx;
 	struct spdk_dif_error err_blk;
 	int rc;
 	struct spdk_dif_ctx_init_ext_opts dif_opts;
+
+	if (null_disk->fail_io) {
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
 
 	if (SPDK_DIF_DISABLE != bdev->dif_type &&
 	    (SPDK_BDEV_IO_TYPE_READ == bdev_io->type ||
@@ -209,6 +216,7 @@ bdev_null_get_io_channel(void *ctx)
 static void
 bdev_null_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
+	struct null_bdev *null_disk = (struct null_bdev *)(bdev->ctxt);
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_string(w, "method", "bdev_null_create");
@@ -228,6 +236,7 @@ bdev_null_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *
 	spdk_json_write_named_uint32(w, "optimal_write_size", bdev->optimal_write_size);
 	spdk_json_write_named_uint32(w, "preferred_unmap_granularity", bdev->preferred_unmap_granularity);
 	spdk_json_write_named_uint32(w, "preferred_unmap_alignment", bdev->preferred_unmap_alignment);
+	spdk_json_write_named_bool(w, "fail_io", null_disk->fail_io);
 	spdk_json_write_object_end(w);
 
 	spdk_json_write_object_end(w);
@@ -333,6 +342,7 @@ bdev_null_create(struct spdk_bdev **bdev, const struct null_bdev_opts *opts)
 	null_disk->bdev.md_interleave = true;
 	null_disk->bdev.dif_type = opts->dif_type;
 	null_disk->bdev.dif_is_head_of_md = opts->dif_is_head_of_md;
+	null_disk->fail_io = opts->fail_io;
 	/* Current block device layer API does not propagate
 	 * any DIF related information from user. So, we can
 	 * not generate or verify Application Tag.

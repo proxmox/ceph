@@ -18,7 +18,8 @@ import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
 @Component({
   selector: 'cd-rgw-user-details',
   templateUrl: './rgw-user-details.component.html',
-  styleUrls: ['./rgw-user-details.component.scss']
+  styleUrls: ['./rgw-user-details.component.scss'],
+  standalone: false
 })
 export class RgwUserDetailsComponent implements OnChanges, OnInit {
   @ViewChild('accessKeyTpl')
@@ -42,7 +43,10 @@ export class RgwUserDetailsComponent implements OnChanges, OnInit {
 
   icons = Icons;
 
-  constructor(private rgwUserService: RgwUserService, private cdsModalService: ModalCdsService) {}
+  constructor(
+    private rgwUserService: RgwUserService,
+    private cdsModalService: ModalCdsService
+  ) {}
 
   ngOnInit() {
     this.keysColumns = [

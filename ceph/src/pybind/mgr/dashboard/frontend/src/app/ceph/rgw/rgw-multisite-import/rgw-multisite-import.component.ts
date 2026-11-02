@@ -18,11 +18,13 @@ import { debounceTime, distinctUntilChanged, filter, map } from 'rxjs/operators'
 @Component({
   selector: 'cd-rgw-multisite-import',
   templateUrl: './rgw-multisite-import.component.html',
-  styleUrls: ['./rgw-multisite-import.component.scss']
+  styleUrls: ['./rgw-multisite-import.component.scss'],
+  standalone: false
 })
 export class RgwMultisiteImportComponent implements OnInit {
   readonly endpoints = /^((https?:\/\/)|(www.))(?:([a-zA-Z]+)|(\d+\.\d+.\d+.\d+)):\d{2,4}$/;
-  readonly ipv4Rgx = /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/i;
+  readonly ipv4Rgx =
+    /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/i;
   readonly ipv6Rgx = /^(?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}$/i;
   @ViewChild(NgbTypeahead, { static: false })
   typeahead: NgbTypeahead;

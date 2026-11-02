@@ -92,6 +92,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_SIGNATURE_NO_MATCH, {403, "SignatureDoesNotMatch" }},
     { ERR_INVALID_ACCESS_KEY, {403, "InvalidAccessKeyId" }},
     { ERR_USER_SUSPENDED, {403, "UserSuspended" }},
+    { ERR_BUCKET_SUSPENDED, {403, "BucketSuspended" }},
     { ERR_REQUEST_TIME_SKEWED, {403, "RequestTimeTooSkewed" }},
     { ERR_QUOTA_EXCEEDED, {403, "QuotaExceeded" }},
     { ERR_MFA_REQUIRED, {403, "AccessDenied" }},
@@ -150,6 +151,7 @@ rgw_http_errors rgw_http_swift_errors({
     { EPERM, {401, "AccessDenied" }},
     { ENAMETOOLONG, {400, "Metadata name too long" }},
     { ERR_USER_SUSPENDED, {401, "UserSuspended" }},
+    { ERR_BUCKET_SUSPENDED, {403, "BucketSuspended" }},
     { ERR_INVALID_UTF8, {412, "Invalid UTF8" }},
     { ERR_BAD_URL, {412, "Bad URL" }},
     { ERR_NOT_SLO_MANIFEST, {400, "Not an SLO manifest" }},
@@ -1150,10 +1152,11 @@ Effect eval_or_pass(const DoutPrefixProvider* dpp,
                     const uint64_t op,
                     const ARN& resource,
                     boost::optional<rgw::IAM::PolicyPrincipal&> princ_type=boost::none) {
-  if (!policy)
+  if (!policy) {
     return Effect::Pass;
-  else
-    return policy->eval(env, id, op, resource, princ_type);
+  } else {
+    return policy->eval(dpp, env, id, op, resource, princ_type);
+  }
 }
 
 Effect eval_identity_or_session_policies(const DoutPrefixProvider* dpp,
@@ -1374,7 +1377,7 @@ bool verify_bucket_permission(const DoutPrefixProvider* dpp,
   // If RestrictPublicBuckets is enabled and the bucket policy allows public access,
   // deny the request if the requester is not in the bucket owner account
   const bool restrict_public_buckets = s->bucket_access_conf && s->bucket_access_conf->restrict_public_buckets();
-  if (restrict_public_buckets && bucket_policy && rgw::IAM::is_public(*bucket_policy) && !s->identity->is_owner_of(s->bucket_info.owner)) {
+  if (restrict_public_buckets && bucket_policy && rgw::IAM::is_public(dpp, *bucket_policy) && !s->identity->is_owner_of(s->bucket_info.owner)) {
     ldpp_dout(dpp, 10) << __func__ << ": public policies are blocked by the RestrictPublicBuckets block public access setting" << dendl;
     return false;
   }
@@ -1541,7 +1544,7 @@ bool verify_object_permission(const DoutPrefixProvider* dpp, struct perm_state_b
   // If RestrictPublicBuckets is enabled and the bucket policy allows public access,
   // deny the request if the requester is not in the bucket owner account
   const bool restrict_public_buckets = ps->bucket_access_conf && ps->bucket_access_conf->restrict_public_buckets();
-  if (restrict_public_buckets && bucket_policy && rgw::IAM::is_public(*bucket_policy) && !ps->identity->is_owner_of(ps->bucket_info.owner)) {
+  if (restrict_public_buckets && bucket_policy && rgw::IAM::is_public(dpp, *bucket_policy) && !ps->identity->is_owner_of(ps->bucket_info.owner)) {
     ldpp_dout(dpp, 10) << __func__ << ": public policies are blocked by the RestrictPublicBuckets block public access setting" << dendl;
     return false;
   }
@@ -2601,6 +2604,9 @@ void RGWBucketInfo::dump(Formatter *f) const
   if (!empty_sync_policy()) {
     encode_json("sync_policy", *sync_policy, f);
   }
+  if (obj_lock_enabled()) {
+    encode_json("obj_lock", obj_lock, f);
+  }
 }
 
 void RGWBucketInfo::decode_json(JSONObj *obj) {
@@ -2643,6 +2649,9 @@ void RGWBucketInfo::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("sync_policy", sp, obj);
   if (!sp.empty()) {
     set_sync_policy(std::move(sp));
+  }
+  if (obj_lock_enabled()) {
+    JSONDecoder::decode_json("obj_lock", obj_lock, obj);
   }
 }
 

@@ -741,7 +741,12 @@ void abort_early(req_state *s, RGWOp* op, int err_no,
        *   x-amz-error-detail-Key: foo
        */
       end_header(s, op, NULL, error_content.size(), false, true);
-      RESTFUL_IO(s)->send_body(error_content.c_str(), error_content.size());
+      try {
+        RESTFUL_IO(s)->send_body(error_content.c_str(), error_content.size());
+      } catch (rgw::io::Exception& e) {
+        ldpp_dout(s, 0) << "ERROR: abort_early: send_body() returned err="
+                        << e.what() << dendl;
+      }
     } else {
       end_header(s, op);
     }
@@ -1232,7 +1237,9 @@ int RGWPostObj_ObjStore::read_with_boundary(ceph::bufferlist& bl,
 
     bufferptr bp(need_to_read);
 
+    ACCOUNTING_IO(s)->set_account(true);
     const auto read_len = recv_body(s, bp.c_str(), need_to_read);
+    ACCOUNTING_IO(s)->set_account(false);
     if (read_len < 0) {
       return read_len;
     }
@@ -1264,7 +1271,9 @@ int RGWPostObj_ObjStore::read_with_boundary(ceph::bufferlist& bl,
     if (left < skip + 2) {
       int need = skip + 2 - left;
       bufferptr boundary_bp(need);
+      ACCOUNTING_IO(s)->set_account(true);
       const int r = recv_body(s, boundary_bp.c_str(), need);
+      ACCOUNTING_IO(s)->set_account(false);
       if (r < 0) {
         return r;
       }

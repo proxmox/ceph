@@ -102,6 +102,14 @@ add_executable(unittest_rgw_bencode test_rgw_bencode.cc)
 add_ceph_unittest(unittest_rgw_bencode)
 target_link_libraries(unittest_rgw_bencode ${rgw_libs})
 
+# unittest_rgw_cors
+add_executable(unittest_rgw_cors
+  test_rgw_cors.cc
+  $<TARGET_OBJECTS:unit-main>)
+add_ceph_unittest(unittest_rgw_cors)
+target_link_libraries(unittest_rgw_cors ${rgw_libs})
+
+
 # unittest_rgw_bucket_sync_cache
 add_executable(unittest_rgw_bucket_sync_cache test_rgw_bucket_sync_cache.cc)
 add_ceph_unittest(unittest_rgw_bucket_sync_cache)
@@ -112,12 +120,24 @@ add_executable(unittest_rgw_period_history test_rgw_period_history.cc)
 add_ceph_unittest(unittest_rgw_period_history)
 target_link_libraries(unittest_rgw_period_history ${rgw_libs})
 
+# unittest_rgw_zone
+add_executable(unittest_rgw_zone test_rgw_zone.cc)
+add_ceph_unittest(unittest_rgw_zone)
+target_link_libraries(unittest_rgw_zone ${rgw_libs})
+
 # unittest_rgw_compression
 add_executable(unittest_rgw_compression
   test_rgw_compression.cc
   $<TARGET_OBJECTS:unit-main>)
 add_ceph_unittest(unittest_rgw_compression)
 target_link_libraries(unittest_rgw_compression ${rgw_libs})
+
+# unittest_rgw_cache
+add_executable(unittest_rgw_cache
+  test_rgw_cache.cc
+  $<TARGET_OBJECTS:unit-main>)
+add_ceph_unittest(unittest_rgw_cache)
+target_link_libraries(unittest_rgw_cache ${rgw_libs})
 
 # unittest_http_manager
 add_executable(unittest_http_manager test_http_manager.cc)
@@ -138,6 +158,19 @@ target_link_libraries(bench_rgw_ratelimit ${rgw_libs})
 
 add_executable(bench_rgw_ratelimit_gc bench_rgw_ratelimit_gc.cc )
 target_link_libraries(bench_rgw_ratelimit_gc ${rgw_libs})
+
+# Crypto benchmark through the BlockCrypt interface (full RGW encrypt path).
+# Uses the plugin system to load the configured accelerator (ISA-L or OpenSSL).
+# Run with --accel crypto_isal or --accel crypto_openssl to compare backends.
+add_executable(bench_rgw_crypto_accel bench_rgw_crypto_accel.cc)
+target_link_libraries(bench_rgw_crypto_accel
+  ${rgw_libs}
+  global
+  ${CURL_LIBRARIES}
+  ${EXPAT_LIBRARIES}
+  ${CMAKE_DL_LIBS}
+  ${CRYPTO_LIBS})
+add_dependencies(bench_rgw_crypto_accel crypto_plugins)
 
 add_executable(unittest_rgw_ratelimit test_rgw_ratelimit.cc $<TARGET_OBJECTS:unit-main>)
 target_link_libraries(unittest_rgw_ratelimit ${rgw_libs})
@@ -211,6 +244,13 @@ target_link_libraries(unittest_rgw_crypto
   ${CRYPTO_LIBS}
   )
 
+add_executable(unittest_rgw_range_projection test_rgw_range_projection.cc)
+add_ceph_unittest(unittest_rgw_range_projection)
+target_link_libraries(unittest_rgw_range_projection
+  ${rgw_libs}
+  ${UNITTEST_LIBS}
+  )
+
 set(test_rgw_reshard_srcs test_rgw_reshard.cc)
 add_executable(unittest_rgw_reshard
   ${test_rgw_reshard_srcs}
@@ -251,6 +291,12 @@ add_executable(unittest_rgw_string test_rgw_string.cc)
 add_ceph_unittest(unittest_rgw_string)
 target_include_directories(unittest_rgw_string
   SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw")
+
+add_executable(unittest_rgw_http_errors test_rgw_http_errors.cc)
+add_ceph_unittest(unittest_rgw_http_errors)
+target_include_directories(unittest_rgw_http_errors
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw")
+target_link_libraries(unittest_rgw_http_errors rgw_common ${UNITTEST_LIBS})
 
 # unittest_rgw_dmclock_queue
 add_executable(unittest_rgw_dmclock_scheduler test_rgw_dmclock_scheduler.cc $<TARGET_OBJECTS:unit-main>)
@@ -413,3 +459,8 @@ target_link_libraries(unittest_rgw_asio_frontend_connection ${rgw_libs} ${UNITTE
 add_executable(unittest_rgw_tag test_rgw_tag.cc)
 add_ceph_unittest(unittest_rgw_tag)
 target_link_libraries(unittest_rgw_tag ${rgw_libs} ${UNITTEST_LIBS})
+
+# unittest_rgw_auth_sigv4
+add_executable(unittest_rgw_auth_sigv4 test_rgw_auth_sigv4.cc)
+add_ceph_unittest(unittest_rgw_auth_sigv4)
+target_link_libraries(unittest_rgw_auth_sigv4 ${rgw_libs} ${UNITTEST_LIBS})

@@ -1582,9 +1582,13 @@ public:
   /**
    * Per-PG latch state for rebuild time tracking. Cleared after each
    * completed rebuild event is recorded in the perf counters.
-   * The state is also cleared in clear_primary_state() so that an interval
-   * change or role transition (primary -> replica) does not carry a stale
-   * start time or baseline recovered count into a future interval.
+   * The state is also cleared in start_peering_interval() when the
+   * primary role actually changes across the transition, so that a
+   * role change (primary -> replica, or vice versa) does not carry a
+   * stale start time or baseline recovered count into a future primary
+   * stint. Peering-interval restarts that leave this OSD as primary
+   * throughout preserve the latch so an in-progress rebuild keeps
+   * accruing across them.
    */
   utime_t rebuild_start_time;
   int64_t rebuild_base_recovered = 0;
@@ -1638,6 +1642,17 @@ public:
   void on_new_interval();
   void clear_recovery_state();
   void clear_primary_state();
+  /**
+   * This is used by:
+   * a) start_peering_interval(): If this OSD is losing the primary role
+   *    while rebuild_start_time is still armed -- close out and record this
+   *    OSD's own segment of the vulnerability window instead of discarding it.
+   * b) prepare_stats_for_publish(): The case where this OSD is the primary
+   *   and completes a rebuild and records the OSD's vulnerability window.
+   *
+   * So both paths use identical filter/record/log logic.
+   */
+  void try_record_rebuild_segment(utime_t end_time, std::string_view reason);
   void check_past_interval_bounds() const;
   bool set_force_recovery(bool b);
   bool set_force_backfill(bool b);

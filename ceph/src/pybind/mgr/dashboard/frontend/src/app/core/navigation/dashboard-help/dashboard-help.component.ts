@@ -10,13 +10,17 @@ import { FeedbackComponent } from '~/app/ceph/shared/feedback/feedback.component
 @Component({
   selector: 'cd-dashboard-help',
   templateUrl: './dashboard-help.component.html',
-  styleUrls: ['./dashboard-help.component.scss']
+  styleUrls: ['./dashboard-help.component.scss'],
+  standalone: false
 })
 export class DashboardHelpComponent implements OnInit {
   docsUrl: string;
   icons = Icons;
 
-  constructor(private docService: DocService, private modalCdsService: ModalCdsService) {}
+  constructor(
+    private docService: DocService,
+    private modalCdsService: ModalCdsService
+  ) {}
 
   ngOnInit() {
     this.docService.subscribeOnce('dashboard', (url: string) => {

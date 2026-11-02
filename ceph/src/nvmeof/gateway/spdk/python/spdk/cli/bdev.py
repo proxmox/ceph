@@ -258,7 +258,8 @@ def add_parser(subparsers):
                                              preferred_write_granularity=args.preferred_write_granularity,
                                              optimal_write_size=args.optimal_write_size,
                                              preferred_unmap_alignment=args.preferred_unmap_alignment,
-                                             preferred_unmap_granularity=args.preferred_unmap_granularity))
+                                             preferred_unmap_granularity=args.preferred_unmap_granularity,
+                                             fail_io=args.fail_io))
 
     p = subparsers.add_parser('bdev_null_create', help='Add a bdev with null backend')
     p.add_argument('name', help='Block device name')
@@ -281,6 +282,7 @@ def add_parser(subparsers):
     p.add_argument('-s', '--optimal-write-size', help='Optimal write size in blocks.', type=int)
     p.add_argument('-c', '--preferred-unmap-alignment', help='Preferred unmap granularity in blocks.', type=int)
     p.add_argument('-r', '--preferred-unmap-granularity', help='Preferred unmap granularity in blocks.', type=int)
+    p.add_argument('-x', '--fail-io', action='store_true', help='Fail all IO for this bdev')
     p.set_defaults(func=bdev_null_create)
 
     def bdev_null_delete(args):

@@ -823,6 +823,30 @@ void PeeringState::start_peering_interval(
   } else if (was_old_nonprimary || is_nonprimary()) {
     pl->clear_want_pg_temp();
   }
+
+  // if this OSD specifically is *losing* the primary role (as opposed to
+  // gaining it) while the latch is still armed, close out and record this
+  // OSD's own segment of the vulnerability window before discarding the
+  // latch fields below -- otherwise a primary handover mid-rebuild
+  // silently drops the whole in-progress duration with no trace on any OSD.
+  // This does not recover the true total across a multi-handover chain --
+  // see try_record_rebuild_segment()'s doc comment.
+  const bool losing_primary = was_old_primary && !is_primary();
+  if (losing_primary && rebuild_start_time != utime_t()) {
+    try_record_rebuild_segment(ceph_clock_now(), "handover-away");
+  }
+
+  // Only reset the rebuild-time latch when the primary role actually
+  // changes across this interval transition. Routine peering restarts
+  // (e.g. acting-set churn from backfill peers being added/removed)
+  // that leave this OSD as primary throughout must not wipe an
+  // in-progress rebuild's start time.
+  if (!(was_old_primary && is_primary())) {
+    rebuild_start_time = utime_t();
+    rebuild_base_recovered = 0;
+    rebuild_had_redundancy_loss = false;
+  }
+
   clear_primary_state();
 
   pl->on_change(t);
@@ -1047,13 +1071,38 @@ void PeeringState::clear_primary_state()
 
   clear_recovery_state();
 
-  rebuild_start_time = utime_t();
-  rebuild_base_recovered = 0;
-  rebuild_had_redundancy_loss = false;
-
   pg_committed_to = eversion_t();
   missing_loc.clear();
   pl->clear_primary_state();
+}
+
+void PeeringState::try_record_rebuild_segment(
+  utime_t end_time,
+  std::string_view reason)
+{
+  // Caller (prepare_stats_for_publish()'s "reached clean" branch, or
+  // start_peering_interval()'s "handover-away" check) is responsible for
+  // guarding rebuild_start_time != utime_t() before calling this, and for
+  // resetting the three latch fields immediately afterward -- this method
+  // only computes, filters, records, and logs; it does not reset state.
+  const int64_t num_recovered = info.stats.stats.sum.num_objects_recovered;
+  const int64_t delta_recovered = num_recovered - rebuild_base_recovered;
+  const utime_t rebuild_dur = end_time - rebuild_start_time;
+
+  if (rebuild_dur.to_msec() > 0 &&
+      (delta_recovered > 0 || rebuild_had_redundancy_loss)) {
+    pl->get_peering_perf().tinc(rs_pg_rebuild_duration, rebuild_dur);
+    psdout(15) << "rebuild-stats: recorded rebuild for " << info.pgid
+              << " duration=" << rebuild_dur
+              << " delta_recovered=" << delta_recovered
+              << " reason=" << reason << dendl;
+  } else {
+    psdout(15) << "rebuild-stats: discarded rebuild for " << info.pgid
+              << " duration=" << rebuild_dur
+              << " delta_recovered=" << delta_recovered
+              << " had_redundancy_loss=" << rebuild_had_redundancy_loss
+              << " reason=" << reason << dendl;
+  }
 }
 
 /// return [start,end) bounds for required past_intervals
@@ -3750,6 +3799,13 @@ void PeeringState::split_into(
   increment_stats_invalidations_counter(info.stats.stats_invalid);
   increment_stats_invalidations_counter(child->info.stats.stats_invalid);
 
+  // rebuild-stats: Make the child inherit the parent's latch. Otherwise the
+  // child's share of a pre-split, still-ongoing failure would understate its
+  // true duration (or vanish from delta_recovered's filter entirely) once it
+  // independently detects its own degradation post-split.
+  child->rebuild_start_time = rebuild_start_time;
+  child->rebuild_had_redundancy_loss = rebuild_had_redundancy_loss;
+
   // There can't be recovery/backfill going on now
   int primary, up_primary;
   vector<int> newup, newacting;
@@ -3979,6 +4035,21 @@ void PeeringState::finish_split_stats(
   const object_stat_sum_t& stats, ObjectStore::Transaction &t)
 {
   info.stats.stats.sum = stats;
+
+  // rebuild-stats: object_stat_sum_t::split() (see its SPLIT(num_objects_
+  // recovered) macro) divides num_objects_recovered evenly across the
+  // parent and every child -- so info.stats.stats.sum.num_objects_recovered
+  // just dropped to a fraction of whatever it was when rebuild_base_
+  // recovered was last snapshotted, on BOTH the parent and the child. Without
+  // the redistributed value (via split()), try_record_rebuild_segment()'s
+  // delta_recovered = num_recovered - rebuild_base_recovered can go negative
+  // can reflect inaccurate value and result in discarding a genuine rebuild.
+  // Therefore, re-anchor the baseline to the just-applied, already
+  // redistributed value and make the child's inheritance numerically correct.
+  if (rebuild_start_time != utime_t()) {
+    rebuild_base_recovered = info.stats.stats.sum.num_objects_recovered;
+  }
+
   write_if_dirty(t);
 }
 
@@ -4416,16 +4487,14 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
 
     /**
      * The following block is an interim solution to aggregate PG rebuild stats
-     * into a set of perf counters. The counterss are set based on the following
+     * into a perf counter. The counter is set based on the following
      * existing pg_stat_t fields:
      *  - last_clean, last_change
      *  - num_objects_degraded, num_objects_misplaced, num_objects_recovered
      *
      * The PG rebuild stats are aggregated into the following recoverystate
-     * perf counters:
+     * perf counter:
      *  - rs_pg_rebuild_duration: rebuild duration LONGRUNAVG time counter
-     *  - rs_pg_rebuild_max_secs: maximum rebuild duration (secs)
-     *  - rs_pg_rebuild_min_secs: minimum rebuild duration (secs)
      *
      * Workflow:
      *  1. Only the acting primary OSD of the PG executes the logic to
@@ -4440,6 +4509,29 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
      *     num_objects_recovered > 0 or the PG had confirmed redundancy loss
      *     at latch time, filtering out spurious state transitions. The latch
      *     is cleared after each recorded event.
+     *  4. The "recovered" (record) branch additionally requires the live
+     *     PG_STATE_ACTIVE bit, not just an empty degraded/misplaced count.
+     *     Right after a peering-interval restart, clear_primary_state()
+     *     wipes acting_recovery_backfill/missing_loc before peering has
+     *     repopulated them for the new interval; a publish landing in that
+     *     narrow mid-peering window sees num_objects_degraded == 0 and no
+     *     DEGRADED/UNDERSIZED bit set, which looks identical to a genuine
+     *     recovery completion even though the PG is still mid-transition
+     *     and about to go degraded again. Requiring PG_STATE_ACTIVE (never
+     *     set while PEERING) filters out that transient situation so it can't
+     *     prematurely record a truncated duration and reset the latch out
+     *     from under an in-progress rebuild.
+     *  5. A primary handover mid-vulnerability window closes out and records
+     *     the departing OSD's own segment instead of silently discarding it.
+     *     This means a PG that changes primary N times while continuously
+     *     vulnerable is recorded as N separate rebuild_duration samples
+     *     (whose durations sum to roughly, not exactly, the true total episode
+     *     length) rather than one -- a real, understood, and accepted
+     *     trade-off for this interim solution: avgcount can overcount the true
+     *     number of distinct redundancy-loss incidents whenever a handover
+     *     occurs mid-episode, though avgtime/the summed exposure duration stay
+     *     roughly accurate. A PG whose primary never changes is entirely
+     *     unaffected and continues to produce exactly one sample.
      *
      * last_degraded is intentionally not used in the interim solution to
      * retain compatibility with older Ceph releases where this field doesn't
@@ -4474,28 +4566,13 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
                        << info.pgid << " at " << rebuild_start_time << dendl;
           }
         }
-      } else if (rebuild_start_time != utime_t()) {
+      } else if (rebuild_start_time != utime_t() && (state & PG_STATE_ACTIVE)) {
         // PG recovered — record rebuild time if this was a genuine event.
-        const int64_t delta_recovered = num_recovered - rebuild_base_recovered;
-        const utime_t rebuild_dur  = now - rebuild_start_time;
-
-        if (rebuild_dur.to_msec() > 0 &&
-            (delta_recovered > 0 || rebuild_had_redundancy_loss)) {
-          PerfCounters &perf = pl->get_peering_perf();
-          perf.tinc(rs_pg_rebuild_duration, rebuild_dur);
-
-          const uint64_t rebuild_secs = (uint64_t)rebuild_dur.sec();
-          if (rebuild_secs > perf.get(rs_pg_rebuild_max_secs)) {
-            perf.set(rs_pg_rebuild_max_secs, rebuild_secs);
-          }
-          const uint64_t cur_min = perf.get(rs_pg_rebuild_min_secs);
-          if (cur_min == 0 || rebuild_secs < cur_min) {
-            perf.set(rs_pg_rebuild_min_secs, rebuild_secs);
-          }
-          psdout(15) << "rebuild-stats: recorded rebuild for " << info.pgid
-                     << " duration=" << rebuild_dur
-                     << " delta_recovered=" << delta_recovered << dendl;
-        }
+        // The PG_STATE_ACTIVE check excludes the transient mid-peering
+        // window (see point 4 above) where the degraded/misplaced counts
+        // can momentarily read as zero before peering has finished
+        // repopulating them for the new interval.
+        try_record_rebuild_segment(now, "reached-clean");
         // reset for the next event
         rebuild_start_time = utime_t();
         rebuild_base_recovered = 0;
@@ -5151,6 +5228,15 @@ void PeeringState::apply_op_stats(
   const hobject_t &soid,
   const object_stat_sum_t &delta_stats)
 {
+  psdout(20) << fmt::format(
+	"apply_op_stats {} d.objs={} d.clns={} d.bytes={}"
+	" -> objs={} clns={} bytes={}",
+	soid, delta_stats.num_objects, delta_stats.num_object_clones,
+	delta_stats.num_bytes,
+	info.stats.stats.sum.num_objects + delta_stats.num_objects,
+	info.stats.stats.sum.num_object_clones + delta_stats.num_object_clones,
+	info.stats.stats.sum.num_bytes + delta_stats.num_bytes)
+	     << dendl;
   info.stats.stats.add(delta_stats);
   info.stats.stats.floor(0);
 

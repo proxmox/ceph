@@ -118,8 +118,16 @@ static inline std::string get_s3_expiration_header(
   req_state* s,
   const ceph::real_time& mtime)
 {
+  /* Build the client-supplied request key rather than reusing the
+   * OLH-resolved key from s->object. OLH resolution fills in the current
+   * version's instance id even when the client did not request a specific
+   * version, which would otherwise make every versioned-bucket response look
+   * like a versionId request. s3_expiration_header() keys its current-version
+   * decision off an empty instance, so pass the object name with the requested
+   * versionId (empty for a plain request). */
   return rgw::lc::s3_expiration_header(
-    s, s->object->get_key(), s->tagset, mtime, s->bucket_attrs);
+    s, rgw_obj_key(s->object->get_key().name, s->info.args.get("versionId")),
+    s->tagset, mtime, s->bucket_attrs);
 }
 
 static inline bool get_s3_multipart_abort_header(
@@ -782,7 +790,12 @@ int RGWGetObj_ObjStore_S3::get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter> 
   }
 
   static constexpr bool copy_source = false;
-  return ::get_decrypt_filter(filter, cb, s, attrs, manifest_bl, &crypt_http_responses, copy_source);
+  // Only use part_num for actual multipart objects (parts_count is set)
+  uint32_t part_num = (multipart_part_num && multipart_parts_count)
+                        ? static_cast<uint32_t>(*multipart_part_num)
+                        : 0;
+  return ::get_decrypt_filter(filter, cb, s, attrs, manifest_bl, &crypt_http_responses, copy_source,
+                              part_num, encrypted_obj_size);
 }
 
 int RGWGetObj_ObjStore_S3::verify_requester(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y) 
@@ -1627,7 +1640,7 @@ void RGWListBuckets_ObjStore_S3::send_response_begin(bool has_buckets)
   dump_start(s);
   // Explicitly use chunked transfer encoding so that we can stream the result
   // to the user without having to wait for the full length of it.
-  end_header(s, NULL, to_mime_type(s->format), CHUNKED_TRANSFER_ENCODING);
+  end_header(s, this, to_mime_type(s->format), CHUNKED_TRANSFER_ENCODING);
 
   if (! op_ret) {
     list_all_buckets_start(s);
@@ -2709,7 +2722,7 @@ void RGWCreateBucket_ObjStore_S3::send_response()
   if (op_ret)
     set_req_state_err(s, op_ret);
   dump_errno(s);
-  end_header(s);
+  end_header(s, this);
 
   if (op_ret < 0)
     return;
@@ -2839,6 +2852,10 @@ int RGWPutObj_ObjStore_S3::get_params(optional_yield y)
     multipart_part_num = strict_strtol(multipart_part_str.c_str(), 10, &err);
     if (!err.empty()) {
       ldpp_dout(s, 10) << "bad part number: " << multipart_part_str << ": " << err << dendl;
+      return -EINVAL;
+    }
+    if (multipart_part_num < 1 || multipart_part_num > 10000) {
+      ldpp_dout(s, 10) << "part number out of range: " << multipart_part_num << dendl;
       return -EINVAL;
     }
   } else if (!multipart_upload_id.empty()) {
@@ -2973,7 +2990,10 @@ int RGWPutObj_ObjStore_S3::get_decrypt_filter(
     bufferlist* manifest_bl)
 {
   static constexpr bool copy_source = true;
-  return ::get_decrypt_filter(filter, cb, s, attrs, manifest_bl, nullptr, copy_source);
+  rgw_crypt_src_identity src_identity{copy_source_bucket_info.bucket.marker, copy_source_bucket_name, copy_source_object_name};
+  // part_num=0 for copy source (full object read)
+  return ::get_decrypt_filter(filter, cb, s, attrs, manifest_bl, nullptr, copy_source,
+                              0, 0, &src_identity);
 }
 
 int RGWPutObj_ObjStore_S3::get_encrypt_filter(
@@ -2993,18 +3013,40 @@ int RGWPutObj_ObjStore_S3::get_encrypt_filter(
       /* We are adding to existing object.
        * We use crypto mode that configured as if we were decrypting. */
       static constexpr bool copy_source = false;
+      // Pass part_number for AEAD IV derivation - ensures unique IVs across parts
       res = rgw_s3_prepare_decrypt(s, s->yield, obj->get_attrs(),
-                                   &block_crypt, &crypt_http_responses, copy_source);
-      if (res == 0 && block_crypt != nullptr)
+                                   &block_crypt, &crypt_http_responses, copy_source,
+                                   multipart_part_num);
+      if (res == 0 && block_crypt != nullptr) {
+        /*
+         * AEAD UploadPart: fold fresh per-UploadPart entropy into the part key so
+         * re-uploading the same part can't reuse (key, IV). Refuse the upload if
+         * the backend can't persist per-part salts rather than silently falling
+         * back to a deterministic part key.
+         */
+        if (is_aead_mode(get_str_attribute(obj->get_attrs(), RGW_ATTR_CRYPT_MODE))) {
+          if (!upload->supports_crypt_part_salts()) {
+            ldpp_dout(this, 0) << "ERROR: AEAD multipart upload requires a supported backend" << dendl;
+            return -ERR_NOT_IMPLEMENTED;
+          }
+          std::string part_salt(AES_256_GCM_PART_SALT_SIZE, '\0');
+          s->cct->random()->get_bytes(part_salt.data(), part_salt.size());
+          block_crypt->set_part_number(multipart_part_num, part_salt);
+          // string_view selects the raw-bytes set_attr overload, not the local
+          // length-prefixing one; the writer reads it back via to_str().
+          set_attr(this->attrs, RGW_ATTR_CRYPT_PART_SALT, std::string_view(part_salt));
+        }
         filter->reset(new RGWPutObj_BlockEncrypt(s, s->cct, cb, std::move(block_crypt), s->yield));
+      }
     }
     /* it is ok, to not have encryption at all */
   }
   else
   {
     std::unique_ptr<BlockCrypt> block_crypt;
+    // Pass part_number for AEAD IV derivation - ensures unique IVs across parts
     res = rgw_s3_prepare_encrypt(s, s->yield, attrs, &block_crypt,
-                                 crypt_http_responses);
+                                 crypt_http_responses, multipart_part_num);
     if (res == 0 && block_crypt != nullptr) {
       filter->reset(new RGWPutObj_BlockEncrypt(s, s->cct, cb, std::move(block_crypt), s->yield));
     }
@@ -4331,7 +4373,7 @@ void RGWPutBucketEncryption_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   }
   dump_errno(s);
-  end_header(s);
+  end_header(s, this);
 }
 
 void RGWGetBucketEncryption_ObjStore_S3::send_response()
@@ -4362,7 +4404,7 @@ void RGWDeleteBucketEncryption_ObjStore_S3::send_response()
 
   set_req_state_err(s, op_ret);
   dump_errno(s);
-  end_header(s);
+  end_header(s,this);
 }
 
 void RGWGetRequestPayment_ObjStore_S3::send_response()
@@ -4574,31 +4616,22 @@ int RGWCompleteMultipart_ObjStore_S3::get_params(optional_yield y)
 
   map_qs_metadata(s, true);
 
-  // get encrypt headers to reflect from multipart upload
-  // mostly to verify sse-c here
-  std::unique_ptr<rgw::sal::MultipartUpload> upload =
-    s->bucket->get_multipart_upload(s->object->get_name(),
-        upload_id);
-  std::unique_ptr<rgw::sal::Object> obj = upload->get_meta_obj();
-  obj->set_in_extra_data(true);
-  int res = obj->get_obj_attrs(s->yield, this);
-  if (res < 0 && res != -ENOENT) {
-    ldpp_dout(this, 0) << "ERROR: " << __func__ << " failed to get object attrs for "
-                      << s->object->get_name() << ": " << cpp_strerror(res) << dendl;
-    return res;
-  }
-
-  // if we found attrs, populate crypt_http_responses
-  if (res == 0) {
-    static constexpr bool copy_source = false;
-    res = rgw_s3_prepare_decrypt(s, s->yield, obj->get_attrs(),
-                                nullptr, &crypt_http_responses, copy_source);
-    if (res < 0) {
-      return res;
-    }
-  }
-
   return do_aws4_auth_completion();
+}
+
+int RGWCompleteMultipart_ObjStore_S3::verify_encryption(map<string, bufferlist>& attrs,
+                                                        rgw::cksum::Type cksum_type)
+{
+  // s3 only needs the sse-c key here for checksummed uploads; verify it whenever it's sent
+  const std::string stored_mode = get_str_attribute(attrs, RGW_ATTR_CRYPT_MODE);
+  if (stored_mode.starts_with("SSE-C") &&
+      cksum_type == rgw::cksum::Type::none &&
+      !s->info.env->exists_prefix("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION_CUSTOMER_")) {
+    return 0;
+  }
+  static constexpr bool copy_source = false;
+  return rgw_s3_prepare_decrypt(s, s->yield, attrs, nullptr,
+                                &crypt_http_responses, copy_source);
 }
 
 void RGWCompleteMultipart_ObjStore_S3::send_response()
@@ -5009,7 +5042,7 @@ void RGWPutBucketObjectLock_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   }
   dump_errno(s);
-  end_header(s);
+  end_header(s, this);
 }
 
 void RGWGetBucketObjectLock_ObjStore_S3::send_response()
@@ -5141,6 +5174,11 @@ RGWOp *RGWHandler_REST_Service_S3::op_get()
   } else {
     return new RGWListBuckets_ObjStore_S3;
   }
+}
+
+RGWOp *RGWHandler_REST_Service_S3::op_options()
+{
+  return new RGWOptionsCORS_ObjStore_S3;
 }
 
 RGWOp *RGWHandler_REST_Service_S3::op_head()

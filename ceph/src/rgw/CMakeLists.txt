@@ -84,6 +84,7 @@ set(librgw_common_srcs
   rgw_formats.cc
   rgw_http_client.cc
   rgw_keystone.cc
+  rgw_keystone_scope.cc
   rgw_ldap.cc
   rgw_lc.cc
   rgw_lc_s3.cc
@@ -567,6 +568,12 @@ set(radosgw_polparser_srcs
 add_executable(rgw-policy-check ${radosgw_polparser_srcs})
 target_link_libraries(rgw-policy-check ${rgw_libs})
 install(TARGETS rgw-policy-check DESTINATION bin)
+
+set(radosgw_poltester_srcs
+  rgw_poltester.cc)
+add_executable(rgw-policy-test ${radosgw_poltester_srcs})
+target_link_libraries(rgw-policy-test ${rgw_libs})
+install(TARGETS rgw-policy-test DESTINATION bin)
 
 set(librgw_srcs
   librgw.cc)

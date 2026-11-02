@@ -236,7 +236,7 @@ BuildRequires:	selinux-policy-devel
 %endif
 BuildRequires:	gperf
 BuildRequires:  cmake > 3.5
-BuildRequires:	fuse-devel
+BuildRequires:	pkgconfig(fuse3)
 BuildRequires:	git
 BuildRequires:	grpc-devel
 # Before 13.3, an lto bug resulted in a segfault in SafeTimer and perhaps
@@ -793,7 +793,7 @@ Summary:	Ceph fuse-based client
 %if 0%{?suse_version}
 Group:		System/Filesystems
 %endif
-Requires:       fuse
+Requires:       fuse3
 Requires:	python%{python3_pkgversion}
 %description fuse
 FUSE based client for Ceph distributed network file system
@@ -2244,8 +2244,10 @@ fi
 %{_bindir}/radosgw-es
 %{_bindir}/radosgw-object-expirer
 %{_bindir}/rgw-policy-check
+%{_bindir}/rgw-policy-test
 %{_mandir}/man8/radosgw.8*
 %{_mandir}/man8/rgw-policy-check.8*
+%{_mandir}/man8/rgw-policy-test.8*
 %dir %{_localstatedir}/lib/ceph/radosgw
 %{_unitdir}/ceph-radosgw@.service
 %{_unitdir}/ceph-radosgw.target

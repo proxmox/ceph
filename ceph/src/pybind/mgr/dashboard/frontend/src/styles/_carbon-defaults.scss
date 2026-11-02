@@ -1,7 +1,7 @@
 @use '@carbon/styles/scss/config' with (
-  $font-path: '~@ibm/plex',
+  $font-path: '@ibm/plex',
   $flex-grid-columns: 16,
-  $use-flexbox-grid: true,
+  $use-flexbox-grid: true
 );
 @use '@carbon/layout';
 @use '@carbon/colors';
@@ -11,8 +11,8 @@
 @use '@carbon/styles/scss/themes';
 @use '@carbon/styles/scss/theme' with (
   $theme: default.$theme,
-  $fallback: compat.$g90,
-  );
+  $fallback: compat.$g90
+);
 
 /******************************************
   Component token overrides should go here
@@ -29,7 +29,6 @@
   $button-tertiary-hover: darken(vv.$primary, 5%),
   $button-tertiary-active: darken(vv.$primary, 10%)
 );
-
 @use '@carbon/styles';
 @use '@carbon/type';
 
@@ -146,6 +145,7 @@ Forms
 .form-header,
 .panel-header {
   @include type.type-style('heading-04');
+
   margin-bottom: 40px;
 }
 
@@ -153,6 +153,7 @@ Forms
   @extend .pb-1;
   @extend .mt-4;
   @extend .mb-4;
+
   @include type.type-style('heading-03');
 }
 

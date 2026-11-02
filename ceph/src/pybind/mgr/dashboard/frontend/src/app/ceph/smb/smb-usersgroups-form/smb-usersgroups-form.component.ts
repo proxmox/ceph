@@ -25,12 +25,14 @@ import { USERSGROUPS_PATH } from '../smb-usersgroups-list/smb-usersgroups-list.c
 @Component({
   selector: 'cd-smb-usersgroups-form',
   templateUrl: './smb-usersgroups-form.component.html',
-  styleUrls: ['./smb-usersgroups-form.component.scss']
+  styleUrls: ['./smb-usersgroups-form.component.scss'],
+  standalone: false
 })
 export class SmbUsersgroupsFormComponent extends CdForm implements OnInit, OnDestroy {
   form: CdFormGroup;
   action: string;
   resource: string;
+  submitText: string;
   editing: boolean;
   icons = Icons;
   hideUploader: boolean = false;
@@ -64,10 +66,12 @@ export class SmbUsersgroupsFormComponent extends CdForm implements OnInit, OnDes
 
   ngOnInit() {
     this.action = this.actionLabels.CREATE;
+    this.submitText = $localize`Create standalone`;
     this.smbClusters$ = this.smbService.listClusters();
     this.createForm();
     if (this.editing) {
       this.action = this.actionLabels.UPDATE;
+      this.submitText = $localize`Update standalone`;
       this.form.get('usersGroupsId').disable();
       let editingUsersGroupId: string;
       this.route.params.subscribe((params: { usersGroupsId: string }) => {

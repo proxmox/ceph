@@ -22,6 +22,13 @@
 #include "spdk/util.h"
 
 #include "spdk/log.h"
+#include "ctrlr_cnc.h"
+
+
+int nvmf_bdev_ctrlr_cnc_cmd(struct spdk_bdev *bdev,
+			    struct spdk_bdev_desc *desc,
+			    struct spdk_io_channel *ch,
+			    struct spdk_nvmf_request *req);
 
 static bool
 nvmf_subsystem_bdev_io_type_supported(struct spdk_nvmf_subsystem *subsystem,
@@ -228,10 +235,11 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 	SPDK_STATIC_ASSERT(sizeof(nsdata->eui64) == sizeof(ns->opts.eui64), "size mismatch");
 	memcpy(&nsdata->eui64, ns->opts.eui64, sizeof(nsdata->eui64));
 
-	/* For now we support just one source range for copy command */
-	nsdata->msrc = 0;
 
-	max_copy = spdk_bdev_get_max_copy(bdev);
+	nsdata->msrc = CNC_MAX_RANGES;
+
+	/* max_copy = spdk_bdev_get_max_copy(bdev); */
+	max_copy = UINT16_MAX / 2;
 	if (max_copy == 0 || max_copy > UINT16_MAX) {
 		/* Zero means copy size is unlimited */
 		nsdata->mcl = UINT16_MAX;
@@ -240,6 +248,7 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 		nsdata->mcl = max_copy;
 		nsdata->mssrl = max_copy;
 	}
+	SPDK_INFOLOG(nvmf_cnc,"max copy length in Identify namespace = %d\n", nsdata->mcl);
 }
 
 void
@@ -870,6 +879,120 @@ nvmf_bdev_ctrlr_dsm_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 }
 
 int
+nvmf_bdev_ctrlr_cnc_cmd(struct spdk_bdev *bdev,
+			struct spdk_bdev_desc *desc,
+			struct spdk_io_channel *ch,
+			struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
+	bool specific_response = false;
+	uint32_t dst_nsid = cmd->nsid;
+	uint8_t df = cmd->cdw12_bits.copy.df;
+	/* 0-based field */
+	uint32_t num_descriptors = (uint32_t)cmd->cdw12_bits.copy.nr + 1;
+
+
+	/* STEP 1: INITIAL NVMe SPEC PROTOCOL CHECKS */
+	if (df != 2) {
+		SPDK_ERRLOG("XCOPY Aborted: format %d unsupported. Requires Format 2 for CNC.\n", df);
+		goto reject_invalid_field;
+	}
+
+	if (num_descriptors > CNC_MAX_RANGES || dst_nsid == 0) {
+		SPDK_ERRLOG("XCOPY Aborted: number descriptors %d , destination namespace %d\n", num_descriptors, dst_nsid);
+		goto reject_invalid_field;
+	}
+
+	if (req->iovcnt == 0 || req->iov[0].iov_base == NULL) {
+		SPDK_ERRLOG("XCOPY Aborted: Empty data transmission capsule.\n");
+		goto reject_invalid_field;
+	}
+
+	/* STEP 2: LIFECYCLE MANAGEMENT CONTEXT ALLOCATION */
+	struct cnc_context *ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		SPDK_ERRLOG("New handler context not allocated\n");
+		rsp->status.sc  = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		rsp->status.sct = SPDK_NVME_SCT_GENERIC;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+	ctx->req = req;
+	ctx->dst_bdev = bdev;
+	ctx->dst_bdev_desc = desc;
+	ctx->dst_ch = ch;
+	ctx->num_ranges = num_descriptors;
+	cnc_context_init(ctx);
+
+	if (!ctx->config.host_behav_support_cnc) {
+		SPDK_ERRLOG("XCOPY Aborted: CNC is disabled administratively, ctx %p, descriptor number %d\n",ctx, df);
+		rsp->status.sc  = SPDK_NVME_SC_INVALID_FIELD;
+		goto error_cleanup;
+	}
+	/* STEP 3: EXECUTE (PARSE & VERIFY) */
+	uint64_t base_dst_lba = ((uint64_t)cmd->cdw11 << 32) + cmd->cdw10;
+	ctx->sdlba =  base_dst_lba;
+	uint64_t total_dst_blocks = spdk_bdev_get_num_blocks(bdev);
+
+	uint32_t max_src_block_size = 512;
+	struct nvme_copy_range_f2 *desc_array = (struct nvme_copy_range_f2 *)req->iov[0].iov_base;
+	/* Parse and bind namespace devices */
+	if (cnc_parse_and_resolve_ranges(ctx, desc_array, num_descriptors,
+					 base_dst_lba, &max_src_block_size) != 0) {
+		rsp->status.sc  = SPDK_NVME_SC_INVALID_FIELD;
+		goto error_cleanup;
+	}
+	if (cnc_validate_block_sizes(ctx) != 0) {
+		rsp->status.sc  = SPDK_NVME_SC_INVALID_FIELD;
+		goto error_cleanup;
+	}
+
+	if (cnc_has_overlapping_ranges(ctx)) {
+		specific_response =  true;
+		rsp->status.sc  = SPDK_NVME_SC_OVERLAPPING_RANGE;
+		goto error_cleanup;
+	}
+	uint32_t total_blocks_2_copy = cnc_get_total_num_blocks(ctx);
+	if (total_blocks_2_copy > total_dst_blocks - base_dst_lba) {
+		SPDK_ERRLOG("XCOPY Aborted: total blocks to copy %d of dst ns %d > total dest blocks %ld - base lba %ld\n",
+			    total_blocks_2_copy, dst_nsid, total_dst_blocks, base_dst_lba);
+		rsp->status.sc = SPDK_NVME_SC_LBA_OUT_OF_RANGE;
+		goto error_cleanup;
+	}
+	if (base_dst_lba > total_dst_blocks) {
+		SPDK_ERRLOG("XCOPY Aborted: total blocks of dst ns %d bdev %ld < destination lba %ld\n",
+			    dst_nsid, total_dst_blocks, base_dst_lba);
+		rsp->status.sc = SPDK_NVME_SC_LBA_OUT_OF_RANGE;
+		goto error_cleanup;
+	}
+
+	/* STEP 4: INITIALIZE MEMORY & LAUNCH CONCURRENT POLLER */
+	if (memory_init(ctx, max_src_block_size) != 0) {
+		SPDK_ERRLOG("XCOPY Aborted: Failed to build safe lockless DMA memory buffers pool\n");
+		rsp->status.sc  = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		rsp->status.sct = SPDK_NVME_SCT_GENERIC;
+		cnc_context_free(ctx);
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+	/* Everything checks out cleanly. Hand over async operations to the poller thread. */
+	SPDK_NOTICELOG("cnc: poller register dest. nsid %d ctx %p\n", dst_nsid, ctx);
+	ctx->poller = SPDK_POLLER_REGISTER(xcopy_poller, ctx, 0);
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+
+error_cleanup:
+	cnc_context_free(ctx);
+
+reject_invalid_field:
+
+	rsp->status.sct = SPDK_NVME_SCT_GENERIC;
+	if (specific_response) {
+		rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+	}
+	SPDK_ERRLOG("Command rejected with status 0x%x : 0x%x\n", rsp->status.sct, rsp->status.sc);
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+}
+
+int
 nvmf_bdev_ctrlr_copy_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 			 struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
 {
@@ -880,33 +1003,29 @@ nvmf_bdev_ctrlr_copy_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 	struct spdk_iov_xfer ix;
 	int rc;
 
-	SPDK_DEBUGLOG(nvmf, "Copy command: SDLBA %lu, NR %u, desc format %u, PRINFOR %u, "
-		      "DTYPE %u, STCW %u, PRINFOW %u, FUA %u, LR %u\n",
-		      sdlba,
-		      cmd->cdw12_bits.copy.nr,
-		      cmd->cdw12_bits.copy.df,
-		      cmd->cdw12_bits.copy.prinfor,
-		      cmd->cdw12_bits.copy.dtype,
-		      cmd->cdw12_bits.copy.stcw,
-		      cmd->cdw12_bits.copy.prinfow,
-		      cmd->cdw12_bits.copy.fua,
-		      cmd->cdw12_bits.copy.lr);
+	SPDK_INFOLOG(nvmf_cnc, "Copy command: SDLBA %lu, NR %u, desc format %u, PRINFOR %u, "
+		     "DTYPE %u, STCW %u, PRINFOW %u, FUA %u, LR %u\n",
+		     sdlba,
+		     cmd->cdw12_bits.copy.nr,
+		     cmd->cdw12_bits.copy.df,
+		     cmd->cdw12_bits.copy.prinfor,
+		     cmd->cdw12_bits.copy.dtype,
+		     cmd->cdw12_bits.copy.stcw,
+		     cmd->cdw12_bits.copy.prinfow,
+		     cmd->cdw12_bits.copy.fua,
+		     cmd->cdw12_bits.copy.lr);
+	uint32_t num_descriptors = cmd->cdw12_bits.copy.nr + 1;
+	uint32_t expected_size = num_descriptors * sizeof(struct spdk_nvme_scc_source_range);
 
-	if (spdk_unlikely(req->length != (cmd->cdw12_bits.copy.nr + 1) *
-			  sizeof(struct spdk_nvme_scc_source_range))) {
+	if (spdk_unlikely(req->length < expected_size)) {
+		SPDK_ERRLOG("XCOPY: length  %u is less than expected size %d\n", req->length,  expected_size);
 		response->status.sct = SPDK_NVME_SCT_GENERIC;
 		response->status.sc = SPDK_NVME_SC_DATA_SGL_LENGTH_INVALID;
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
-	/*
-	 * We support only one source range, and rely on this with the xfer
-	 * below.
-	 */
-	if (cmd->cdw12_bits.copy.nr > 0) {
-		response->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
-		response->status.sc = SPDK_NVME_SC_CMD_SIZE_LIMIT_SIZE_EXCEEDED;
-		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	if (cmd->cdw12_bits.copy.df == 2) {
+		return nvmf_bdev_ctrlr_cnc_cmd(bdev, desc, ch, req);
 	}
 
 	if (cmd->cdw12_bits.copy.df != 0) {

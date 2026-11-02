@@ -424,6 +424,9 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
   caps_release_delay = cct->_conf.get_val<std::chrono::seconds>(
     "client_caps_release_delay");
 
+  injected_write_delay_secs = std::chrono::duration<int>(
+    cct->_conf.get_val<std::chrono::seconds>("client_inject_write_delay_secs")).count();
+
   if (cct->_conf->client_acl_type == "posix_acl")
     acl_type = POSIX_ACL;
 
@@ -2286,6 +2289,7 @@ void Client::unregister_request(MetaRequest *req)
 
 void Client::put_request(MetaRequest *request)
 {
+  ceph_assert(request->ref >= 1);
   if (request->_put()) {
     int op = -1;
     if (request->success)
@@ -11988,6 +11992,13 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, bufferlist bl,
 
     get_cap_ref(in, CEPH_CAP_FILE_BUFFER);
 
+    auto delay = get_injected_write_delay_secs();
+    if (unlikely(delay > 0)) {
+      ldout(cct, 20) << __func__ << ": delaying write for " << delay << " seconds" << dendl;
+      client_lock.unlock();
+      sleep(delay);
+      client_lock.lock();
+    }
     filer->write_trunc(in->ino, &in->layout, in->snaprealm->get_snap_context(),
 		       offset, size, bl, ceph::real_clock::now(), 0,
 		       in->truncate_size, in->truncate_seq,
@@ -12170,6 +12181,8 @@ void Client::C_nonblocking_fsync_state::advance()
       ldout(clnt->cct, 10) << "no metadata needs to commit" << dendl;
     }
 
+    ldout(clnt->cct, 10) << __func__ <<": in->unsafe_ops=" << in->unsafe_ops.size() << dendl;
+
     if (!syncdataonly && !in->unsafe_ops.empty()) {
       waitfor_safe = true;
       clnt->flush_mdlog_sync(in);
@@ -12324,12 +12337,16 @@ void Client::C_nonblocking_fsync_state_advancer::finish(int r)
   state->advance();
 }
 
-void Client::nonblocking_fsync(Inode *in, bool syncdataonly, Context *onfinish)
+int64_t Client::nonblocking_fsync(Inode *in, bool syncdataonly, Context *onfinish)
 {
   C_nonblocking_fsync_state *state = new C_nonblocking_fsync_state(this, in, syncdataonly, onfinish);
 
+  ldout(cct, 10) << __func__ << dendl;
+
+  std::unique_lock cl(client_lock);
   // Kick fsync off...
   state->advance();
+  return 0;
 }
 
 int Client::_fsync(Inode *in, bool syncdataonly)
@@ -12603,9 +12620,10 @@ int Client::_statfs(Inode *in, struct statvfs *stbuf,
   // Usually quota_root will == root_ancestor, but if the mount root has no
   // quota but we can see a parent of it that does have a quota, we'll
   // respect that one instead.
-  InodeRef quota_root = in->quota.is_enabled() ? in : get_quota_root(in, perms);
+  InodeRef qr_bytes = in->quota.is_enabled(QUOTA_MAX_BYTES) ? in : get_quota_root(in, perms, QUOTA_MAX_BYTES);
+  InodeRef qr_files = in->quota.is_enabled(QUOTA_MAX_FILES) ? in : get_quota_root(in, perms, QUOTA_MAX_FILES);
 
-  total_files_on_fs = quota_root->rstat.rfiles + quota_root->rstat.rsubdirs;
+  total_files_on_fs = qr_files->rstat.rfiles + qr_files->rstat.rsubdirs;
 
   if (rval < 0) {
     ldout(cct, 1) << "underlying call to statfs returned error: "
@@ -12635,23 +12653,23 @@ int Client::_statfs(Inode *in, struct statvfs *stbuf,
 
   // get_quota_root should always give us something if client quotas are
   // enabled
-  ceph_assert(cct->_conf.get_val<bool>("client_quota") == false || quota_root != nullptr);
+  ceph_assert(cct->_conf.get_val<bool>("client_quota") == false || qr_bytes != nullptr);
 
   /* If bytes quota is set on a directory and conf option "client quota df"
    * is also set, available space = quota limit - used space. Else,
    * available space = total space - used space. */
-  if (quota_root && cct->_conf->client_quota_df && quota_root->quota.max_bytes) {
+  if (qr_bytes && cct->_conf->client_quota_df && qr_bytes->quota.max_bytes) {
 
     // Skip the getattr if any sessions are stale, as we don't want to
     // block `df` if this client has e.g. been evicted, or if the MDS cluster
     // is unhealthy.
     if (!_any_stale_sessions()) {
-      int r = _getattr(quota_root, 0, perms, true);
+      int r = _getattr(qr_bytes, 0, perms, true);
       if (r != 0) {
         // Ignore return value: error getting latest inode metadata is not a good
         // reason to break "df".
         lderr(cct) << "Error in getattr on quota root 0x"
-                   << std::hex << quota_root->ino << std::dec
+                   << std::hex << qr_bytes->ino << std::dec
                    << " statfs result may be outdated" << dendl;
       }
     }
@@ -12659,8 +12677,8 @@ int Client::_statfs(Inode *in, struct statvfs *stbuf,
     // Special case: if there is a size quota set on the Inode acting
     // as the root for this client mount, then report the quota status
     // as the filesystem statistics.
-    const fsblkcnt_t total = quota_root->quota.max_bytes >> CEPH_BLOCK_SHIFT;
-    const fsblkcnt_t used = quota_root->rstat.rbytes >> CEPH_BLOCK_SHIFT;
+    const fsblkcnt_t total = qr_bytes->quota.max_bytes >> CEPH_BLOCK_SHIFT;
+    const fsblkcnt_t used = qr_bytes->rstat.rbytes >> CEPH_BLOCK_SHIFT;
     // It is possible for a quota to be exceeded: arithmetic here must
     // handle case where used > total.
     const fsblkcnt_t free = total > used ? total - used : 0;
@@ -17588,6 +17606,7 @@ std::vector<std::string> Client::get_tracked_keys() const noexcept
     "client_caps_release_delay",
     "client_deleg_break_on_open",
     "client_deleg_timeout",
+    "client_inject_write_delay_secs",
     "client_mount_timeout",
     "client_oc_max_dirty",
     "client_oc_max_dirty_age",
@@ -17648,6 +17667,10 @@ void Client::handle_conf_change(const ConfigProxy& conf,
   if (changed.count("client_mount_timeout")) {
     mount_timeout = cct->_conf.get_val<std::chrono::seconds>(
       "client_mount_timeout");
+  }
+  if (changed.count("client_inject_write_delay_secs")) {
+    injected_write_delay_secs = std::chrono::duration<int>(
+      cct->_conf.get_val<std::chrono::seconds>("client_inject_write_delay_secs")).count();
   }
 }
 
@@ -17719,6 +17742,22 @@ int StandaloneClient::init()
     monclient->shutdown();
     return r;
   }
+
+  r = authenticate();
+  if (r < 0) {
+    // need to do cleanup because we're in an intermediate init state
+    {
+      std::scoped_lock l(timer_lock);
+      timer.shutdown();
+    }
+
+    client_lock.unlock();
+    objecter->shutdown();
+    objectcacher->stop();
+    monclient->shutdown();
+    return r;
+  }
+
   objecter->start();
 
   client_lock.unlock();

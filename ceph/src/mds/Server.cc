@@ -490,6 +490,7 @@ void Server::reclaim_session(Session *session, const cref_t<MClientReclaim> &m)
 	       << " != target auth_name " << target->info.auth_name << dendl;
       reply->set_result(-EPERM);
       mds->send_message_client(reply, session);
+      return;
     }
 
     ceph_assert(!target->reclaiming_from);
@@ -805,7 +806,8 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
         ceph_assert(r == 0);
         log_session_status("ACCEPTED", "");
       });
-      mdlog->submit_entry(new ESession(m->get_source_inst(), true, pv, client_metadata),
+      mdlog->submit_entry(new ESession(m->get_source_inst(), true, pv,
+      client_metadata, session->info.auth_name),
 				new C_MDS_session_finish(this, session, sseq, true, pv, fin));
       mdlog->flush();
     }
@@ -1525,7 +1527,8 @@ void Server::journal_close_session(Session *session, int state, Context *on_safe
   } else
     piv = 0;
   
-  auto le = new ESession(session->info.inst, false, pv, inos_to_free, piv, session->delegated_inos);
+  auto le = new ESession(session->info.inst, false, pv, inos_to_free, piv,
+    session->delegated_inos, session->info.auth_name);
   auto fin = new C_MDS_session_finish(this, session, sseq, false, pv, inos_to_free, piv,
 				      session->delegated_inos, mdlog->get_current_segment(), on_safe);
   mdlog->submit_entry(le, fin);
@@ -7564,6 +7567,7 @@ void Server::handle_client_symlink(const MDRequestRef& mdr)
   if (req->get_alternate_name().size() > alternate_name_max) {
     dout(10) << " alternate_name longer than " << alternate_name_max << dendl;
     respond_to_request(mdr, -ENAMETOOLONG);
+    return;
   }
   dn->set_alternate_name(req->get_alternate_name());
 
@@ -11969,6 +11973,7 @@ void Server::handle_client_readdir_snapdiff(const MDRequestRef& mdr)
       mdr->snapid_diff_other == CEPH_NOSNAP) {
     dout(10) << "reply to " << *req << " snapdiff -EINVAL" << dendl;
     respond_to_request(mdr, -EINVAL);
+    return;
   }
 
   unsigned max = req->head.args.snapdiff.max_entries;

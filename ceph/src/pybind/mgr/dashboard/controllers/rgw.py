@@ -185,60 +185,76 @@ class RgwMultisiteController(RESTController):
     @Endpoint(path='/sync-policy')
     @EndpointDoc("Get the sync policy")
     @ReadPermission
-    def get_sync_policy(self, bucket_name='', zonegroup_name='', all_policy=None):
+    def get_sync_policy(self, bucket_name='', zonegroup_name='', all_policy=None, daemon_name=''):
         multisite_instance = RgwMultisite()
         all_policy = str_to_bool(all_policy)
         if all_policy:
             sync_policy_list = []
-            buckets = json.loads(RgwBucket().list(stats=False))
-            zonegroups_info = RgwMultisite().get_all_zonegroups_info()
-            default_zonegroup = ''
-            if 'zonegroups' in zonegroups_info and 'default_zonegroup' in zonegroups_info:
-                default_zonegroup = next(
-                    (zonegroup['name'] for zonegroup in zonegroups_info['zonegroups']
-                        if 'id' in zonegroup and 'name' in zonegroup
-                        and zonegroup['id'] == zonegroups_info['default_zonegroup']),
-                    ''
-                )
+            # Filter buckets by daemon_name to only get buckets from that daemon's zone/zonegroup
+            buckets = json.loads(RgwBucket().list(
+                stats=False, daemon_name=daemon_name if daemon_name else None))
+            # Get zonegroup from daemon if daemon_name is provided, otherwise use default
+            target_zonegroup = ''
+            if daemon_name:
+                target_zonegroup = (
+                    multisite_instance.get_zonegroup_from_daemon(daemon_name) or '')
+            if not target_zonegroup:
+                zonegroups_info = RgwMultisite().get_all_zonegroups_info()
+                if 'zonegroups' in zonegroups_info and 'default_zonegroup' in zonegroups_info:
+                    target_zonegroup = next(
+                        (zonegroup['name'] for zonegroup in zonegroups_info['zonegroups']
+                            if 'id' in zonegroup and 'name' in zonegroup
+                            and zonegroup['id'] == zonegroups_info['default_zonegroup']),
+                        ''
+                    )
             for bucket in buckets:
-                sync_policy = multisite_instance.get_sync_policy(bucket, zonegroup_name)
-                for policy in sync_policy['groups']:
-                    policy['bucketName'] = bucket
-                    sync_policy_list.append(policy)
-            other_sync_policy = multisite_instance.get_sync_policy(bucket_name, zonegroup_name)
+                try:
+                    sync_policy = multisite_instance.get_sync_policy(
+                        bucket, zonegroup_name, daemon_name)
+                    for policy in sync_policy['groups']:
+                        policy['bucketName'] = bucket
+                        sync_policy_list.append(policy)
+                except DashboardException:
+                    # Skip buckets that don't have sync policies or aren't accessible
+                    logger.debug("Skipping bucket %s - no sync policy or not accessible", bucket)
+                    continue
+            other_sync_policy = multisite_instance.get_sync_policy(
+                bucket_name, zonegroup_name, daemon_name)
             for policy in other_sync_policy['groups']:
-                policy['zonegroup'] = default_zonegroup
+                policy['zonegroup'] = target_zonegroup
                 sync_policy_list.append(policy)
             return sync_policy_list
-        return multisite_instance.get_sync_policy(bucket_name, zonegroup_name)
+        return multisite_instance.get_sync_policy(bucket_name, zonegroup_name, daemon_name)
 
     @Endpoint(path='/sync-policy-group')
     @EndpointDoc("Get the sync policy group")
     @ReadPermission
-    def get_sync_policy_group(self, group_id: str, bucket_name=''):
+    def get_sync_policy_group(self, group_id: str, bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.get_sync_policy_group(group_id, bucket_name)
+        return multisite_instance.get_sync_policy_group(group_id, bucket_name, '', daemon_name)
 
     @Endpoint(method='POST', path='/sync-policy-group')
     @EndpointDoc("Create the sync policy group")
     @CreatePermission
-    def create_sync_policy_group(self, group_id: str, status: str, bucket_name=''):
+    def create_sync_policy_group(self, group_id: str, status: str, bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.create_sync_policy_group(group_id, status, bucket_name, True)
+        return multisite_instance.create_sync_policy_group(
+            group_id, status, bucket_name, True, daemon_name)
 
     @Endpoint(method='PUT', path='/sync-policy-group')
     @EndpointDoc("Update the sync policy group")
     @UpdatePermission
-    def update_sync_policy_group(self, group_id: str, status: str, bucket_name=''):
+    def update_sync_policy_group(self, group_id: str, status: str, bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.update_sync_policy_group(group_id, status, bucket_name, True)
+        return multisite_instance.update_sync_policy_group(
+            group_id, status, bucket_name, True, daemon_name)
 
     @Endpoint(method='DELETE', path='/sync-policy-group')
     @EndpointDoc("Remove the sync policy group")
     @DeletePermission
-    def remove_sync_policy_group(self, group_id: str, bucket_name=''):
+    def remove_sync_policy_group(self, group_id: str, bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.remove_sync_policy_group(group_id, bucket_name, True)
+        return multisite_instance.remove_sync_policy_group(group_id, bucket_name, True, daemon_name)
 
     @Endpoint(method='PUT', path='/sync-flow')
     @EndpointDoc("Create or update the sync flow")
@@ -247,20 +263,22 @@ class RgwMultisiteController(RESTController):
                          source_zone: Optional[str] = None,
                          destination_zone: Optional[str] = None,
                          zones: Optional[Dict[str, List]] = None,
-                         bucket_name=''):
+                         bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.create_sync_flow(group_id, flow_id, flow_type, zones,
-                                                   bucket_name, source_zone, destination_zone, True)
+        return multisite_instance.create_sync_flow(
+            group_id, flow_id, flow_type, zones, bucket_name, source_zone,
+            destination_zone, True, daemon_name)
 
     @Endpoint(method='DELETE', path='/sync-flow')
     @EndpointDoc("Remove the sync flow")
     @DeletePermission
     def remove_sync_flow(self, flow_id: str, flow_type: str, group_id: str,
                          source_zone='', destination_zone='', zones: Optional[List[str]] = None,
-                         bucket_name=''):
+                         bucket_name='', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.remove_sync_flow(group_id, flow_id, flow_type, source_zone,
-                                                   destination_zone, zones, bucket_name, True)
+        return multisite_instance.remove_sync_flow(
+            group_id, flow_id, flow_type, source_zone, destination_zone,
+            zones, bucket_name, True, daemon_name)
 
     @Endpoint(method='PUT', path='/sync-pipe')
     @EndpointDoc("Create or update the sync pipe")
@@ -270,12 +288,12 @@ class RgwMultisiteController(RESTController):
                          destination_zones: Dict[str, Any],
                          source_bucket: str = '',
                          destination_bucket: str = '', bucket_name: str = '',
-                         user: str = '', mode: str = ''):
+                         user: str = '', mode: str = '', daemon_name=''):
         multisite_instance = RgwMultisite()
         return multisite_instance.create_sync_pipe(group_id, pipe_id, source_zones,
                                                    destination_zones, source_bucket,
                                                    destination_bucket, bucket_name, True,
-                                                   user, mode)
+                                                   user, mode, daemon_name)
 
     @Endpoint(method='DELETE', path='/sync-pipe')
     @EndpointDoc("Remove the sync pipe")
@@ -283,10 +301,11 @@ class RgwMultisiteController(RESTController):
     def remove_sync_pipe(self, group_id: str, pipe_id: str,
                          source_zones: Optional[List[str]] = None,
                          destination_zones: Optional[List[str]] = None,
-                         bucket_name: str = ''):
+                         bucket_name: str = '', daemon_name=''):
         multisite_instance = RgwMultisite()
-        return multisite_instance.remove_sync_pipe(group_id, pipe_id, source_zones,
-                                                   destination_zones, bucket_name, True)
+        return multisite_instance.remove_sync_pipe(
+            group_id, pipe_id, source_zones, destination_zones,
+            bucket_name, True, daemon_name)
 
 
 @APIRouter('/rgw/daemon', Scope.RGW)
@@ -375,7 +394,11 @@ class RgwRESTController(RESTController):
                 result = json_str_to_object(result)
             return result
         except (DashboardException, RequestException) as e:
-            http_status_code = e.status if isinstance(e, DashboardException) else 500
+            response = getattr(e, 'response', None)
+            if isinstance(e, RequestException) and response is not None:
+                http_status_code = getattr(response, 'status_code', 500)
+            else:
+                http_status_code = getattr(e, 'status_code', getattr(e, 'status', None)) or 500
             raise DashboardException(e, http_status_code=http_status_code, component='rgw')
 
 
@@ -986,6 +1009,13 @@ class RgwUser(RgwRESTController):
                account_policies: Optional[str] = None):
         """Create a new RGW user."""
 
+        account_root_user_bool = str_to_bool(account_root_user) \
+            if account_root_user is not None else False
+
+        # Enforce account-level user limit before creating
+        if account_id and not account_root_user_bool:
+            self._check_account_user_limit(daemon_name, account_id)
+
         params = {'uid': uid, 'display-name': display_name}
 
         # Add optional parameters
@@ -1018,6 +1048,24 @@ class RgwUser(RgwRESTController):
             self._process_account_policies(uid, account_policies)
 
         return result
+
+    def _check_account_user_limit(self, daemon_name, account_id: str) -> None:
+        account = self.proxy(daemon_name, 'GET', 'account', {'id': account_id})
+        max_users = account.get('max_users', -1)
+
+        if max_users < 0:
+            # Negative values mean unlimited — no restriction.
+            return
+
+        current_count = RgwAccounts.get_account_user_count(account_id)
+
+        if current_count >= max_users:
+            raise DashboardException(
+                msg=f'User limit for this account has been reached '
+                    f'(max_users={max_users}, current={current_count})',
+                http_status_code=400,
+                component='rgw'
+            )
 
     def _process_account_policies(self, uid, account_policies):
         """Process account policies for a user."""
@@ -1080,8 +1128,15 @@ class RgwUser(RgwRESTController):
                 raise DashboardException(msg='Unable to delete "{}" - this user '
                                              'account is required for managing the '
                                              'Object Gateway'.format(uid))
-            # Finally redirect request to the RGW proxy.
-            return self.proxy(daemon_name, 'DELETE', 'user', {'uid': uid}, json_response=False)
+            daemon_name_to_use = daemon_name if daemon_name else instance.daemon.name
+            user_instance = RgwClient.get_cached_user_instance(daemon_name_to_use, uid)
+            result = self.proxy(daemon_name, 'DELETE', 'user', {'uid': uid}, json_response=False)
+            # Only invalidate cache after successful deletion to prevent negative cache hits
+            # when the user is recreated with the same UID. This fixes the issue where
+            # Dashboard fails to authenticate after deleting and recreating a user.
+            if user_instance:
+                RgwClient.drop_instance(user_instance)
+            return result
         except (DashboardException, RequestException) as e:  # pragma: no cover
             raise DashboardException(e, component='rgw')
 

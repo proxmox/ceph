@@ -1430,9 +1430,12 @@ class NvmeofServiceSpec(ServiceSpec):
                  omap_file_lock_retries: Optional[int] = 30,
                  omap_file_lock_retry_sleep_interval: Optional[float] = 1.0,
                  omap_file_update_reloads: Optional[int] = 10,
+                 omap_file_update_attempts: Optional[int] = 500,
                  enable_prometheus_exporter: Optional[bool] = True,
                  prometheus_port: Optional[int] = 10008,
                  prometheus_stats_interval: Optional[int] = 10,
+                 prometheus_frequency_slow_down_factor: Optional[float] = 3.0,
+                 prometheus_cycles_to_adjust_speed: Optional[int] = 3,
                  prometheus_startup_delay: Optional[int] = 240,
                  prometheus_connection_list_cache_expiration: Optional[int] = 60,
                  bdevs_per_cluster: Optional[int] = None,
@@ -1482,6 +1485,10 @@ class NvmeofServiceSpec(ServiceSpec):
                  iobuf_options: Optional[Dict[str, int]] = None,
                  qos_timeslice_in_usecs: Optional[int] = 0,
                  notifications_interval: Optional[int] = 60,
+                 cnc_enable: bool = True,
+                 cnc_rate_limiter_bytes: Optional[int] = 100000000,
+                 cnc_chunk_blocks: Optional[int] = 512,
+                 cnc_parallel_chunks: Optional[int] = 8,
                  discovery_addr: Optional[str] = None,
                  discovery_addr_map: Optional[Dict[str, str]] = None,
                  discovery_port: Optional[int] = None,
@@ -1554,6 +1561,10 @@ class NvmeofServiceSpec(ServiceSpec):
         self.prometheus_port = prometheus_port or 10008
         #: ``prometheus_stats_interval`` Prometheus get stats interval
         self.prometheus_stats_interval = prometheus_stats_interval
+        #: ``prometheus_frequency_slow_down_factor`` Ratio between get stats and the interval
+        self.prometheus_frequency_slow_down_factor = prometheus_frequency_slow_down_factor
+        #: ``prometheus_cycles_to_adjust_speed`` Number of slow cycles before adjusting interval
+        self.prometheus_cycles_to_adjust_speed = prometheus_cycles_to_adjust_speed
         #: ``prometheus_startup_delay`` Prometheus startup delay, in seconds
         self.prometheus_startup_delay = prometheus_startup_delay
         #: ``prometheus_connection_list_cache_expiration`` Expiration time of connection list cache
@@ -1579,8 +1590,10 @@ class NvmeofServiceSpec(ServiceSpec):
         self.omap_file_lock_retries = omap_file_lock_retries
         #: ``omap_file_lock_retry_sleep_interval`` seconds to wait before retrying to lock OMAP
         self.omap_file_lock_retry_sleep_interval = omap_file_lock_retry_sleep_interval
-        #: ``omap_file_update_reloads`` number of attempt to reload OMAP when it differs from local
+        #: ``omap_file_update_reloads`` number of attempts to lock OMAP when it differs from local
         self.omap_file_update_reloads = omap_file_update_reloads
+        #: ``omap_file_update_attempts`` attempts to update local state when it differs from OMAP
+        self.omap_file_update_attempts = omap_file_update_attempts
         #: ``max_hosts_per_namespace`` max number of hosts per namespace
         self.max_hosts_per_namespace = max_hosts_per_namespace
         #: ``max_namespaces_with_netmask`` max number of namespaces which are not auto visible
@@ -1675,6 +1688,14 @@ class NvmeofServiceSpec(ServiceSpec):
         self.qos_timeslice_in_usecs = qos_timeslice_in_usecs
         #: ``notifications_interval`` read SPDK notifications interval, in seconds
         self.notifications_interval = notifications_interval
+        #: ``cnc_enable`` enable CNC feature in SPDK
+        self.cnc_enable = cnc_enable
+        #: ``cnc_rate_limiter_bytes`` CNC rate limiter in bytes
+        self.cnc_rate_limiter_bytes = cnc_rate_limiter_bytes
+        #: ``cnc_chunk_blocks`` CNC chunk blocks
+        self.cnc_chunk_blocks = cnc_chunk_blocks
+        #: ``cnc_parallel_chunks`` CNC parallel chunk
+        self.cnc_parallel_chunks = cnc_parallel_chunks
         #: ``discovery_addr`` address of the discovery service
         self.discovery_addr = discovery_addr
         #: ``discovery_addr_map`` per node address map of the discovery service
@@ -1776,6 +1797,10 @@ class NvmeofServiceSpec(ServiceSpec):
         self.verify_spdk_ceph_connection_allocation()
         verify_non_negative_int(self.qos_timeslice_in_usecs, "QOS timeslice")
         verify_non_negative_int(self.notifications_interval, "SPDK notifications interval")
+        verify_boolean(self.cnc_enable, "Enable CNC")
+        verify_non_negative_int(self.cnc_rate_limiter_bytes, "CNC rate limiter")
+        verify_non_negative_int(self.cnc_chunk_blocks, "CNC chunk blocks")
+        verify_non_negative_int(self.cnc_parallel_chunks, "CNC parallel chunks")
 
         verify_non_negative_number(self.spdk_ping_interval_in_seconds, "SPDK ping interval")
         if (
@@ -1807,6 +1832,7 @@ class NvmeofServiceSpec(ServiceSpec):
                                    "OMAP file lock sleep interval")
         verify_non_negative_int(self.omap_file_lock_retries, "OMAP file lock retries")
         verify_non_negative_int(self.omap_file_update_reloads, "OMAP file reloads")
+        verify_non_negative_int(self.omap_file_update_attempts, "local state updates on reload")
         verify_non_negative_number(self.spdk_timeout, "SPDK timeout")
         verify_non_negative_int(self.max_log_file_size_in_mb, "Log file size")
         verify_non_negative_int(self.max_log_files_count, "Log files count")
@@ -1833,6 +1859,11 @@ class NvmeofServiceSpec(ServiceSpec):
         verify_boolean(self.abort_discovery_on_errors, "Abort discovery service on errors")
         verify_non_negative_int(self.prometheus_port, "Prometheus port")
         verify_non_negative_int(self.prometheus_stats_interval, "Prometheus stats interval")
+        verify_non_negative_number(self.prometheus_frequency_slow_down_factor,
+                                   "Prometheus stats interval factor")
+        verify_non_negative_int(self.prometheus_cycles_to_adjust_speed,
+                                "Prometheus count of slow cycles before adjusting")
+        verify_non_negative_int(self.prometheus_startup_delay, "Prometheus startup delay")
         verify_boolean(self.state_update_notify, "State update notify")
         verify_boolean(self.enable_spdk_discovery_controller, "Enable SPDK discovery controller")
         verify_boolean(self.enable_prometheus_exporter, "Enable Prometheus exporter")
@@ -2185,10 +2216,13 @@ class OAuth2ProxySpec(ServiceSpec):
                  client_secret: Optional[str] = None,
                  oidc_issuer_url: Optional[str] = None,
                  redirect_url: Optional[str] = None,
+                 scope: Optional[str] = None,
                  cookie_secret: Optional[str] = None,
                  ssl_cert: Optional[str] = None,
                  ssl_key: Optional[str] = None,
+                 email_domains: Optional[List[str]] = None,
                  allowlist_domains: Optional[List[str]] = None,
+                 ssl_insecure_skip_verify: Optional[bool] = False,
                  unmanaged: bool = False,
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
@@ -2217,6 +2251,9 @@ class OAuth2ProxySpec(ServiceSpec):
         #: The URL oauth2-proxy will redirect to after a successful login. If not provided
         # cephadm will calculate automatically the value of this url.
         self.redirect_url = redirect_url
+        #: OAuth scope specification.
+        # Default list of scopes will be used in case no scope is configured.
+        self.scope = scope
         #: The secret key used for signing cookies. Its length must be 16,
         # 24, or 32 bytes to create an AES cipher.
         self.cookie_secret = cookie_secret or self.generate_random_secret()
@@ -2224,9 +2261,13 @@ class OAuth2ProxySpec(ServiceSpec):
         self.ssl_cert = ssl_cert
         #: The multi-line SSL certificate private key for decrypting communications.
         self.ssl_key = ssl_key
+        #: List of allowed email domains.
+        self.email_domains = email_domains
         #: List of allowed domains for safe redirection after login or logout,
         # preventing unauthorized redirects.
         self.allowlist_domains = allowlist_domains
+        #: Skip TLS verification for the OIDC provider. Use only in non-production environments.
+        self.ssl_insecure_skip_verify = ssl_insecure_skip_verify
         self.unmanaged = unmanaged
 
     def generate_random_secret(self) -> str:
@@ -2248,6 +2289,10 @@ class OAuth2ProxySpec(ServiceSpec):
         self._validate_url(self.oidc_issuer_url, "oidc_issuer_url")
         if self.redirect_url is not None:
             self._validate_url(self.redirect_url, "redirect_url")
+        if self.scope is not None:
+            self._validate_non_empty_string(self.scope, "scope")
+        if self.email_domains is not None:
+            self._validate_domain_name(self.email_domains, "email_domains")
         if self.https_address is not None:
             self._validate_https_address(self.https_address)
 
@@ -2264,6 +2309,22 @@ class OAuth2ProxySpec(ServiceSpec):
         else:
             if not all([result.scheme, result.netloc]):
                 raise SpecValidationError(f"Error parsing {field_name} field: Must be a valid URL.")
+
+    def _validate_domain_name(self, domains: Optional[List[str]], field_name: str) -> None:
+        from urllib.parse import urlparse
+        for domain in (domains or []):
+            try:
+                result = urlparse(f"http://{domain}")
+            except Exception as e:
+                raise SpecValidationError(
+                    f"Invalid {field_name}: {e}. Must be a valid domain name."
+                )
+            else:
+                if result.netloc != domain:
+                    raise SpecValidationError(
+                        f"Invalid {field_name}: '{domain}' is not a valid domain name. "
+                        f"Must be a valid domain (e.g., 'domain.test')."
+                    )
 
     def _validate_https_address(self, https_address: Optional[str]) -> None:
         from urllib.parse import urlparse
@@ -2577,14 +2638,14 @@ class AlertManagerSpec(MonitoringSpec):
         # service_type: alertmanager
         # service_id: xyz
         # user_data:
-        #   default_webhook_urls:
+        #   webhook_urls:
         #   - "https://foo"
         #   - "https://bar"
         #
         # Documentation:
-        # default_webhook_urls - A list of additional URL's that are
-        #                        added to the default receivers'
-        #                        <webhook_configs> configuration.
+        # webhook_urls - A list of additional URL's that are
+        #                added to the default receivers'
+        #                <webhook_configs> configuration.
         self.user_data = user_data or {}
         self.secure = secure
         self.only_bind_port_on_networks = only_bind_port_on_networks

@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
 import { TreeViewComponent } from 'carbon-components-angular';
-import { Node } from 'carbon-components-angular/treeview/tree-node.types';
+import { Node } from '~/app/shared/models/carbon-tree-node';
 import { Observable, Subscription } from 'rxjs';
 
 import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
@@ -35,7 +35,8 @@ export interface CrushmapNode {
 @Component({
   selector: 'cd-crushmap',
   templateUrl: './crushmap.component.html',
-  styleUrls: ['./crushmap.component.scss']
+  styleUrls: ['./crushmap.component.scss'],
+  standalone: false
 })
 export class CrushmapComponent implements OnDestroy, OnInit {
   private sub = new Subscription();
@@ -51,7 +52,10 @@ export class CrushmapComponent implements OnDestroy, OnInit {
   metadataKeyMap: { [key: number]: any } = {};
   data$: Observable<object>;
 
-  constructor(private crushRuleService: CrushRuleService, private timerService: TimerService) {}
+  constructor(
+    private crushRuleService: CrushRuleService,
+    private timerService: TimerService
+  ) {}
 
   ngOnInit() {
     this.sub = this.timerService

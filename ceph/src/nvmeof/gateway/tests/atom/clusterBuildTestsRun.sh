@@ -12,7 +12,7 @@ set -o pipefail
 VERSION=$1
 CEPH_BRANCH=$2
 if [ "$3" = "latest" ]; then
-    CEPH_SHA=$(curl -s https://shaman.ceph.com/api/repos/ceph/$CEPH_BRANCH/latest/centos/9/ | jq -r ".[] | select(.archs[] == \"$(uname -m)\" and .status == \"ready\") | .sha1")
+    CEPH_SHA=$(curl -s https://shaman.ceph.com/api/repos/ceph/$CEPH_BRANCH/latest/centos/9/ | jq -r "[.[] | select(.archs[] == \"$(uname -m)\" and .status == \"ready\") | .sha1] | unique | .[0] // empty")
 else
     CEPH_SHA=$3
 fi
@@ -107,8 +107,15 @@ if [ "$NIGHTLY" != "nightly" ]; then
         --dont-power-off-cloud-vms \
         --skip-lb-group-change-test \
         --skip-gw-failover-latency-test \
+        --skip-get-subsystems-latency-test \
         --ibm-cloud-key=nokey \
         --github-nvmeof-token=nokey \
+        --check-vms-stage \
+        --ceph-deploy-stage \
+        --nvmeof-setup-stage \
+        --initiator-setup-stage \
+        --nvmeof-tests-stage \
+        --teardown-stage \
         --env=m7; exit \$?" 2>&1 | tee "$TEMP_OUTPUT"
     DOCKER_EXIT_STATUS=$?
 
@@ -158,6 +165,12 @@ else
         --ibm-cloud-key=nokey \
         --github-nvmeof-token=nokey \
         --encryption-key \
+        --check-vms-stage \
+        --ceph-deploy-stage \
+        --nvmeof-setup-stage \
+        --initiator-setup-stage \
+        --nvmeof-tests-stage \
+        --teardown-stage \
         --env=m8; exit \$?" 2>&1 | tee "$TEMP_OUTPUT"
     DOCKER_EXIT_STATUS=$?
 

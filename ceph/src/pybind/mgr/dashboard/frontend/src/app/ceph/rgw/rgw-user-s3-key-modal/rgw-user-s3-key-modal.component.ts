@@ -13,7 +13,8 @@ import { BaseModal } from 'carbon-components-angular';
 @Component({
   selector: 'cd-rgw-user-s3-key-modal',
   templateUrl: './rgw-user-s3-key-modal.component.html',
-  styleUrls: ['./rgw-user-s3-key-modal.component.scss']
+  styleUrls: ['./rgw-user-s3-key-modal.component.scss'],
+  standalone: false
 })
 export class RgwUserS3KeyModalComponent extends BaseModal {
   /**
@@ -28,7 +29,10 @@ export class RgwUserS3KeyModalComponent extends BaseModal {
   resource: string;
   action: string;
 
-  constructor(private formBuilder: CdFormBuilder, public actionLabels: ActionLabelsI18n) {
+  constructor(
+    private formBuilder: CdFormBuilder,
+    public actionLabels: ActionLabelsI18n
+  ) {
     super();
     this.resource = $localize`S3 Key`;
     this.createForm();

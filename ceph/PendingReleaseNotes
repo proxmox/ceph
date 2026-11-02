@@ -1,3 +1,38 @@
+* Cephadm: ``ceph orch upgrade start`` and ``ceph orch upgrade check`` now
+  verify that every host's CPU supports the x86-64 microarchitecture level
+  required by the target release (official builds of 21.x and later require
+  ``x86-64-v3``). An upgrade that would deploy binaries a host's CPU cannot
+  execute is refused, or paused with a new ``UPGRADE_INCOMPATIBLE_HOST_CPU``
+  health alert. cephadm now reports the host's detected level as a new
+  ``cpu_isa_level`` host fact (e.g. ``x86-64-v2``). The check can be disabled
+  with ``ceph config set mgr mgr/cephadm/upgrade_cpu_isa_check false``, e.g.
+  when running custom-built images targeting an older CPU generation.
+
+* RADOS: PG autoscaler allows overlapping roots. Each root receives a PG target based
+  on its OSDs, with OSDs shared across multiple roots contributing proportionally
+  less to each root's allocation.
+  
+* librados/neorados: The C++ APIs for executing Ceph Class (CLS) methods
+  have undergone a breaking change to enforce compile-time type safety, replacing
+  legacy string-based parameters with strongly-typed ClsMethod structs. C++
+  developers must update their method calls to use these new structs, which ensure
+  read/write semantics are correctly applied.
+
+* RGW: S3 ListObjects and ListObjectVersions now support the
+  ``x-amz-optional-object-attributes: RestoreStatus`` request header to include
+  restore status in listing responses. Restore status is stored in the bucket
+  index, so only objects written or restored after this upgrade will populate
+  the field. Existing objects are unaffected.
+* RGW: New S3 Control APIs to apply PublicAccessBlock configuration to User Accounts.
+>=20.2.3
+
+* RBD: It's possible to specify source cluster's ``mon_host`` and ``key`` for
+  ``native`` format migration via the migration spec now.  This eliminates the
+  dependency on ``<cluster-name>.conf`` file in a known location which is
+  rather rigid and also challenging to disseminate in some environments.  The
+  key can be embedded in the migration spec or just referenced from there while
+  stored in the MON config-key store.
+
 * ceph-volume: Raw BlueStore OSD preparation now pre-formats NVMe devices and
   skips the slower BlueStore discard phase,reducing mkfs time on
   very large namespaces.
@@ -40,6 +75,10 @@
   both --marker and --object-version options together (e.g., ``--marker=obj1 --object-version=abc123``).
   This enables proper pagination through versioned bucket listings without duplicates or
   infinite loops. For non-versioned buckets, use only --marker as before (backward compatible).
+* RGW: ``radosgw-admin bucket suspend`` and ``bucket unsuspend`` can suspend an
+  individual bucket without suspending its owner. S3 requests against a suspended
+  bucket fail with ``403 BucketSuspended``. The ``suspended`` field is now included
+  in ``radosgw-admin bucket stats`` output.
 * RGW: OpenSSL engine support is deprecated in favor of provider support.
   - Removed the `openssl_engine_opts` configuration option. OpenSSL engine configuration in string format is no longer supported.
   - Added the `openssl_conf` configuration option for loading specified providers as default providers.
@@ -244,6 +283,12 @@
   behavior is controlled by the new ``mgr_stats_period_autotune`` (default:
   ``true``) and ``mgr_stats_period_autotune_queue_threshold`` (default: ``100``)
   config options.
+* MON: Each monitor now reports four new perf counters covering its data
+  directory: ``data_disk_total_bytes``, ``data_disk_avail_bytes``,
+  ``data_disk_avail_percent``, and ``db_total_bytes`` (estimated on-disk size
+  of the key/value store). They surface automatically as ``ceph_mon_*``
+  Prometheus metrics via the ``prometheus`` mgr module and ``ceph-exporter``,
+  enabling trending of mon DB growth and filesystem free space.
 >=20.0.2
 
 * RGW: For `radosgw-admin account rm`, the `--purge-data` option previously applied only
@@ -251,6 +296,10 @@
   too instead of failing with ENOTEMPTY.
 
 >=20.0.0
+
+* RGW: ``radosgw-admin bilog trim`` without ``--end-marker`` now requires
+  ``--yes-i-really-mean-it``, because such a trim has no upper bound and can
+  remove bilog entries that other zones have not synced yet.
 
 * RGW: Bucket Logging suppports creating log buckets in EC pools.
   Implicit logging object commits are now performed asynchronously.
@@ -297,6 +346,7 @@
   normalized directory entry names. This is an inheritable configuration making
   it apply to an entire directory tree. For more information, see
   https://docs.ceph.com/en/latest/cephfs/charmap/
+* RGW: "STS Lite" and the sts:GetSessionToken operation are now deprecated.
 * Based on tests performed at scale on an HDD based Ceph cluster, it was found
   that scheduling with mClock was not optimal with multiple OSD shards. For
   example, in the test cluster with multiple OSD node failures, the client
@@ -463,6 +513,7 @@
 * Dashboard: RGW Topics and Bucket Notification Management
 * Dashboard: RGW granular bucket replication
 * Dashboard: SMB monitoring and management
+* Dashboard: `ceph dashboard sso enable oauth2` checks for oauth2-proxy service for SSO enablement.  If the `oauth2-proxy` service goes down, cephadm will automatically disable Dashboard OAuth2 SSO.
 * Monitoring: New monitoring Dashboards for Application, NVMe, CephFS, and SMB Overview
 * Dashboard: Introduces a command `ceph dashboard set-rgw-hostname <daemon> <hostname>`
   to set custom dns names for each gateways. Once set dashboard will pick up that 

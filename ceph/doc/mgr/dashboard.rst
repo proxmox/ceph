@@ -442,6 +442,10 @@ The setting can be unset using:
 
    ceph dashboard unset-rgw-hostname <gateway_name>
 
+The dashboard only talks to gateways whose frontend accepts a connection from
+the active manager. When no gateway is selected it prefers the default
+zonegroup and keeps its pick until it stops responding or a setting changes.
+
 If the Object Gateway takes too long to process requests and the dashboard runs
 into timeouts, you can set the timeout value to your needs:
 
@@ -818,6 +822,29 @@ To enable SSO:
 .. prompt:: bash $
 
    ceph dashboard sso enable oauth2
+
+Automatic SSO Disable on Service Failure
+"""""""""""""""""""""""""""""""""""""""""
+
+OAuth2 SSO depends on ``oauth2-proxy`` service being active.
+Cephadm continuously monitors this service and will **automatically disable OAuth2 SSO**
+in the Dashboard if the service goes down or is removed.
+A warning is recorded in the Ceph log when this happens:
+
+.. code-block:: text
+
+   OAuth2 SSO has been automatically disabled because oauth2-proxy is no longer running.
+
+Once the required services are back up and running, SSO must be **re-enabled manually**:
+
+.. prompt:: bash $
+
+   ceph dashboard sso enable oauth2
+
+.. note::
+
+   Enabling OAuth2 SSO is blocked if cephadm detects that ``oauth2-proxy`` is not currently running. Deploy and start this service before
+   attempting to enable SSO.
 
 .. _dashboard-alerting:
 

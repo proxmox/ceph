@@ -132,9 +132,13 @@ std::optional<std::vector<std::byte>> ActivePyModule::dispatch_remote(
     const std::string &method,
     std::span<std::byte const> pickled_args,
     std::span<std::byte const> pickled_kwargs,
-    std::string *err)
+    std::string *err,
+    bool *crash_dump)
 {
   ceph_assert(err != nullptr);
+  if (crash_dump != nullptr) {
+    *crash_dump = true;
+  }
 
   // deserialize arguments.
 
@@ -142,11 +146,7 @@ std::optional<std::vector<std::byte>> ActivePyModule::dispatch_remote(
 
   auto pmodule = py_module->pPickleModule;
   auto pickled_args_bytes = py_bytes_from_span(pickled_args);
-  auto args = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("loads"),
-    pickled_args_bytes,
-    nullptr);
+  auto args = PyObject_CallMethod(pmodule, "loads", "(O)", pickled_args_bytes);
   Py_DECREF(pickled_args_bytes);
   if (args == nullptr) {
     std::string caller = "ActivePyModule::dispatch_remote "s + method;
@@ -156,11 +156,7 @@ std::optional<std::vector<std::byte>> ActivePyModule::dispatch_remote(
   }
 
   auto pickled_kwargs_bytes = py_bytes_from_span(pickled_kwargs);
-  auto kwargs = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("loads"),
-    pickled_kwargs_bytes,
-    nullptr);
+  auto kwargs = PyObject_CallMethod(pmodule, "loads", "(O)", pickled_kwargs_bytes);
   Py_DECREF(pickled_kwargs_bytes);
   if (kwargs == nullptr) {
     std::string caller = "ActivePyModule::dispatch_remote "s + method;
@@ -189,17 +185,29 @@ std::optional<std::vector<std::byte>> ActivePyModule::dispatch_remote(
     // Because the caller is in a different context, we can't let this
     // exception bubble up, need to re-raise it from the caller's
     // context later.
+    //
+    // NotImplementedError is not a fault: it is how a module signals that
+    // it does not implement an optional method of an interface it inherits
+    // from. The orchestrator interface is built on exactly that - see
+    // Orchestrator.get_feature_set() in the orchestrator module, whose
+    // docstring tells callers to "ask for forgiveness" and catch
+    // NotImplementedError. Recording a crash dump for it turns a documented,
+    // expected signal into a health warning: on a Rook-managed cluster
+    // mgr/prometheus calls the cephadm-only node_proxy_fullreport() once per
+    // scrape, which pinned RECENT_MGR_MODULE_CRASH permanently and added
+    // ~5,760 crash records per day. The exception is still reported to the
+    // caller, it is just not treated as a crash.
+    const bool do_crash_dump = !PyErr_ExceptionMatches(PyExc_NotImplementedError);
     std::string caller = "ActivePyModule::dispatch_remote "s + method;
-    *err = handle_pyerror(true, get_name(), caller);
+    *err = handle_pyerror(do_crash_dump, get_name(), caller);
+    if (crash_dump != nullptr) {
+      *crash_dump = do_crash_dump;
+    }
     return std::nullopt;
   }
   dout(20) << "Success calling '" << method << "'" << dendl;
 
-  auto pickled_ret = PyObject_CallMethodObjArgs(
-    pmodule,
-    PyUnicode_FromString("dumps"),
-    ret,
-    nullptr);
+  auto pickled_ret = PyObject_CallMethod(pmodule, "dumps", "(O)", ret);
   Py_DECREF(ret);
   if (pickled_ret == nullptr) {
     std::string caller = "ActivePyModule::dispatch_remote "s + method;

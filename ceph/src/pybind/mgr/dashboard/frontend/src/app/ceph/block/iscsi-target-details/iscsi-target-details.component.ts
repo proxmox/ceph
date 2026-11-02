@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { Node } from 'carbon-components-angular/treeview/tree-node.types';
+import { Node } from '~/app/shared/models/carbon-tree-node';
 import _ from 'lodash';
 
 import { TableComponent } from '~/app/shared/datatable/table/table.component';
@@ -13,7 +13,8 @@ import { TreeViewService } from '~/app/shared/services/tree-view.service';
 @Component({
   selector: 'cd-iscsi-target-details',
   templateUrl: './iscsi-target-details.component.html',
-  styleUrls: ['./iscsi-target-details.component.scss']
+  styleUrls: ['./iscsi-target-details.component.scss'],
+  standalone: false
 })
 export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   @Input()
