@@ -25,10 +25,9 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  create mode 100644 src/test/mon/test_cephx_service_handler.cc
 
 diff --git a/src/auth/cephx/CephxServiceHandler.cc b/src/auth/cephx/CephxServiceHandler.cc
-index 3d17c66e3b6..e86759036d4 100644
 --- a/src/auth/cephx/CephxServiceHandler.cc
 +++ b/src/auth/cephx/CephxServiceHandler.cc
-@@ -193,59 +193,53 @@ int CephxServiceHandler::handle_request(
+@@ -192,59 +192,53 @@ int CephxServiceHandler::handle_request(
  	break;
        }
  
@@ -123,7 +122,7 @@ index 3d17c66e3b6..e86759036d4 100644
          ret = -EACCES;
  	break;
        }
-@@ -276,7 +270,7 @@ int CephxServiceHandler::handle_request(
+@@ -275,7 +269,7 @@ int CephxServiceHandler::handle_request(
        info.ticket.init_timestamps(ceph_clock_now(), ttl);
        info.validity.set_from_double(ttl);
  
@@ -132,7 +131,7 @@ index 3d17c66e3b6..e86759036d4 100644
  
        info.session_key = session_key;
        if (psession_key) {
-@@ -341,7 +335,7 @@ int CephxServiceHandler::handle_request(
+@@ -340,7 +334,7 @@ int CephxServiceHandler::handle_request(
  	      key_server->build_session_auth_info(
  		service_id,
  		info.ticket,
@@ -141,7 +140,7 @@ index 3d17c66e3b6..e86759036d4 100644
  		svc_info);
  	      info_vec.push_back(svc_info);
  	    }
-@@ -355,6 +349,10 @@ int CephxServiceHandler::handle_request(
+@@ -354,6 +348,10 @@ int CephxServiceHandler::handle_request(
  	  encode(extra, *result_bl);
  	}
  
@@ -153,7 +152,6 @@ index 3d17c66e3b6..e86759036d4 100644
  	ret = 1;
        }
 diff --git a/src/test/mon/CMakeLists.txt b/src/test/mon/CMakeLists.txt
-index 5dad07b32b9..2d1cec5c8a1 100644
 --- a/src/test/mon/CMakeLists.txt
 +++ b/src/test/mon/CMakeLists.txt
 @@ -33,6 +33,14 @@ add_executable(unittest_mon_moncap
@@ -173,7 +171,6 @@ index 5dad07b32b9..2d1cec5c8a1 100644
    MonMap.cc
 diff --git a/src/test/mon/test_cephx_service_handler.cc b/src/test/mon/test_cephx_service_handler.cc
 new file mode 100644
-index 00000000000..6310988f72e
 --- /dev/null
 +++ b/src/test/mon/test_cephx_service_handler.cc
 @@ -0,0 +1,401 @@

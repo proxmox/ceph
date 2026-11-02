@@ -34,10 +34,9 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/src/mgr/PyModule.cc b/src/mgr/PyModule.cc
-index a25c45c2645..bc173ecc223 100644
 --- a/src/mgr/PyModule.cc
 +++ b/src/mgr/PyModule.cc
-@@ -513,11 +513,13 @@ int PyModule::register_options(PyObject *cls)
+@@ -537,11 +537,13 @@ int PyModule::register_options(PyObject *cls)
  
  int PyModule::load_notify_types()
  {
