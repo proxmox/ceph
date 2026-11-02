@@ -1,3 +1,15 @@
+ceph (20.2.5-pve1) trixie; urgency=medium
+
+  * update Ceph to Tentacle 20.2.5 stable release.
+
+  * backport fix for erasure-coded pools that had EC optimizations enabled
+    after objects were written. Truncating such an object, as RBD does for
+    discards reaching the end of an object, left some shards padded, so scrub
+    reported it as inconsistent. A repair could then mark the object unfound,
+    even though its data was intact.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 02 Nov 2026 22:30:37 +0100
+
 ceph (20.2.4-pve5) trixie; urgency=medium
 
   * backport fix for bluestore OSD's BlueFS space leak on close.
