@@ -58,3 +58,4 @@
 0058-Revert-msg-async-ProtocolV2-send_server_ident-updat.patch
 0059-Revert-src-msg-async-Improve-logging-and-prefixes-.patch
 0060-Revert-msg-async-ProtocolV2-Speed-up-connection-lo.patch
+0061-mon-AuthMonitor-link-the-PVE-cephx-migration-docs-in.patch
