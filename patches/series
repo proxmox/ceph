@@ -17,3 +17,4 @@
 0017-auth-cephx-allow-manual-pending-key-promotion-for-cl.patch
 0018-mon-record-which-key-authenticated-a-session.patch
 0019-osd-ECTransaction-truncate-padded-shards-of-legacy-E.patch
+0020-mon-AuthMonitor-link-the-PVE-cephx-migration-docs-in.patch

@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kefu Chai <k.chai@proxmox.com>
+Date: Thu, 15 Oct 2026 18:34:37 +0800
+Subject: [PATCH] mon/AuthMonitor: link the PVE cephx migration docs in
+ insecure key warnings
+
+Ceph 19.2.6 and 20.2.4 added health checks for keys, service tickets
+and cipher settings that still use aes, so PVE users can see them right
+after a point release upgrade without knowing what to do next. The
+migration has to be done with the pve-cephx-rotate-service-keys helper,
+which also updates the key copies managed by PVE, instead of the
+upstream procedure.
+
+The web interface explains each of these checks and links the guide
+next to them, but somebody reading "ceph -s" or "ceph health" over ssh
+gets the summary and nothing else, so the summary has to carry the
+link.
+
+Only AUTH_INSECURE_KEYS_ALLOWED carries it. That check is raised for as
+long as the monitors still allow aes, and the documented procedure
+restricts the allowed ciphers in its last step and only through the
+helper, so the check tracks whether the migration is finished. The
+others clear earlier: the two error severity ones go away in step 1,
+the rotating service key warning expires by itself, and the last two
+are the ones the PVE docs tell users to mute while an incompatible
+client keeps the migration from finishing. Linking those as well would
+repeat the same url up to six times in one "ceph health" line and in
+the cluster log.
+
+The summary points at the PVE documentation, so this change is not
+meant for upstream. It lives in the Proxmox patch series.
+
+Signed-off-by: Kefu Chai <k.chai@proxmox.com>
+---
+ src/mon/AuthMonitor.cc | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/mon/AuthMonitor.cc b/src/mon/AuthMonitor.cc
+index 00d3fe99344..434470c537b 100644
+--- a/src/mon/AuthMonitor.cc
++++ b/src/mon/AuthMonitor.cc
+@@ -498,7 +498,10 @@ bool AuthMonitor::check_health()
+       }
+     }
+     if (!details.empty()) {
+-      auto& check = next.add("AUTH_INSECURE_KEYS_ALLOWED", HEALTH_WARN, "Monitors are configured to allow auth using insecure key types", details.size());
++      auto& check = next.add("AUTH_INSECURE_KEYS_ALLOWED", HEALTH_WARN,
++                             "Monitors are configured to allow auth using insecure key types"
++                             ", see https://pve.proxmox.com/pve-docs/chapter-pveceph.html#pveceph_cephx_migration",
++                             details.size());
+       for (auto& detail : details) {
+         check.detail.push_back(detail);
+       }
