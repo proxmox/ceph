@@ -1,0 +1,81 @@
+From ee490d3cce8fd504301c535e721c3640764729ba Mon Sep 17 00:00:00 2001
+From: "Kamoltat (Junior) Sirivadhna" <ksirivad@redhat.com>
+Date: Mon, 21 Sep 2026 18:08:23 +0000
+Subject: [PATCH 1/3] Revert "msg/async: ProtocolV2::send_server_ident update
+ ProtocolV2::global_seq"
+
+This reverts commit ae5d336fa447f8d19262a26e929c48126de146c6.
+
+Signed-off-by: Kamoltat (Junior) Sirivadhna <ksirivad@redhat.com>
+
+Conflicts:
+	src/msg/async/ProtocolV2.cc
+	Accept:
+	    auto& oq = out_queue[m->get_priority()];
+            oq.emplace_back(out_queue_entry_t{is_prepared, std::move(m)});
+(cherry picked from commit ee490d3cce8fd504301c535e721c3640764729ba)
+---
+ src/msg/async/AsyncMessenger.cc | 7 ++-----
+ src/msg/async/ProtocolV2.cc     | 6 +++---
+ src/msg/async/ProtocolV2.h      | 2 +-
+ 3 files changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/src/msg/async/AsyncMessenger.cc b/src/msg/async/AsyncMessenger.cc
+index 97568a0779e2..639b59937065 100644
+--- a/src/msg/async/AsyncMessenger.cc
++++ b/src/msg/async/AsyncMessenger.cc
+@@ -1082,12 +1082,9 @@ __u32 AsyncMessenger::get_global_seq(__u32 old_global_seq)
+   } // release lock
+ 
+   if (did_update_to_old) {
+-    ldout(cct, 10) 
+-      << __func__ << " old_global_seq=" << old_global_seq
++    ldout(cct, 10) << __func__ << " old_global_seq=" << old_global_seq
+       << " > global_seq=" << global_seq
+-      << "; new global_seq=" << updated_to
+-      << " (was " << prev_global << ")"
+-      << dendl;
++      << "; new global_seq=" << updated_to << dendl;
+   }
+   ldout(cct, 10) << __func__ << " increment to global_seq=" << global_seq << dendl;
+   return ret;
+diff --git a/src/msg/async/ProtocolV2.cc b/src/msg/async/ProtocolV2.cc
+index 25fcd46242ca..a0672507464a 100644
+--- a/src/msg/async/ProtocolV2.cc
++++ b/src/msg/async/ProtocolV2.cc
+@@ -2977,11 +2977,11 @@ CtPtr ProtocolV2::send_server_ident() {
+     flags = flags | CEPH_MSG_CONNECT_LOSSY;
+   }
+ 
+-  global_seq = messenger->get_global_seq();
++  uint64_t gs = messenger->get_global_seq();
+   auto server_ident = ServerIdentFrame::Encode(
+           messenger->get_myaddrs(),
+           messenger->get_myname().num(),
+-          global_seq,
++          gs,
+           connection->policy.features_supported,
+           connection->policy.features_required | msgr2_required,
+           flags,
+@@ -2990,7 +2990,7 @@ CtPtr ProtocolV2::send_server_ident() {
+   ldout(cct, 5) << __func__ << " sending identification:"
+                 << " addrs=" << messenger->get_myaddrs()
+                 << " gid=" << messenger->get_myname().num()
+-                << " global_seq=" << global_seq << " features_supported=" << std::hex
++                << " global_seq=" << gs << " features_supported=" << std::hex
+                 << connection->policy.features_supported
+                 << " features_required="
+ 		            << (connection->policy.features_required | msgr2_required)
+diff --git a/src/msg/async/ProtocolV2.h b/src/msg/async/ProtocolV2.h
+index a70be01c9a38..786fa4db6d5c 100644
+--- a/src/msg/async/ProtocolV2.h
++++ b/src/msg/async/ProtocolV2.h
+@@ -84,7 +84,7 @@ class ProtocolV2 : public Protocol {
+ 
+   uint64_t client_cookie;
+   uint64_t server_cookie;
+-  uint64_t global_seq; // Snapshot of AsyncMessenger::global_seq
++  uint64_t global_seq;
+   uint64_t connect_seq;
+   uint64_t peer_global_seq;
+   uint64_t message_seq;

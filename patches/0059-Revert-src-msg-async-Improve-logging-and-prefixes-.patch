@@ -1,0 +1,94 @@
+From 38641deba3cc8d154215436530bb8912983ee8b9 Mon Sep 17 00:00:00 2001
+From: "Kamoltat (Junior) Sirivadhna" <ksirivad@redhat.com>
+Date: Mon, 21 Sep 2026 18:10:03 +0000
+Subject: [PATCH 2/3] Revert "src/msg/async: Improve logging and prefixes for
+ global_seq"
+
+This reverts commit 958406ef50160dd5c34f57730d9eaff8b2a0d94a.
+
+Signed-off-by: Kamoltat (Junior) Sirivadhna <ksirivad@redhat.com>
+(cherry picked from commit 38641deba3cc8d154215436530bb8912983ee8b9)
+---
+ src/msg/async/AsyncMessenger.cc | 31 -------------------------------
+ src/msg/async/AsyncMessenger.h  |  9 ++++++++-
+ src/msg/async/ProtocolV1.cc     |  4 ++--
+ 3 files changed, 10 insertions(+), 34 deletions(-)
+
+diff --git a/src/msg/async/AsyncMessenger.cc b/src/msg/async/AsyncMessenger.cc
+index 639b59937065..3a8f9e0c1894 100644
+--- a/src/msg/async/AsyncMessenger.cc
++++ b/src/msg/async/AsyncMessenger.cc
+@@ -1059,37 +1059,6 @@ void AsyncMessenger::mark_down_addrs(const entity_addrvec_t& addrs)
+   }
+ }
+ 
+-__u32 AsyncMessenger::get_global_seq(__u32 old_global_seq)
+-{
+-  __u32 ret;
+-  // These are only used for logging.
+-  __u32 prev_global = 0;
+-  __u32 updated_to = 0;
+-  bool did_update_to_old = false;
+-
+-  { // acquire lock
+-    std::lock_guard<ceph::spinlock> lg(global_seq_lock);
+-
+-    if (old_global_seq > global_seq) {
+-      // These are all for logging purposes
+-      prev_global = global_seq;
+-      updated_to = old_global_seq;
+-      did_update_to_old = true;
+-      // global_seq and ret are the only that matters.
+-      global_seq = old_global_seq;
+-    }
+-    ret = ++global_seq;
+-  } // release lock
+-
+-  if (did_update_to_old) {
+-    ldout(cct, 10) << __func__ << " old_global_seq=" << old_global_seq
+-      << " > global_seq=" << global_seq
+-      << "; new global_seq=" << updated_to << dendl;
+-  }
+-  ldout(cct, 10) << __func__ << " increment to global_seq=" << global_seq << dendl;
+-  return ret;
+-}
+-
+ int AsyncMessenger::get_proto_version(int peer_type, bool connect) const
+ {
+   int my_type = my_name.type();
+diff --git a/src/msg/async/AsyncMessenger.h b/src/msg/async/AsyncMessenger.h
+index 8d5c8f709c5a..7003bf939f73 100644
+--- a/src/msg/async/AsyncMessenger.h
++++ b/src/msg/async/AsyncMessenger.h
+@@ -401,8 +401,15 @@ class AsyncMessenger : public SimplePolicyMessenger {
+    *
+    * @return a global sequence ID that nobody else has seen.
+    */
+-  __u32 get_global_seq(__u32 old=0);
++  __u32 get_global_seq(__u32 old=0) {
++    std::lock_guard<ceph::spinlock> lg(global_seq_lock);
+ 
++    if (old > global_seq)
++      global_seq = old;
++    __u32 ret = ++global_seq;
++
++    return ret;
++  }
+   /**
+    * Get the protocol version we support for the given peer type: either
+    * a peer protocol (if it matches our own), the protocol version for the
+diff --git a/src/msg/async/ProtocolV1.cc b/src/msg/async/ProtocolV1.cc
+index 9d6dbaae0a24..51687d7fca8e 100644
+--- a/src/msg/async/ProtocolV1.cc
++++ b/src/msg/async/ProtocolV1.cc
+@@ -21,8 +21,8 @@ std::ostream &ProtocolV1::_conn_prefix(std::ostream *_dout) {
+ 		<< " conn("
+                 << connection << " " << this
+                 << " :" << connection->port << " s=" << get_state_name(state)
+-                << " pgs=" << peer_global_seq << " gs=" << global_seq
+-                << " cs=" << connect_seq << " l=" << connection->policy.lossy << ").";
++                << " pgs=" << peer_global_seq << " cs=" << connect_seq
++                << " l=" << connection->policy.lossy << ").";
+ }
+ 
+ #define WRITE(B, C) write(CONTINUATION(C), B)
