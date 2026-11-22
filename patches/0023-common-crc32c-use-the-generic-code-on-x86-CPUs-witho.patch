@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Sun, 22 Nov 2026 19:57:50 +0100
+Subject: [PATCH] common/crc32c: use the generic code on x86 CPUs without
+ PCLMUL
+
+Since the update to ISA-L 2.32.0, both SSE 4.2 variants call
+crc32_iscsi_01. On a CPU with SSE 4.2 but without PCLMUL, the chosen
+variant handles the unaligned tail of a buffer on its own. Its
+fallback for buffers shorter than 16 bytes went away together with
+crc32_iscsi_00. So if a buffer ends more bytes past an 8-byte boundary
+than it is long, for example 3 bytes at offset 4, the length underflows
+and the routine reads about 4 GiB past the buffer.
+
+ceph-mon, ceph-mgr and librados clients then segfault in their
+messenger threads right after they start or connect. This hits VMs
+whose CPU model hides PCLMUL, like the x86-64-v2-AES and x86-64-v3
+models of Proxmox VE. crc32_iscsi_01 uses PCLMULQDQ itself, too, which
+works in such VMs only because hiding a CPUID flag does not disable the
+instruction.
+
+So use the SSE 4.2 code only if the CPU has PCLMUL as well, and the
+generic table-driven code otherwise. That is slower than the SSE 4.2
+code used before ISA-L 2.32.0, but correct. CPUs with PCLMUL keep using
+the same code as before.
+
+Fixes: f1ffb15b74e1 ("common: update crc32c to support ISA-L 2.32.0")
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/common/crc32c.cc | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/src/common/crc32c.cc b/src/common/crc32c.cc
+index f6f2998..b6df086 100644
+--- a/src/common/crc32c.cc
++++ b/src/common/crc32c.cc
+@@ -30,11 +30,9 @@ ceph_crc32c_func_t ceph_choose_crc32(void)
+   if (ceph_arch_intel_avx512_vpclmul && ceph_crc32c_intel_fast_avx512_vpclmul_exists()) {
+     return ceph_crc32c_intel_fast_avx512_vpclmul;
+   }
+-  if (ceph_arch_intel_sse42 && ceph_crc32c_intel_fast_exists()) {
+-    if (ceph_arch_intel_pclmul) {
+-      return ceph_crc32c_intel_fast_pclmul;
+-    }
+-    return ceph_crc32c_intel_fast;
++  // crc32_iscsi_01, which both SSE 4.2 variants use, needs PCLMUL too
++  if (ceph_arch_intel_sse42 && ceph_arch_intel_pclmul && ceph_crc32c_intel_fast_exists()) {
++    return ceph_crc32c_intel_fast_pclmul;
+   }
+ #elif defined(__arm__) || defined(__aarch64__)
+ # if defined(HAVE_ARMV8_CRC)

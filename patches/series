@@ -20,3 +20,4 @@
 0020-debian-do-not-restart-ceph-mgr-from-manager-module-p.patch
 0021-debian-let-the-ceph-meta-package-depend-on-the-stand.patch
 0022-osd-ECTransaction-truncate-padded-shards-of-legacy-E.patch
+0023-common-crc32c-use-the-generic-code-on-x86-CPUs-witho.patch
