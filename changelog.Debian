@@ -1,3 +1,22 @@
+ceph (21.2.0-pve2) trixie; urgency=medium
+
+  * backport fix for scrub errors on erasure-coded pools with optimizations
+    enabled. Truncating an object written before the optimizations were
+    enabled left some of its shards padded. RBD does such truncates when a
+    discard reaches the end of an object. Deep scrub then flagged the object
+    as inconsistent, and a repair could leave it unfound although its data
+    was intact.
+
+  * fix crashes of Ceph services and clients on x86 CPUs without PCLMUL.
+    Since Umbrella, such CPUs used a checksum routine that reads past short
+    buffers. This affected VMs with the x86-64-v2-AES default or another
+    x86-64-v* CPU type, for example nested test clusters. There, creating the
+    first monitor seemed to work, but its status stayed unknown and creating
+    the manager failed with "partial read". These CPUs now use the generic
+    checksum code.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sun, 22 Nov 2026 20:52:59 +0100
+
 ceph (21.2.0-pve1) trixie; urgency=medium
 
   * update ceph to the first stable release from the Umbrella 21.2 series.
